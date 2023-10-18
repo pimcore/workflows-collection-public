@@ -1,0 +1,126 @@
+name: Clone branch
+
+on:
+  workflow_call:
+    inputs:
+      base_ref:
+          required: true
+          type: string
+      ref_name:
+          required: true
+          type: string
+      target_repo:
+          required: true
+          type: string
+    secrets:
+      SYNC_TOKEN:
+        required: true
+      GIT_NAME:
+        required: true
+      GIT_EMAIL:
+        required: true
+        
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    env:
+      PAT: ${{ secrets.SYNC_TOKEN }}
+      TARGET_REPO: ${{ inputs.target_repo }}
+      TARGET_BRANCH: ${{ inputs.base_ref }}
+      BASE_BRANCH: ${{ inputs.ref_name }}
+      GIT_NAME: ${{ secrets.GIT_NAME }}
+      GIT_EMAIL: ${{ secrets.GIT_EMAIL}}
+    steps:
+      - name: Checkout repository CE
+        uses: actions/checkout@v4
+        with:
+            ref: ${{ inputs.base_ref }}
+            token: ${{ secrets.SYNC_TOKEN }}
+            fetch-depth: 0
+
+      - name: Set up Git
+        run: |
+          git config user.email "$GIT_EMAIL"
+          git config user.name "$GIT_NAME"
+
+      - name: Prepare base target branch PR in EE repo
+        run: |
+            DESTINATION_BRANCH="$TARGET_BRANCH-from-CE"
+            echo "DESTINATION_BRANCH=$DESTINATION_BRANCH" >> $GITHUB_ENV
+
+            # Ensure we're working with the most recent code and branches
+            git fetch origin
+            git fetch https://github.com/pimcore/$TARGET_REPO.git
+
+            # Cleanup old remote if it exists and create a fresh remote reference
+            git remote | grep $TARGET_REPO && git remote remove $TARGET_REPO
+            git remote add $TARGET_REPO https://github.com/pimcore/$TARGET_REPO.git
+          
+            # Checkout and push to the destination branch in the target repo
+            git checkout $TARGET_BRANCH
+            git pull
+            git checkout -b $DESTINATION_BRANCH
+            git push $TARGET_REPO $DESTINATION_BRANCH
+            
+      - name: Create PR in target repo
+        run: |
+            # Create a PR in Repo EE
+            REQ_BODY=$(cat << EOF
+            {
+              "title": "Automated PR from CE repository",
+              "body": "This PR is automatically created from CE repository",
+              "head": "$DESTINATION_BRANCH",
+              "base": "$BASE_BRANCH"
+            }
+            EOF
+            )
+
+            CREATE_PR=$(curl -X POST --location "https://api.github.com/repos/pimcore/$TARGET_REPO/pulls" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $PAT" \
+            -d "$REQ_BODY")
+
+            # Extract the PR URL and status code from the response
+            PR_URL=$(echo $CREATE_PR | jq -r '.html_url')
+
+            # Get PR number to update labels
+            PR_NUM=$(echo $CREATE_PR | jq -r '.number')
+            echo "PR_NUM=$PR_NUM" >> $GITHUB_ENV
+
+            if [ -z "$PR_URL" ] || [ "$PR_URL" = "null" ] || [ -z "$PR_NUM" ] || [ "$PR_NUM" = "null" ]; then
+              echo "PR_URL/PR_NUM is missing. Invalidating the step."
+              echo "Target repository: $TARGET_REPO"
+              echo "Base branch: $TARGET_BRANCH"
+              echo "URL VALUE: $PR_URL"
+              echo "Response value: $CREATE_PR"
+              exit 1
+            else
+              echo "Pull Request created in Repo EE: $PR_URL" >> $GITHUB_STEP_SUMMARY
+              echo "Pull Request number: $PR_NUM" >> $GITHUB_STEP_SUMMARY
+            fi
+
+      - name: Set label value based on branch name
+        run: |
+            if [[ $TARGET_BRANCH == bugfix_* ]]; then
+              echo "LABEL=bug" >> $GITHUB_ENV
+            elif [[ $TARGET_BRANCH == improvement_* ]]; then
+              echo "LABEL=improvement" >> $GITHUB_ENV
+            else
+              echo "LABEL=other" >> $GITHUB_ENV
+            fi
+      
+      - name: Set a label on PR
+        continue-on-error: true
+        run: |
+            # Set a label for PR
+            SET_LABEL=$(curl -s -o /dev/null -w "%{http_code}" -X POST --location "https://api.github.com/repos/pimcore/$TARGET_REPO/issues/$PR_NUM/labels" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $PAT" \
+            -d "{
+              \"labels\":[\"$LABEL\", \"ClonedPR\"]
+            }")
+
+            if [[ $SET_LABEL -ne 200 ]]; then
+            echo "Failed to add labels to PR. Please add manually..."
+            fi
