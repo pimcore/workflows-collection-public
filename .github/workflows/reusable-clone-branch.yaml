@@ -58,6 +58,7 @@ jobs:
           exit 0
 
       - name: Prepare base target branch PR in EE repo
+        if: steps.diff-check.outputs.DIFF == ''
         run: |
             DESTINATION_BRANCH="$TARGET_BRANCH-from-CE"
             echo "DESTINATION_BRANCH=$DESTINATION_BRANCH" >> $GITHUB_ENV
@@ -77,6 +78,7 @@ jobs:
             git push $TARGET_REPO $DESTINATION_BRANCH
            
       - name: Create PR in target repo
+        if: steps.diff-check.outputs.DIFF == ''
         run: |
             # Create a PR in Repo EE
             REQ_BODY=$(cat << EOF
@@ -115,6 +117,7 @@ jobs:
             fi
 
       - name: Set label value based on branch name
+        if: steps.diff-check.outputs.DIFF == ''
         run: |
             if [[ $TARGET_BRANCH == bugfix_* ]]; then
               echo "LABEL=bug" >> $GITHUB_ENV
@@ -125,6 +128,7 @@ jobs:
             fi
       
       - name: Set a label on PR
+        if: steps.diff-check.outputs.DIFF == ''
         continue-on-error: true
         run: |
             # Set a label for PR
