@@ -51,9 +51,9 @@ jobs:
         run: |
           git remote add -f $TARGET_REPO https://github.com/pimcore/$TARGET_REPO.git
           git remote update
-          
-          git diff --quiet $BASE_BRANCH remotes/$TARGET_REPO/$TARGET_BRANCH || diff_code=$?
 
+          diff_code=$(git rev-list --count $TARGET_REPO/$TARGET_BRANCH..$BASE_BRANCH)
+          
           if [ "$diff_code" -eq 0 ]; then
             echo "DIFF=false" >> $GITHUB_OUTPUT
           else
