@@ -46,10 +46,11 @@ jobs:
       - name: Check for differences
         id: diff-check
         run: |
-          git fetch origin
-          git fetch https://github.com/pimcore/$TARGET_REPO.git
-          DIFF=$(git diff $TARGET_BRANCH $BASE_BRANCH)
+          git remote add -f $TARGET_REPO https://github.com/pimcore/$TARGET_REPO.git
+          git remote update 
+          DIFF=$(git diff $TARGET_BRANCH remotes/$TARGET_REPO/$BASE_BRANCH)
           echo "DIFF=$DIFF" >> $GITHUB_OUTPUT
+          git remote rm $TARGET_REPO
 
       - name: Skip if no differences
         if: steps.diff-check.outputs.DIFF == ''
