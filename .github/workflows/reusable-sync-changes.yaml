@@ -1,4 +1,4 @@
-name: Clone branch
+name: Sync changes
 
 on:
   workflow_call:
@@ -29,9 +29,12 @@ jobs:
       TARGET_BRANCH: ${{ inputs.base_ref }}
       BASE_BRANCH: ${{ inputs.ref_name }}
       GIT_NAME: ${{ secrets.GIT_NAME }}
-      GIT_EMAIL: ${{ secrets.GIT_EMAIL}}
+      GIT_EMAIL: ${{ secrets.GIT_EMAIL }}
+      WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      WORKFLOW_ID : ${{ github.run_id }}
+
     steps:
-      - name: Checkout repository CE
+      - name: Checkout target branch
         uses: actions/checkout@v4
         with:
             ref: ${{ inputs.base_ref }}
@@ -47,21 +50,28 @@ jobs:
         id: diff-check
         run: |
           git remote add -f $TARGET_REPO https://github.com/pimcore/$TARGET_REPO.git
-          git remote update 
-          DIFF=$(git diff $TARGET_BRANCH remotes/$TARGET_REPO/$BASE_BRANCH)
-          echo "DIFF=$DIFF" >> $GITHUB_OUTPUT
+          git remote update
+          
+          git diff --quiet $BASE_BRANCH $TARGET_REPO/$TARGET_BRANCH || true
+
+          if [ $? -eq 0 ]; then
+            echo "DIFF=false" >> $GITHUB_OUTPUT
+          else
+            echo "DIFF=true" >> $GITHUB_OUTPUT
+          fi
+
           git remote rm $TARGET_REPO
 
       - name: Skip if no differences
-        if: steps.diff-check.outputs.DIFF == ''
+        if: steps.diff-check.outputs.DIFF == 'false'
         run: |
           echo "No differences found. Skipping PR creation." >> $GITHUB_STEP_SUMMARY
           exit 0
 
-      - name: Prepare base target branch PR in EE repo
-        if: steps.diff-check.outputs.DIFF != ''
+      - name: Prepare base target branch PR in target repo
+        if: steps.diff-check.outputs.DIFF == 'true'
         run: |
-            DESTINATION_BRANCH="$TARGET_BRANCH-from-CE"
+            DESTINATION_BRANCH="$TARGET_BRANCH-from-$WORKFLOW_ID"
             echo "DESTINATION_BRANCH=$DESTINATION_BRANCH" >> $GITHUB_ENV
 
             # Ensure we're working with the most recent code and branches
@@ -79,13 +89,13 @@ jobs:
             git push $TARGET_REPO $DESTINATION_BRANCH
            
       - name: Create PR in target repo
-        if: steps.diff-check.outputs.DIFF != ''
+        if: steps.diff-check.outputs.DIFF == 'true'
         run: |
-            # Create a PR in Repo EE
+            # Create a PR in the target repo
             REQ_BODY=$(cat << EOF
             {
-              "title": "Automated PR from CE repository",
-              "body": "This PR is automatically created from CE repository",
+              "title": "Automated PR",
+              "body": "This PR is automatically created from $WORKFLOW_RUN_URL",
               "head": "$DESTINATION_BRANCH",
               "base": "$BASE_BRANCH"
             }
@@ -113,12 +123,12 @@ jobs:
               echo "Response value: $CREATE_PR"
               exit 1
             else
-              echo "Pull Request created in Repo EE: $PR_URL" >> $GITHUB_STEP_SUMMARY
+              echo "Pull Request created in $TARGET_REPO: $PR_URL" >> $GITHUB_STEP_SUMMARY
               echo "Pull Request number: $PR_NUM" >> $GITHUB_STEP_SUMMARY
             fi
 
       - name: Set label value based on branch name
-        if: steps.diff-check.outputs.DIFF != ''
+        if: steps.diff-check.outputs.DIFF == 'true'
         run: |
             if [[ $TARGET_BRANCH == bugfix_* ]]; then
               echo "LABEL=bug" >> $GITHUB_ENV
@@ -129,7 +139,7 @@ jobs:
             fi
       
       - name: Set a label on PR
-        if: steps.diff-check.outputs.DIFF != ''
+        if: steps.diff-check.outputs.DIFF == 'true'
         continue-on-error: true
         run: |
             # Set a label for PR
