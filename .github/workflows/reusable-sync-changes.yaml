@@ -71,7 +71,7 @@ jobs:
       - name: Prepare base target branch PR in target repo
         if: steps.diff-check.outputs.DIFF == 'true'
         run: |
-            DESTINATION_BRANCH="AutomatedPR-from-$WORKFLOW_ID"
+            DESTINATION_BRANCH="AutomatedPR-from-$WORKFLOW_ID-$TARGET_BRANCH"
             echo "DESTINATION_BRANCH=$DESTINATION_BRANCH" >> $GITHUB_ENV
 
             # Ensure we're working with the most recent code and branches
