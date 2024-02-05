@@ -1,0 +1,86 @@
+name: Create release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+          required: true
+          type: string
+          description: 'The target repository where the release will be created without leading pimcore/'
+      sha:
+          required: true
+          type: string
+      tag_name:
+          required: true
+          type: string
+          description: 'The tag name of the release with leading v'
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      TARGET_REPO: ${{ inputs.target_repo }}
+      COMMIT_HASH:  ${{ inputs.sha }}
+      TAG_NAME: ${{ inputs.tag_name }}
+
+    steps:
+      - name: Check exitence of commit hash and tag name in target repo
+        run: |
+          # Check if commit hash exists in target repo
+          CHECK_COMMIT_HASH=$(curl -s -o /dev/null -w "%{http_code}" --location "https://api.github.com/repos/pimcore/$TARGET_REPO/commits/$COMMIT_HASH" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer $RELEASE_TOKEN")
+
+          if [[ $CHECK_COMMIT_HASH -ne 200 ]]; then
+            echo "Non existing commit hash: $COMMIT_HASH" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          # Check if tag name exists in target repo
+          CHECK_TAG_NAME=$(curl -s -o /dev/null -w "%{http_code}" --location "https://api.github.com/repos/pimcore/$TARGET_REPO/git/refs/tags/$TAG_NAME" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer $RELEASE_TOKEN")
+
+          if [[ $CHECK_TAG_NAME -eq 200 ]]; then
+            echo "Tag name already exists: $TAG_NAME" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+      - name: Create a release in target repo
+        run: |
+            # Create release in target repo with default release notes
+
+            # Remove leading v from tag name
+            $RELEASE_NAME = ${TAG_NAME:1} 
+
+            REQ_BODY=$(cat << EOF
+            {
+              "target_commitish": "$COMMIT_HASH",
+              "name": "$RELEASE_NAME",
+              "draft": false,
+              "prerelease": false,
+              "tag_name": "$TAG_NAME",
+              "generate_release_notes": true
+            }
+            EOF
+            )
+
+            CREATE_RELEASE=$(curl -v -w "\nHTTP_STATUS:%{http_code}" -X POST --location "https://api.github.com/repos/pimcore/$TARGET_REPO/releases" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $RELEASE_TOKEN" \
+            -d "$REQ_BODY")
+
+            HTTP_STATUS=$(echo "$CREATE_RELEASE" | awk -F: '/HTTP_STATUS:/ {print $2}')
+
+            if [[ $HTTP_STATUS -ne 201 ]]; then
+              echo "Failed to create release. HTTP Response: $HTTP_STATUS"
+              echo "Please create release manually..."
+              exit 1
+            else
+              RELEASE_URL=$(echo "$CREATE_RELEASE" | awk -F'"' '/"html_url":/ {print $4; exit}')
+              echo "Release created successfully: $RELEASE_URL" >> $GITHUB_STEP_SUMMARY
+            fi
