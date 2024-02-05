@@ -25,9 +25,9 @@ jobs:
     steps:
       - name: Display parameters
         run: |
-          echo "Target repository: $TARGET_REPO" >>> $GITHUB_STEP_SUMMARY
-          echo "Commit hash: $COMMIT_HASH" >>> $GITHUB_STEP_SUMMARY
-          echo "Tag name: $TAG_NAME" >>> $GITHUB_STEP_SUMMARY
+          echo "Target repository: $TARGET_REPO" >> $GITHUB_STEP_SUMMARY
+          echo "Commit hash: $COMMIT_HASH" >> $GITHUB_STEP_SUMMARY
+          echo "Tag name: $TAG_NAME" >> $GITHUB_STEP_SUMMARY
 
   create-release:
     runs-on: ubuntu-latest
