@@ -54,7 +54,7 @@ jobs:
             # Create release in target repo with default release notes
 
             # Remove leading v from tag name
-            $RELEASE_NAME=${TAG_NAME:1} 
+            RELEASE_NAME=${TAG_NAME:1}
 
             REQ_BODY=$(cat << EOF
             {
