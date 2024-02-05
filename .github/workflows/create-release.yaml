@@ -15,6 +15,20 @@ on:
           type: string
           description: 'The tag name of the release with leading v'
 jobs:
+  display-parameters:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_REPO: ${{ inputs.target_repo }}
+      COMMIT_HASH:  ${{ inputs.sha }}
+      TAG_NAME: ${{ inputs.tag_name }}
+
+    steps:
+      - name: Display parameters
+        run: |
+          echo "Target repository: $TARGET_REPO" >>> $GITHUB_STEP_SUMMARY
+          echo "Commit hash: $COMMIT_HASH" >>> $GITHUB_STEP_SUMMARY
+          echo "Tag name: $TAG_NAME" >>> $GITHUB_STEP_SUMMARY
+
   create-release:
     runs-on: ubuntu-latest
     environment: production
