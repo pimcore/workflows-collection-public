@@ -53,6 +53,10 @@ jobs:
           echo "Target repository: $TARGET_REPO" >> $GITHUB_STEP_SUMMARY
           echo "Commit hash: $COMMIT_HASH" >> $GITHUB_STEP_SUMMARY
           echo "Tag name: $TAG_NAME" >> $GITHUB_STEP_SUMMARY
+          echo "Pre-release: $PRE_RELEASE" >> $GITHUB_STEP_SUMMARY
+          echo "Draft: $DRAFT" >> $GITHUB_STEP_SUMMARY
+          echo "Auto changelog: $AUTO_CHANGELOG" >> $GITHUB_STEP_SUMMARY
+          echo "Custom changelog: $CHANGELOG" >> $GITHUB_STEP_SUMMARY
 
   create-release:
     runs-on: ubuntu-latest
