@@ -14,14 +14,39 @@ on:
           required: true
           type: string
           description: 'The tag name of the release with leading v'
+      prerelease:
+        description: 'Release as pre-release'
+        required: true
+        default: false
+        type: boolean
+      draft:
+        description: 'Draft release'
+        required: true
+        default: false
+        type: boolean
+      autoChangelog:
+        description: 'Auto generated release notes'
+        required: true
+        default: true
+        type: boolean
+      changeLog:
+        description: 'Custom release notes'
+        required: false
+        type: string
+
+env:
+  TARGET_REPO: ${{ inputs.target_repo }}
+  COMMIT_HASH:  ${{ inputs.sha }}
+  TAG_NAME: ${{ inputs.tag_name }}
+  PRE_RELEASE: ${{ inputs.prerelease }}
+  DRAFT: ${{ inputs.draft }}
+  AUTO_CHANGELOG: ${{ inputs.autoChangelog }}
+  CHANGELOG: ${{ inputs.changeLog }}
+  RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
 jobs:
   display-parameters:
     runs-on: ubuntu-latest
-    env:
-      TARGET_REPO: ${{ inputs.target_repo }}
-      COMMIT_HASH:  ${{ inputs.sha }}
-      TAG_NAME: ${{ inputs.tag_name }}
-
     steps:
       - name: Display parameters
         run: |
@@ -32,11 +57,6 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     environment: production
-    env:
-      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-      TARGET_REPO: ${{ inputs.target_repo }}
-      COMMIT_HASH:  ${{ inputs.sha }}
-      TAG_NAME: ${{ inputs.tag_name }}
 
     steps:
       - name: Check exitence of commit hash and tag name in target repo
@@ -74,10 +94,11 @@ jobs:
             {
               "target_commitish": "$COMMIT_HASH",
               "name": "$RELEASE_NAME",
-              "draft": false,
-              "prerelease": false,
+              "draft": $DRAFT,
+              "prerelease": $PRE_RELEASE,
               "tag_name": "$TAG_NAME",
-              "generate_release_notes": true
+              "generate_release_notes": "$AUTO_CHANGELOG",
+              "body": "$CHANGELOG"
             }
             EOF
             )
