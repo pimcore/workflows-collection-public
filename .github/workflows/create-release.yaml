@@ -101,7 +101,7 @@ jobs:
               "draft": $DRAFT,
               "prerelease": $PRE_RELEASE,
               "tag_name": "$TAG_NAME",
-              "generate_release_notes": "$AUTO_CHANGELOG",
+              "generate_release_notes": $AUTO_CHANGELOG,
               "body": "$CHANGELOG"
             }
             EOF
