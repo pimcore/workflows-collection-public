@@ -24,6 +24,11 @@ on:
         required: true
         default: false
         type: boolean
+      latest:
+        description: 'Label the release as the latest'
+        required: true
+        default: true
+        type: boolean
       autoChangelog:
         description: 'Auto generated release notes'
         required: true
@@ -40,6 +45,7 @@ env:
   TAG_NAME: ${{ inputs.tag_name }}
   PRE_RELEASE: ${{ inputs.prerelease }}
   DRAFT: ${{ inputs.draft }}
+  LASTEST: ${{ inputs.latest }}
   AUTO_CHANGELOG: ${{ inputs.autoChangelog }}
   CHANGELOG: ${{ inputs.changeLog }}
   RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
@@ -55,6 +61,7 @@ jobs:
           echo "Tag name: $TAG_NAME" >> $GITHUB_STEP_SUMMARY
           echo "Pre-release: $PRE_RELEASE" >> $GITHUB_STEP_SUMMARY
           echo "Draft: $DRAFT" >> $GITHUB_STEP_SUMMARY
+          echo "Latest: $LATEST" >> $GITHUB_STEP_SUMMARY
           echo "Auto changelog: $AUTO_CHANGELOG" >> $GITHUB_STEP_SUMMARY
           echo "Custom changelog: $CHANGELOG" >> $GITHUB_STEP_SUMMARY
 
@@ -99,11 +106,12 @@ jobs:
               "target_commitish": "$COMMIT_HASH",
               "name": "$RELEASE_NAME",
               "draft": $DRAFT,
+              "make_latest": $LATEST,
               "prerelease": $PRE_RELEASE,
               "tag_name": "$TAG_NAME",
               "generate_release_notes": $AUTO_CHANGELOG,
               "body": "$CHANGELOG"
-            }
+              }
             EOF
             )
 
