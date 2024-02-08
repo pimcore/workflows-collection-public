@@ -15,13 +15,14 @@ on:
           type: string
           description: 'The tag name of the release with leading v'
       release_type:
-        description: 'Release type'
+        description: 'Choose relase type'
         default: latest
         required: false
         type: choice
         options: 
           - prerelase
           - latest
+          - regular
       draft:
         description: 'Draft release'
         required: true
@@ -63,7 +64,7 @@ jobs:
           elif [[ $RELEASE_TYPE == "latest" ]]; then
             PRE_RELEASE=false
             LATEST=true
-          else
+          elif [[ $RELEASE_TYPE == "regular" ]]; then
             PRE_RELEASE=false
             LATEST=false
           fi
