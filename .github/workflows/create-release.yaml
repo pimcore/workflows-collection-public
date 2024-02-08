@@ -14,20 +14,18 @@ on:
           required: true
           type: string
           description: 'The tag name of the release with leading v'
-      prerelease:
-        description: 'Release as pre-release'
-        required: true
-        default: false
-        type: boolean
+      release_type:
+        description: 'Release type'
+        default: latest
+        required: false
+        type: choice
+        options: 
+          - prerelase
+          - latest
       draft:
         description: 'Draft release'
         required: true
         default: false
-        type: boolean
-      latest:
-        description: 'Label the release as the latest'
-        required: true
-        default: true
         type: boolean
       autoChangelog:
         description: 'Auto generated release notes'
@@ -43,9 +41,8 @@ env:
   TARGET_REPO: ${{ inputs.target_repo }}
   COMMIT_HASH:  ${{ inputs.sha }}
   TAG_NAME: ${{ inputs.tag_name }}
-  PRE_RELEASE: ${{ inputs.prerelease }}
+  RELEASE_TYPE: ${{ inputs.release_type }}
   DRAFT: ${{ inputs.draft }}
-  LASTEST: ${{ inputs.latest }}
   AUTO_CHANGELOG: ${{ inputs.autoChangelog }}
   CHANGELOG: ${{ inputs.changeLog }}
   RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
@@ -53,22 +50,42 @@ env:
 jobs:
   display-parameters:
     runs-on: ubuntu-latest
+    outputs:
+      latest: ${{ steps.step1.outputs.latest }}
+      prerelease: ${{ steps.step1.outputs.prerelase }}
     steps:
       - name: Display parameters
+        id: step1
         run: |
+          if [[ $RELEASE_TYPE == "prerelase" ]]; then
+            PRE_RELEASE=true
+            LATEST=false
+          elif [[ $RELEASE_TYPE == "latest" ]]; then
+            PRE_RELEASE=false
+            LATEST=true
+          else
+            PRE_RELEASE=false
+            LATEST=false
+          fi
+
+          # Set outputs
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "prerelase=$PRE_RELEASE" >> "$GITHUB_OUTPUT"
+
           echo "Target repository: $TARGET_REPO" >> $GITHUB_STEP_SUMMARY
           echo "Commit hash: $COMMIT_HASH" >> $GITHUB_STEP_SUMMARY
           echo "Tag name: $TAG_NAME" >> $GITHUB_STEP_SUMMARY
-          echo "Pre-release: $PRE_RELEASE" >> $GITHUB_STEP_SUMMARY
           echo "Draft: $DRAFT" >> $GITHUB_STEP_SUMMARY
-          echo "Latest: $LATEST" >> $GITHUB_STEP_SUMMARY
           echo "Auto changelog: $AUTO_CHANGELOG" >> $GITHUB_STEP_SUMMARY
           echo "Custom changelog: $CHANGELOG" >> $GITHUB_STEP_SUMMARY
+          echo "Release type: $RELEASE_TYPE" >> $GITHUB_STEP_SUMMARY
+          echo "Pre-release: $PRE_RELEASE" >> $GITHUB_STEP_SUMMARY
+          echo "Latest: $LATEST" >> $GITHUB_STEP_SUMMARY
 
   create-release:
     runs-on: ubuntu-latest
     environment: production
-
+    needs: display-parameters
     steps:
       - name: Check exitence of commit hash and tag name in target repo
         run: |
@@ -95,6 +112,9 @@ jobs:
           fi
 
       - name: Create a release in target repo
+        env: 
+          LATEST: ${{ needs.display-parameters.outputs.latest }}
+          PRE_RELEASE: ${{ needs.display-parameters.outputs.prerelease }}
         run: |
             # Create release in target repo with default release notes
 
