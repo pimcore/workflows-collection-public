@@ -20,8 +20,8 @@ on:
         required: false
         type: choice
         options: 
-          - prerelase
           - latest
+          - prerelase
           - regular
       draft:
         description: 'Draft release'
