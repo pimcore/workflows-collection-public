@@ -127,7 +127,7 @@ jobs:
               "target_commitish": "$COMMIT_HASH",
               "name": "$RELEASE_NAME",
               "draft": $DRAFT,
-              "make_latest": $LATEST,
+              "make_latest": "$LATEST",
               "prerelease": $PRE_RELEASE,
               "tag_name": "$TAG_NAME",
               "generate_release_notes": $AUTO_CHANGELOG,
