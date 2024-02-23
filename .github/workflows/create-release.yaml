@@ -68,7 +68,7 @@ jobs:
           fi
 
           # Extract target repository and commit hash from commit URL
-          TARGET_REPO=$(echo $COMMIT_URL | awk -F'/' '{print $(NF-1)}')
+          TARGET_REPO=$(echo $COMMIT_URL | awk -F'/' '{print $(NF-2)}')
           COMMIT_HASH=$(echo $COMMIT_URL | awk -F'/' '{print $NF}')
 
           # Set outputs
