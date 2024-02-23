@@ -84,6 +84,7 @@ jobs:
           echo "Release type: $RELEASE_TYPE" >> $GITHUB_STEP_SUMMARY
           echo "Pre-release: $PRE_RELEASE" >> $GITHUB_STEP_SUMMARY
           echo "Latest: $LATEST" >> $GITHUB_STEP_SUMMARY
+          echo "Commit url: $COMMIT_URL" >> $GITHUB_STEP_SUMMARY
 
   create-release:
     runs-on: ubuntu-latest
