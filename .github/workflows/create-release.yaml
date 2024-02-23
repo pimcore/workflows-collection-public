@@ -74,7 +74,9 @@ jobs:
           # Set outputs
           echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
           echo "prerelase=$PRE_RELEASE" >> "$GITHUB_OUTPUT"
-
+          echo "repo_name=$TARGET_REPO" >> "$GITHUB_OUTPUT"
+          echo "commit_hash=$COMMIT_HASH" >> "$GITHUB_OUTPUT"
+          
           echo "Target repository: $TARGET_REPO" >> $GITHUB_STEP_SUMMARY
           echo "Commit hash: $COMMIT_HASH" >> $GITHUB_STEP_SUMMARY
           echo "Tag name: $TAG_NAME" >> $GITHUB_STEP_SUMMARY
