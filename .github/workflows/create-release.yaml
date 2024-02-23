@@ -3,13 +3,10 @@ name: Create release
 on:
   workflow_dispatch:
     inputs:
-      target_repo:
+      commit_url:
           required: true
           type: string
-          description: 'The target repository where the release will be created without leading pimcore/'
-      sha:
-          required: true
-          type: string
+          description: 'URL of commit for which release will be created'
       tag_name:
           required: true
           type: string
@@ -39,8 +36,7 @@ on:
         type: string
 
 env:
-  TARGET_REPO: ${{ inputs.target_repo }}
-  COMMIT_HASH:  ${{ inputs.sha }}
+  COMMIT_URL:  ${{ inputs.commit_url }}
   TAG_NAME: ${{ inputs.tag_name }}
   RELEASE_TYPE: ${{ inputs.release_type }}
   DRAFT: ${{ inputs.draft }}
@@ -54,6 +50,8 @@ jobs:
     outputs:
       latest: ${{ steps.step1.outputs.latest }}
       prerelease: ${{ steps.step1.outputs.prerelase }}
+      target_repo: ${{ steps.step1.outputs.repo_name }}
+      commit_hash: ${{ steps.step1.outputs.commit_hash }}
     steps:
       - name: Display parameters
         id: step1
@@ -69,10 +67,16 @@ jobs:
             LATEST=false
           fi
 
+          # Extract target repository and commit hash from commit URL
+          TARGET_REPO=$(echo $COMMIT_URL | awk -F'/' '{print $(NF-2)}')
+          COMMIT_HASH=$(echo $COMMIT_URL | awk -F'/' '{print $NF}')
+
           # Set outputs
           echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
           echo "prerelase=$PRE_RELEASE" >> "$GITHUB_OUTPUT"
-
+          echo "repo_name=$TARGET_REPO" >> "$GITHUB_OUTPUT"
+          echo "commit_hash=$COMMIT_HASH" >> "$GITHUB_OUTPUT"
+          
           echo "Target repository: $TARGET_REPO" >> $GITHUB_STEP_SUMMARY
           echo "Commit hash: $COMMIT_HASH" >> $GITHUB_STEP_SUMMARY
           echo "Tag name: $TAG_NAME" >> $GITHUB_STEP_SUMMARY
@@ -82,11 +86,15 @@ jobs:
           echo "Release type: $RELEASE_TYPE" >> $GITHUB_STEP_SUMMARY
           echo "Pre-release: $PRE_RELEASE" >> $GITHUB_STEP_SUMMARY
           echo "Latest: $LATEST" >> $GITHUB_STEP_SUMMARY
+          echo "Commit url: $COMMIT_URL" >> $GITHUB_STEP_SUMMARY
 
   create-release:
     runs-on: ubuntu-latest
     environment: production
     needs: display-parameters
+    env:
+      COMMIT_HASH: ${{ needs.display-parameters.outputs.commit_hash }}
+      TARGET_REPO: ${{ needs.display-parameters.outputs.target_repo }}
     steps:
       - name: Check exitence of commit hash and tag name in target repo
         run: |
@@ -116,6 +124,8 @@ jobs:
         env: 
           LATEST: ${{ needs.display-parameters.outputs.latest }}
           PRE_RELEASE: ${{ needs.display-parameters.outputs.prerelease }}
+          COMMIT_HASH: ${{ needs.display-parameters.outputs.commit_hash }}
+          TARGET_REPO: ${{ needs.display-parameters.outputs.target_repo }}
         run: |
             # Create release in target repo with default release notes
 
