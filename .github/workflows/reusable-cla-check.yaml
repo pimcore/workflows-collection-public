@@ -9,7 +9,12 @@ on:
       github_event_payload:
         required: true
         type: string
-
+    secrets:
+      GITHUB_TOKEN:
+        required: true
+      PERSONAL_ACCESS_TOKEN:
+        required: true
+        
 jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
@@ -20,7 +25,7 @@ jobs:
         uses: contributor-assistant/github-action@v2.3.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN   }}
         with:
           path-to-signatures: "signatures/version1/cla.json"
           path-to-document: "https://github.com/pimcore/pimcore/blob/master/CLA.md"
