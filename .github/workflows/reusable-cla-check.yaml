@@ -2,13 +2,6 @@ name: "CLA Check Workflow"
 
 on:
   workflow_call:
-    inputs:
-      github_event_name:
-        required: true
-        type: string
-      github_event_payload:
-        required: true
-        type: string
     secrets:
       PERSONAL_ACCESS_TOKEN:
         required: true
@@ -18,8 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "CLA Assistant"
-        # Use conditionals to check for specific events or event details passed as inputs
-        if: ${{ inputs.github_event_name == 'pull_request_target' || contains(fromJson(inputs.github_event_payload).comment.body, 'recheck') || contains(fromJson(inputs.github_event_payload).comment.body, 'I have read the CLA Document and I hereby sign the CLA') }}
         uses: contributor-assistant/github-action@v2.3.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
