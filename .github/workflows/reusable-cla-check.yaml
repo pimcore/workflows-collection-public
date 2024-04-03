@@ -3,7 +3,7 @@ name: "CLA Check Workflow"
 on:
   workflow_call:
     secrets:
-      PERSONAL_ACCESS_TOKEN:
+      CLA_ACTION_ACCESS_TOKEN:
         required: true
 
 jobs:
@@ -14,7 +14,7 @@ jobs:
         uses: contributor-assistant/github-action@v2.3.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_ACTION_ACCESS_TOKEN }}
         with:
           path-to-signatures: "signatures/version1/cla.json"
           path-to-document: "https://github.com/pimcore/pimcore/blob/master/CLA.md"
