@@ -11,7 +11,7 @@ on:
 jobs:
   Qodana:
     timeout-minutes: 15
-    runs-on: Qodana-Runner
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
