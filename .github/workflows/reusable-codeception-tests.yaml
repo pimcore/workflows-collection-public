@@ -2,6 +2,14 @@ name: "Codeception tests"
 
 on:
   workflow_call:
+    inputs:
+      workflow_id:
+        PIMCORE_PROJECT_ROOT:
+          required: true
+        APP_ENV:
+          required: true
+        PIMCORE_TEST:
+          required: true
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
         required: true
@@ -15,6 +23,9 @@ jobs:
     continue-on-error: ${{ matrix.experimental }}
     env:
       PIMCORE_TEST_DB_DSN: "mysql://root@127.0.0.1:33006/pimcore_test?serverVersion=${{ matrix.server_version }}"
+      PIMCORE_PROJECT_ROOT: ${{ inputs.PIMCORE_PROJECT_ROOT }}
+      APP_ENV: ${{ inputs.APP_ENV }}
+      PIMCORE_TEST: ${{ inputs.PIMCORE_TEST }}
     strategy:
       matrix:
         include:
