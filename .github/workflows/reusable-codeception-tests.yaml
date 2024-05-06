@@ -4,12 +4,12 @@ on:
   workflow_call:
     inputs:
       workflow_id:
-        PIMCORE_PROJECT_ROOT:
-          required: true
-        APP_ENV:
-          required: true
-        PIMCORE_TEST:
-          required: true
+      PIMCORE_PROJECT_ROOT:
+        required: true
+      APP_ENV:
+        required: true
+      PIMCORE_TEST:
+        required: true
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
         required: true
