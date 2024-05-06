@@ -3,7 +3,6 @@ name: "Codeception tests"
 on:
   workflow_call:
     inputs:
-      workflow_id:
       PIMCORE_PROJECT_ROOT:
         required: true
       APP_ENV:
