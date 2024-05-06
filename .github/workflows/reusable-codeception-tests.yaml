@@ -3,9 +3,6 @@ name: "Codeception tests"
 on:
   workflow_call:
     inputs:
-      PIMCORE_PROJECT_ROOT:
-        required: true
-        type: string
       APP_ENV:
         required: true
         type: string
@@ -25,7 +22,7 @@ jobs:
     continue-on-error: ${{ matrix.experimental }}
     env:
       PIMCORE_TEST_DB_DSN: "mysql://root@127.0.0.1:33006/pimcore_test?serverVersion=${{ matrix.server_version }}"
-      PIMCORE_PROJECT_ROOT: ${{ inputs.PIMCORE_PROJECT_ROOT }}
+      PIMCORE_PROJECT_ROOT: ${{ github.workspace }}
       APP_ENV: ${{ inputs.APP_ENV }}
       PIMCORE_TEST: ${{ inputs.PIMCORE_TEST }}
     strategy:
