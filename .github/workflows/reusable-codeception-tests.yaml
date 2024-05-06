@@ -5,10 +5,13 @@ on:
     inputs:
       PIMCORE_PROJECT_ROOT:
         required: true
+        type: string
       APP_ENV:
         required: true
+        type: string
       PIMCORE_TEST:
         required: true
+        type: string
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
         required: true
