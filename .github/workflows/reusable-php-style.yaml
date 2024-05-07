@@ -6,6 +6,10 @@ on:
       head_ref:
         required: true
         type: string
+      config_file:
+        default: ".php_cs.dist"
+        required: false
+        type: string
 
 jobs:
   php-cs-fixer:
@@ -18,7 +22,7 @@ jobs:
       - name: PHP-CS-Fixer
         uses: docker://oskarstark/php-cs-fixer-ga:2.19.0
         with:
-          args: --config=.php_cs.dist --allow-risky yes
+          args: --config=${{ inpunt.config_file }} --allow-risky yes
 
       - uses: stefanzweifel/git-auto-commit-action@v4
         with:
