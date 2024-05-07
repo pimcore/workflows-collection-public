@@ -1,0 +1,33 @@
+name: "PHP Style check"
+
+on:
+  workflow_call:
+    inputs:
+      head_ref:
+        required: true
+        type: string
+      config_file:
+        default: ".php_cs.dist"
+        required: false
+        type: string
+    secrets:
+      PHP_CS_FIXER_GITHUB_TOKEN:
+        required: true
+
+jobs:
+  php-cs-fixer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_ref }}
+          token: ${{ secrets.PHP_CS_FIXER_GITHUB_TOKEN }}
+
+      - name: PHP-CS-Fixer
+        uses: docker://oskarstark/php-cs-fixer-ga:2.19.0
+        with:
+          args: --config=${{ inputs.config_file }} --allow-risky yes
+
+      - uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: Apply php-cs-fixer changes
