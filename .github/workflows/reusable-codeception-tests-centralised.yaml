@@ -1,0 +1,105 @@
+name: "Codeception tests"
+
+on:
+  workflow_call:
+    inputs:
+      APP_ENV:
+        required: true
+        type: string
+      PIMCORE_TEST:
+        required: true
+        type: string
+      PUBLIC_REPO:
+        required: true
+        type: boolean
+      PHP_VERSION:
+        required: true
+        type: string
+      DATABASE:
+        required: true
+        type: string
+      SERVER_VERSION:
+        required: true
+        type: string
+      DEPENDENCIES:
+        required: true
+        type: string
+      EXPERIMENTAL:
+        required: true
+        type: boolean
+      PIMCORE_VERSION:
+        required: false
+        type: string
+
+    secrets:
+      COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
+        required: true
+      SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER:
+        required: true
+
+jobs:
+  codeception-tests:
+    name: "Codeception tests"
+    runs-on: "ubuntu-20.04"
+    continue-on-error: ${{ inputs.EXPERIMENTAL }}
+    env:
+      PIMCORE_TEST_DB_DSN: "mysql://root@127.0.0.1:33006/pimcore_test?serverVersion=${{ inputs.SERVER_VERSION }}"
+      PIMCORE_PROJECT_ROOT: ${{ github.workspace }}
+      APP_ENV: ${{ inputs.APP_ENV }}
+      PIMCORE_TEST: ${{ inputs.PIMCORE_TEST }}
+    services:
+      mariadb:
+        image: "${{ inputs.DATABASE }}"
+        ports:
+          - 33006:3306
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: yes
+    steps:
+      - name: "Checkout code"
+        uses: "actions/checkout@v4"
+
+      - name: "Install PHP"
+        uses: "shivammathur/setup-php@v2"
+        with:
+          coverage: "none"
+          extensions: imagick
+          ini-values: display_errors=On, display_startup_errors=On, error_reporting=32767
+          php-version: "${{ inputs.PHP_VERSION }}"
+
+      - name: Verify MariaDB connection
+        run: |
+          cp .github/ci/files/.my.cnf ~/.my.cnf
+          while ! mysqladmin ping --silent; do
+            sleep 1
+          done
+      - name: "Setup Pimcore environment"
+        run: |
+          mysql -e "CREATE DATABASE pimcore_test CHARSET=utf8mb4;"
+          chmod 755 .github/ci/scripts/setup-pimcore-environment.sh
+          .github/ci/scripts/setup-pimcore-environment.sh
+
+      - name: Install SSH Key # this is necessary for Composer to be able to clone source from pimcore/ee-pimcore
+        if: ${{ inputs.PUBLIC_REPO == false }}
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
+          known_hosts: ".... we add this in the next step ;-)"
+
+      - name: "Add authentication for private pimcore packages"
+        if: ${{ inputs.PUBLIC_REPO == false }}
+        run: |
+          composer config repositories.private-packagist composer https://repo.pimcore.com/github-actions/
+          composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
+
+      - name: "Update Pimcore version"
+        env:
+          PIMCORE_VERSION: "${{ inputs.PIMCORE_VERSION }}"
+        run: |
+          composer require --no-update pimcore/pimcore:"${PIMCORE_VERSION}"
+      - name: "Install dependencies with Composer"
+        uses: "ramsey/composer-install@v3"
+        with:
+          dependency-versions: "${{ inputs.DEPENDENCIES }}"
+
+      - name: "Run Codeception"
+        run: "vendor/bin/codecept run -c . -vvv --xml"
