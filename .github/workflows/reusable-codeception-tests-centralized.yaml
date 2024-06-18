@@ -93,9 +93,12 @@ jobs:
 
       - name: "Update Pimcore version"
         env:
-          PIMCORE_VERSION: "${{ inputs.PIMCORE_VERSION }}"
+          PIMCORE_VERSION: "${{ matrix.pimcore_version }}"
         run: |
-          composer require --no-update pimcore/pimcore:"${PIMCORE_VERSION}"
+          if [ ! -z "$PIMCORE_VERSION" ]; then
+                composer require --no-update pimcore/pimcore:"${PIMCORE_VERSION}"
+          fi
+
       - name: "Install dependencies with Composer"
         uses: "ramsey/composer-install@v3"
         with:
