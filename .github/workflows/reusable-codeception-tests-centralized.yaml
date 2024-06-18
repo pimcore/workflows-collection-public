@@ -77,8 +77,9 @@ jobs:
           while ! mysqladmin ping --silent; do
             sleep 1
           done
-          
+
       - name: "Setup Pimcore environment"
+        if: ${{ inputs.DATABASE != '' }}  
         run: |
           mysql -e "CREATE DATABASE pimcore_test CHARSET=utf8mb4;"
           chmod 755 .github/ci/scripts/setup-pimcore-environment.sh
