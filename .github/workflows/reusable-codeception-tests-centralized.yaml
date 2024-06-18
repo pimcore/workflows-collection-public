@@ -16,10 +16,10 @@ on:
         required: true
         type: string
       DATABASE:
-        required: true
+        required: false
         type: string
       SERVER_VERSION:
-        required: true
+        required: false
         type: string
       DEPENDENCIES:
         required: true
