@@ -93,7 +93,7 @@ jobs:
 
       - name: "Update Pimcore version"
         env:
-          PIMCORE_VERSION: "${{ inputs.pimcore_version }}"
+          PIMCORE_VERSION: "${{ inputs.PIMCORE_VERSION }}"
         run: |
           if [ ! -z "$PIMCORE_VERSION" ]; then
                 composer require --no-update pimcore/pimcore:"${PIMCORE_VERSION}"
