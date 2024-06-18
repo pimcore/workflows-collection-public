@@ -16,10 +16,10 @@ on:
         required: true
         type: string
       DATABASE:
-        required: true
+        required: false
         type: string
       SERVER_VERSION:
-        required: true
+        required: false
         type: string
       DEPENDENCIES:
         required: true
@@ -30,12 +30,16 @@ on:
       PIMCORE_VERSION:
         required: false
         type: string
+      COVERAGE:
+        required: false
+        type: string
+        default: "none"
 
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
-        required: true
+        required: false
       SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER:
-        required: true
+        required: false
 
 jobs:
   codeception-tests:
@@ -61,18 +65,21 @@ jobs:
       - name: "Install PHP"
         uses: "shivammathur/setup-php@v2"
         with:
-          coverage: "none"
+          coverage: "${{ inputs.COVERAGE }}"
           extensions: imagick
           ini-values: display_errors=On, display_startup_errors=On, error_reporting=32767
           php-version: "${{ inputs.PHP_VERSION }}"
 
       - name: Verify MariaDB connection
+        if: ${{ inputs.DATABASE != '' }}
         run: |
           cp .github/ci/files/.my.cnf ~/.my.cnf
           while ! mysqladmin ping --silent; do
             sleep 1
           done
+
       - name: "Setup Pimcore environment"
+        if: ${{ inputs.DATABASE != '' }}  
         run: |
           mysql -e "CREATE DATABASE pimcore_test CHARSET=utf8mb4;"
           chmod 755 .github/ci/scripts/setup-pimcore-environment.sh
@@ -95,7 +102,10 @@ jobs:
         env:
           PIMCORE_VERSION: "${{ inputs.PIMCORE_VERSION }}"
         run: |
-          composer require --no-update pimcore/pimcore:"${PIMCORE_VERSION}"
+          if [ ! -z "$PIMCORE_VERSION" ]; then
+                composer require --no-update pimcore/pimcore:"${PIMCORE_VERSION}"
+          fi
+
       - name: "Install dependencies with Composer"
         uses: "ramsey/composer-install@v3"
         with:
