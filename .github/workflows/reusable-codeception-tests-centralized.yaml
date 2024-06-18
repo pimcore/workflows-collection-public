@@ -30,6 +30,10 @@ on:
       PIMCORE_VERSION:
         required: false
         type: string
+      COVERAGE:
+        required: false
+        type: string
+        default: "none"
 
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
@@ -61,7 +65,7 @@ jobs:
       - name: "Install PHP"
         uses: "shivammathur/setup-php@v2"
         with:
-          coverage: "none"
+          coverage: "${{ inputs.COVERAGE }}"
           extensions: imagick
           ini-values: display_errors=On, display_startup_errors=On, error_reporting=32767
           php-version: "${{ inputs.PHP_VERSION }}"
