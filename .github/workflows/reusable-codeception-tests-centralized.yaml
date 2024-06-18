@@ -33,9 +33,9 @@ on:
 
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
-        required: true
+        required: false
       SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER:
-        required: true
+        required: false
 
 jobs:
   codeception-tests:
