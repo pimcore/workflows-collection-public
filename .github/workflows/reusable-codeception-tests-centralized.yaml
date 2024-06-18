@@ -71,11 +71,13 @@ jobs:
           php-version: "${{ inputs.PHP_VERSION }}"
 
       - name: Verify MariaDB connection
+        if: ${{ inputs.DATABASE != '' }}
         run: |
           cp .github/ci/files/.my.cnf ~/.my.cnf
           while ! mysqladmin ping --silent; do
             sleep 1
           done
+          
       - name: "Setup Pimcore environment"
         run: |
           mysql -e "CREATE DATABASE pimcore_test CHARSET=utf8mb4;"
