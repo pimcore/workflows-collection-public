@@ -1,5 +1,5 @@
 {
-  "include": [
+  "configs": [
     {
       "php_version": "8.2",
       "matrix": [
