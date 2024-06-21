@@ -26,7 +26,7 @@ on:
         type: string
       EXPERIMENTAL:
         required: true
-        type: boolean
+        type: string
       PIMCORE_VERSION:
         required: false
         type: string
