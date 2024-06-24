@@ -21,7 +21,7 @@
       ]
     },
     {
-      "php_version": "8.1",
+      "php_version": "8.5",
       "matrix": [
         {
           "php-version": "8.1",
