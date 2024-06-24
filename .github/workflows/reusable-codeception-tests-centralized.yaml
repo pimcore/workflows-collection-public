@@ -9,9 +9,9 @@ on:
       PIMCORE_TEST:
         required: true
         type: string
-      PUBLIC_REPO:
+      PRIVATE_REPO:
         required: true
-        type: boolean
+        type: string
       PHP_VERSION:
         required: true
         type: string
@@ -86,14 +86,14 @@ jobs:
           .github/ci/scripts/setup-pimcore-environment.sh
 
       - name: Install SSH Key # this is necessary for Composer to be able to clone source from pimcore/ee-pimcore
-        if: ${{ inputs.PUBLIC_REPO == false }}
+        if: ${{ inputs.PRIVATE_REPO == 'true' }}
         uses: shimataro/ssh-key-action@v2
         with:
           key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
           known_hosts: ".... we add this in the next step ;-)"
 
       - name: "Add authentication for private pimcore packages"
-        if: ${{ inputs.PUBLIC_REPO == false }}
+        if: ${{ inputs.PRIVATE_REPO == 'true' }}
         run: |
           composer config repositories.private-packagist composer https://repo.pimcore.com/github-actions/
           composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
