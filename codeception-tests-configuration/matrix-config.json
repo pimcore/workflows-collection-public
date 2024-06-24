@@ -31,6 +31,18 @@
           "experimental": "false"
         }
       ]
+    },
+    {
+      "php_version": "8.4",
+      "matrix": [
+        {
+          "php-version": "8.1",
+          "database": "mariadb:10.6",
+          "server_version": "10.6.5-MariaDB-1:10.6.5+maria~ubu2004",
+          "dependencies": "lowest",
+          "experimental": "false"
+        }
+      ]
     }
   ]
 }
