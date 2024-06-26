@@ -1,0 +1,115 @@
+name: "Static analysis"
+
+on:
+  workflow_call:
+    inputs:
+      APP_ENV:
+        required: true
+        type: string
+      PIMCORE_TEST:
+        required: true
+        type: string
+      PRIVATE_REPO:
+        required: true
+        type: string
+      PHP_VERSION:
+        required: true
+        type: string
+      SYMFONY:
+        required: false
+        type: string
+      DEPENDENCIES:
+        required: true
+        type: string
+      EXPERIMENTAL:
+        required: true
+        type: string
+      PIMCORE_VERSION:
+        required: false
+        type: string
+      COVERAGE:
+        required: false
+        type: string
+        default: "none"
+      COMPOSER_OPTIONS:
+        required: false
+        type: string
+
+    secrets:
+      COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
+        required: false
+      SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER:
+        required: false
+
+jobs:
+  static-analysis:
+    name: "Static analysis with phpstan"
+    runs-on: "ubuntu-latest"
+    continue-on-error: ${{ inputs.EXPERIMENTAL == 'true' }}
+    env:
+      PIMCORE_PROJECT_ROOT: ${{ github.workspace }}
+      APP_ENV: ${{ inputs.APP_ENV }}
+      PIMCORE_TEST: ${{ inputs.PIMCORE_TEST }}
+
+    steps:
+      - name: "Checkout code"
+        uses: "actions/checkout@v4"
+
+      - name: "Install PHP"
+        uses: "shivammathur/setup-php@v2"
+        with:
+          coverage: "${{ inputs.COVERAGE }}"
+          php-version: "${{ inputs.PHP_VERSION }}"
+
+      - name: "Setup Pimcore environment"
+        run: |
+            .github/ci/scripts/setup-pimcore-environment.sh
+
+      - name: "Set Symfony version constraint in composer.json"
+        env:
+            SYMFONY_VERSION: "${{ inputs.SYMFONY }}"
+        run: |
+            if [ ! -z "$SYMFONY_VERSION" ]; then
+              .github/ci/scripts/symfony-require-dev.sh
+            fi
+          
+      - name: Install SSH Key # this is necessary for Composer to be able to clone source from pimcore/ee-pimcore
+        if: ${{ inputs.PRIVATE_REPO == 'true' }}
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
+          known_hosts: ".... we add this in the next step ;-)"
+
+      - name: "Add authentication for private pimcore packages"
+        if: ${{ inputs.PRIVATE_REPO == 'true' }}
+        run: |
+          composer config repositories.private-packagist composer https://repo.pimcore.com/github-actions/
+          composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
+
+      - name: "Update Pimcore version"
+        env:
+          PIMCORE_VERSION: "${{ inputs.PIMCORE_VERSION }}"
+        run: |
+          if [ ! -z "$PIMCORE_VERSION" ]; then
+                composer require --no-update pimcore/pimcore:"${PIMCORE_VERSION}"
+          fi
+
+      - name: "Install dependencies with Composer"
+        uses: "ramsey/composer-install@v3"
+        with:
+          dependency-versions: "${{ inputs.DEPENDENCIES }}"
+          composer-options: "${{ inputs.COMPOSER_OPTIONS }}"
+
+      - name: "Run a static analysis with phpstan/phpstan"
+        run: "vendor/bin/phpstan analyse --memory-limit=-1"
+
+      - name: "Generate baseline file"
+        if: ${{ failure() }}
+        run: "vendor/bin/phpstan analyse --memory-limit=-1 --generate-baseline"
+
+      - name: "Upload baseline file"
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v2
+        with:
+            name: phpstan-baseline.neon
+            path: phpstan-baseline.neon
