@@ -62,8 +62,8 @@ jobs:
           php-version: "${{ inputs.PHP_VERSION }}"
 
       - name: "Setup Pimcore environment"
-          run: |
-              .github/ci/scripts/setup-pimcore-environment.sh
+        run: |
+            .github/ci/scripts/setup-pimcore-environment.sh
 
       - name: "Set Symfony version constraint in composer.json"
         env:
