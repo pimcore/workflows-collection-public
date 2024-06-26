@@ -42,8 +42,8 @@ on:
         required: false
 
 jobs:
-  codeception-tests:
-    name: "Codeception tests"
+  static-analysis:
+    name: "Static analysis with phpstan"
     runs-on: "ubuntu-latest"
     continue-on-error: ${{ inputs.EXPERIMENTAL == 'true' }}
     env:
