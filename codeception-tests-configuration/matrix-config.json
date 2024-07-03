@@ -5,16 +5,19 @@
       "matrix": [
         {
           "php-version": "8.1",
+          "database": "mariadb:10.7",
           "dependencies": "lowest",
           "experimental": "false"
         },
         {
           "php-version": "8.3",
+          "database": "mariadb:10.7",
           "dependencies": "highest",
           "experimental": "false"
         },
         {
           "php-version": "8.3",
+          "database": "mariadb:10.7",
           "dependencies": "highest",
           "pimcore_version": "11.x-dev as 11.99.9",
           "experimental": "true"
@@ -26,16 +29,19 @@
       "matrix": [
         {
           "php-version": "8.1",
+          "database": "mariadb:10.7",
           "dependencies": "lowest",
           "experimental": "false"
         },
         {
           "php-version": "8.3",
+          "database": "mariadb:10.7",
           "dependencies": "highest",
           "experimental": "false"
         },
         {
           "php-version": "8.3",
+          "database": "mariadb:10.7",
           "dependencies": "highest",
           "pimcore_version": "11.x-dev as 11.99.9",
           "experimental": "true"
@@ -47,16 +53,19 @@
       "matrix": [
         {
           "php-version": "8.2",
+          "database": "mariadb:10.7",
           "dependencies": "lowest",
           "experimental": "false"
         },
         {
           "php-version": "8.3",
+          "database": "mariadb:10.7",
           "dependencies": "highest",
           "experimental": "false"
         },
         {
           "php-version": "8.3",
+          "database": "mariadb:10.7",
           "dependencies": "highest",
           "pimcore_version": "11.x-dev as 11.99.9",
           "experimental": "true"
@@ -68,16 +77,19 @@
       "matrix": [
         {
           "php-version": "8.2",
+          "database": "mariadb:10.7",
           "dependencies": "lowest",
           "experimental": "false"
         },
         {
           "php-version": "8.2",
+          "database": "mariadb:10.7",
           "dependencies": "highest",
           "experimental": "false"
         },
         {
           "php-version": "8.2",
+          "database": "mariadb:10.7",
           "dependencies": "highest",
           "pimcore_version": "11.x-dev as 11.99.9",
           "experimental": "true"
@@ -89,16 +101,19 @@
       "matrix": [
         {
           "php-version": "8.1",
+          "database": "mariadb:10.7",
           "dependencies": "lowest",
           "experimental": "false"
         },
         {
           "php-version": "8.2",
+          "database": "mariadb:10.7",
           "dependencies": "highest",
           "experimental": "false"
         },
         {
           "php-version": "8.2",
+          "database": "mariadb:10.7",
           "dependencies": "highest",
           "pimcore_version": "11.x-dev as 11.99.9",
           "experimental": "true"
