@@ -78,10 +78,13 @@ jobs:
             sleep 1
           done
 
-      - name: "Setup Pimcore environment"
-        if: ${{ inputs.DATABASE != '' }}  
+      - name: "Create Database"
+        if: ${{ inputs.DATABASE != '' }}
         run: |
           mysql -e "CREATE DATABASE pimcore_test CHARSET=utf8mb4;"
+
+      - name: "Setup Pimcore environment"
+        run: |
           chmod 755 .github/ci/scripts/setup-pimcore-environment.sh
           .github/ci/scripts/setup-pimcore-environment.sh
 
