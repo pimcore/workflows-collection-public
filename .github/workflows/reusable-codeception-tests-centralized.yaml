@@ -18,6 +18,7 @@ on:
       DATABASE:
         required: false
         type: string
+        default: "mariadb:10.7"
       SERVER_VERSION:
         required: false
         type: string
@@ -71,7 +72,6 @@ jobs:
           php-version: "${{ inputs.PHP_VERSION }}"
 
       - name: Verify MariaDB connection
-        if: ${{ inputs.DATABASE != '' }}
         run: |
           cp .github/ci/files/.my.cnf ~/.my.cnf
           while ! mysqladmin ping --silent; do
@@ -79,7 +79,6 @@ jobs:
           done
 
       - name: "Create Database"
-        if: ${{ inputs.DATABASE != '' }}
         run: |
           mysql -e "CREATE DATABASE pimcore_test CHARSET=utf8mb4;"
 
