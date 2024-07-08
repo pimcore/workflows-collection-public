@@ -19,7 +19,7 @@ on:
 
 jobs:
   php-cs-fixer:
-    if: github.repository_owner == 'pimcore'
+    if: github.repository_owner == 'wasauchimmer'
     permissions:
       contents: write # for stefanzweifel/git-auto-commit-action to push code in repo
     runs-on: ubuntu-latest
