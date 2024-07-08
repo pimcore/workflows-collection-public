@@ -23,6 +23,8 @@ jobs:
       contents: write # for stefanzweifel/git-auto-commit-action to push code in repo
     runs-on: ubuntu-latest
     steps:
+      - name: Print
+        run: env | sort
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.head_ref }}
