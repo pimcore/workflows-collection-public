@@ -8,6 +8,7 @@ permissions:
   
 jobs:
   stale:
+    if: github.repository_owner == 'pimcore'
     permissions:
       issues: write
     runs-on: ubuntu-latest

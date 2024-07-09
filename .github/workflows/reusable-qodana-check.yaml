@@ -10,6 +10,7 @@ on:
 
 jobs:
   Qodana:
+    if: github.repository_owner == 'pimcore'
     timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
