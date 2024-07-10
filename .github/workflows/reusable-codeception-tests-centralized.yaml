@@ -84,7 +84,7 @@ jobs:
       - name: "Add private pimcore packages"
         if: ${{ inputs.PRIVATE_REPO == 'true' }}
         run: |
-          composer config [--global] github-oauth.github.com ${{ secrets.GITHUB_TOKEN }}
+          composer config --global github-oauth.github.com ${{ secrets.GITHUB_TOKEN }}
           composer config repositories.pimcore-pimcore vcs git@github.com:pimcore/ee-pimcore.git
 
       - name: "Add public pimcore packages"
