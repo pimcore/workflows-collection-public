@@ -36,12 +36,6 @@ on:
         type: string
         default: "none"
 
-    secrets:
-      COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
-        required: false
-      SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER:
-        required: false
-
 jobs:
   codeception-tests:
     name: "Codeception tests"

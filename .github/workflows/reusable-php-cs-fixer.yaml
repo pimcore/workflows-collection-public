@@ -3,12 +3,6 @@ name: "PHP-CS-Fixer"
 on:
   workflow_call:
     inputs:
-      head_ref:
-        required: true
-        type: string
-      repository:
-        required: true
-        type: string
       config_file:
         default: ".php_cs.dist"
         required: false
@@ -24,9 +18,6 @@ jobs:
       - name: Print
         run: env | sort
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.head_ref }}
-          repository: ${{ inputs.repository }}
 
       - name: PHP-CS-Fixer
         uses: docker://oskarstark/php-cs-fixer-ga:latest
