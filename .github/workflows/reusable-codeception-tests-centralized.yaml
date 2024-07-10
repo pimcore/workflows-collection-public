@@ -86,6 +86,7 @@ jobs:
         run: |
           composer config --global github-oauth.github.com ${{ secrets.GITHUB_TOKEN }}
           composer config repositories.pimcore-pimcore vcs git@github.com:pimcore/ee-pimcore.git
+          composer config repositories.pimcore-enterprise-subscription-tools vcs git@github.com:pimcore/enterprise-subscription-tools.git
 
       - name: "Add public pimcore packages"
         if: ${{ inputs.PRIVATE_REPO == 'false' }}
