@@ -64,7 +64,6 @@ jobs:
           extensions: imagick
           ini-values: display_errors=On, display_startup_errors=On, error_reporting=32767
           php-version: "${{ inputs.PHP_VERSION }}"
-          github_token: "${{ secrets.GITHUB_TOKEN }}"
 
       - name: Verify MariaDB connection
         run: |
@@ -85,6 +84,7 @@ jobs:
       - name: "Add private pimcore packages"
         if: ${{ inputs.PRIVATE_REPO == 'true' }}
         run: |
+          composer config [--global] github-oauth.github.com ${{ secrets.GITHUB_TOKEN }}
           composer config repositories.pimcore-pimcore vcs git@github.com:pimcore/ee-pimcore.git
 
       - name: "Add public pimcore packages"
