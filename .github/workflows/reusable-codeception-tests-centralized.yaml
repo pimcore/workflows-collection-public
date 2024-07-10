@@ -81,10 +81,15 @@ jobs:
           chmod 755 .github/ci/scripts/setup-pimcore-environment.sh
           .github/ci/scripts/setup-pimcore-environment.sh
 
-      - name: "Add authentication for private pimcore packages"
+      - name: "Add private pimcore packages"
         if: ${{ inputs.PRIVATE_REPO == 'true' }}
         run: |
           composer config repositories.pimcore-pimcore vcs git@github.com:pimcore/ee-pimcore.git
+
+      - name: "Add public pimcore packages"
+        if: ${{ inputs.PRIVATE_REPO == 'false' }}
+        run: |
+          composer config repositories.pimcore-pimcore vcs git@github.com:pimcore/pimcore.git
 
       - name: "Update Pimcore version"
         env:
