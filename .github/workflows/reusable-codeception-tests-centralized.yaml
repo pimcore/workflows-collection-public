@@ -64,6 +64,7 @@ jobs:
           extensions: imagick
           ini-values: display_errors=On, display_startup_errors=On, error_reporting=32767
           php-version: "${{ inputs.PHP_VERSION }}"
+          github_token: "${{ secrets.GITHUB_TOKEN }}"
 
       - name: Verify MariaDB connection
         run: |
