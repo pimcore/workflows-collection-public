@@ -13,12 +13,10 @@ on:
         default: ".php_cs.dist"
         required: false
         type: string
-    secrets:
-      PHP_CS_FIXER_GITHUB_TOKEN:
-        required: true
 
 jobs:
   php-cs-fixer:
+    if: github.repository_owner == 'pimcore'
     permissions:
       contents: write # for stefanzweifel/git-auto-commit-action to push code in repo
     runs-on: ubuntu-latest
@@ -29,7 +27,6 @@ jobs:
         with:
           ref: ${{ inputs.head_ref }}
           repository: ${{ inputs.repository }}
-          token: ${{ secrets.PHP_CS_FIXER_GITHUB_TOKEN }}
 
       - name: PHP-CS-Fixer
         uses: docker://oskarstark/php-cs-fixer-ga:latest
