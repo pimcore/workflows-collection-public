@@ -2,9 +2,6 @@ name: "CLA Check Workflow"
 
 on:
   workflow_call:
-    secrets:
-      CLA_ACTION_ACCESS_TOKEN:
-        required: true
 
 jobs:
   CLAAssistant:
