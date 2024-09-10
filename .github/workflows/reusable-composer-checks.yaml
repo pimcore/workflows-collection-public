@@ -1,4 +1,3 @@
-
 name: "Reusable Composer Audit & Outdated"
 
 on:
@@ -6,11 +5,20 @@ on:
         inputs:
             php-version:
                 required: false
-                default: 8.2
+                default: "8.2"
                 type: string
             branch:
                 required: true
                 type: string
+            ignore-list:
+              required: false
+              type: string
+              description: Ignore list type (e.g., public, private, lts)
+        secrets:
+          TEAMS_COMPOSER_VULNERABILITY_URI:
+              required: false
+          WORKFLOWS_CENTRALIZED:
+              required: true
 
 permissions:
   contents: read
@@ -18,12 +26,22 @@ permissions:
 jobs:
     composer-checks:
         name: "Composer Checks"
-        runs-on: "ubuntu-20.04"
+        runs-on: "ubuntu-latest"
+        env: 
+          IGNORE_LIST_KEY: ${{ inputs.ignore-list }}
         steps:
-            - name: "Checkout code"
-              uses: "actions/checkout@v2"
+            - name: "Checkout depdendent workflow code"
+              uses: "actions/checkout@v4"
               with:
                   ref: ${{ inputs.branch }}
+
+            - name: "Checkout reusable workflow repository"
+              uses: "actions/checkout@v4"
+              with:
+                  repository: "pimcore/workflows-centralized"
+                  path: ".workflows-centralized"
+                  ref: "reusable_composer_check"
+                  token: ${{ secrets.WORKFLOWS_CENTRALIZED }}
 
             - name: "Install PHP"
               uses: "shivammathur/setup-php@v2"
@@ -31,6 +49,15 @@ jobs:
                   coverage: "none"
                   php-version: ${{ inputs.php-version }}
 
+            - name: Get Composer cache directory
+              id: composer-cache
+              run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+            - name: Cache Composer dependencies
+              uses: actions/cache@v4
+              with:
+                  path: ${{ steps.composer-cache.outputs.dir }}
+                  key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
 
             - name: "Install dependencies with Composer"
               uses: "ramsey/composer-install@v2"
@@ -38,18 +65,56 @@ jobs:
                   dependency-versions: "highest"
                   composer-options: "--no-scripts"
 
+            - name: "Parse ignore list from JSON"
+              id: parse-ignore-list
+              run: |
+                if [[ -n "$IGNORE_LIST_KEY" ]]; then
+                  IGNORE_PACKAGES=$(jq -r --arg key "$IGNORE_LIST_KEY" '.[$key] | join(",")' .workflows-centralized/config/composer-ignore-list.json)
+                  echo "IGNORE_PACKAGES=$IGNORE_PACKAGES" >> $GITHUB_ENV
+                fi
+
             - name: "Check for security vulnerabilities"
               id: vulnerabilities
               continue-on-error: true
-              run: "composer audit"
-
+              run: |
+                VULNERABILITIES=$(composer audit)
+                if echo "$VULNERABILITIES" | grep -E 'Found [0-9]+ security vulnerability advisories|Found [0-9]+ abandoned packages'; then
+                    echo "Security vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
+                    echo "$VULNERABILITIES" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
+                    {
+                      echo "VULNERABILITIES_ENV<<EOF"
+                      echo "$VULNERABILITIES"
+                      echo "EOF"
+                    } >> $GITHUB_ENV
+                    exit 1
+                fi
+                          
             - name: "Check for outdated dependencies"
               id: dependencies
               continue-on-error: true
-              run: "composer outdated -D --strict"
+              run: |
+                IGNORE_OPTIONS=""
+                if [[ -n "$IGNORE_PACKAGES" ]]; then
+                  IGNORE_OPTIONS=$(echo "$IGNORE_PACKAGES" | sed 's/,/ --ignore /g' | sed 's/^/--ignore /')
+                fi
+            
+                OUTDATED=$(composer outdated -D -M $IGNORE_OPTIONS || true)
+                if [[ -n "$OUTDATED" ]] && echo "$OUTDATED" | grep -E ' [!~] '; then
+                    echo "Outdated dependencies found!" >> $GITHUB_STEP_SUMMARY
+                    echo "$OUTDATED" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
+                    {
+                      echo "OUTDATED_ENV<<EOF"
+                      echo "$OUTDATED"
+                      echo "EOF"
+                    } >> $GITHUB_ENV
+                    exit 1
+                fi
 
-            - name: "Check results of previous checks"
+            - name: Send results of previous checks to Microsoft Teams
               if: steps.vulnerabilities.outcome == 'failure' || steps.dependencies.outcome == 'failure'
-              run: exit 255
-
-
+              uses: aliencube/microsoft-teams-actions@v0.8.0                
+              with:
+                webhook_uri: ${{ secrets.TEAMS_COMPOSER_VULNERABILITY_URI }}
+                title: There are vulnerabilities within found within the workflow run!
+                summary: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}} 
+                text: "Please check ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}} \n ${{ env.VULNERABILITIES_ENV }} \n ${{ env.OUTDATED_ENV }} "
