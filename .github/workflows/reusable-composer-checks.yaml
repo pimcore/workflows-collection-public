@@ -17,8 +17,6 @@ on:
         secrets:
           TEAMS_COMPOSER_VULNERABILITY_URI:
               required: false
-          WORKFLOWS_CENTRALIZED:
-              required: true
 
 permissions:
   contents: read
@@ -38,10 +36,9 @@ jobs:
             - name: "Checkout reusable workflow repository"
               uses: "actions/checkout@v4"
               with:
-                  repository: "pimcore/workflows-centralized"
-                  path: ".workflows-centralized"
+                  repository: "pimcore/workflows-collection-public"
+                  path: ".workflows-collection-public"
                   ref: "reusable_composer_check"
-                  token: ${{ secrets.WORKFLOWS_CENTRALIZED }}
 
             - name: "Install PHP"
               uses: "shivammathur/setup-php@v2"
