@@ -38,7 +38,7 @@ jobs:
               with:
                   repository: "pimcore/workflows-collection-public"
                   path: ".workflows-collection-public"
-                  ref: "reusable_composer_check"
+                  ref: "main"
 
             - name: "Install PHP"
               uses: "shivammathur/setup-php@v2"
