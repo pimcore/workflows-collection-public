@@ -75,6 +75,10 @@ jobs:
               continue-on-error: true
               run: |
                 VULNERABILITIES=$(composer audit || true)
+                
+                echo "Raw composer audit output:"
+                echo "$VULNERABILITIES"
+            
                 if echo "$VULNERABILITIES" | grep -E 'Found [0-9]+ security vulnerability advisories|Found [0-9]+ abandoned packages'; then
                     echo "Security vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
                     echo "$VULNERABILITIES" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
