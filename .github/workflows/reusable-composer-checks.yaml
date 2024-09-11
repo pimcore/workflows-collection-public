@@ -116,7 +116,7 @@ jobs:
               uses: aliencube/microsoft-teams-actions@v0.8.0
               with:
                 webhook_uri: ${{ secrets.TEAMS_COMPOSER_VULNERABILITY_URI }}
-                title: Vulnerabilities or outdated dependencies found in Composer!
+                title: ${{ github.repository }} outdated - vulnerabilities report
                 summary: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}} 
                 text: |
                   Please check the following link for details: 
