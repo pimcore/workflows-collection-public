@@ -79,7 +79,7 @@ jobs:
                 echo "Raw composer audit output:"
                 echo "$VULNERABILITIES"
             
-                if echo "$VULNERABILITIES" | grep -E 'Found [0-9]+ security vulnerability advisories|Found [0-9]+ abandoned packages'; then
+                if echo "$VULNERABILITIES" | grep -E 'Found [0-9]+ security vulnerability (advisory|advisories)'; then
                     echo "Security vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
                     echo "$VULNERABILITIES" >> $GITHUB_STEP_SUMMARY
                     {
@@ -110,13 +110,6 @@ jobs:
                     } >> $GITHUB_ENV
                     exit 1
                 fi
-
-            - name: "Generate Summary"
-              run: |
-                echo "### Vulnerabilities Report" >> $GITHUB_STEP_SUMMARY
-                echo "$VULNERABILITIES_ENV" >> $GITHUB_STEP_SUMMARY
-                echo "### Outdated Dependencies Report" >> $GITHUB_STEP_SUMMARY
-                echo "$OUTDATED_ENV" >> $GITHUB_STEP_SUMMARY
 
             - name: Send results of previous checks to Microsoft Teams
               if: steps.vulnerabilities.outcome == 'failure' || steps.dependencies.outcome == 'failure'
