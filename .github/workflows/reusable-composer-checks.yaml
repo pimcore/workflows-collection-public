@@ -113,9 +113,23 @@ jobs:
 
             - name: Send results of previous checks to Microsoft Teams
               if: steps.vulnerabilities.outcome == 'failure' || steps.dependencies.outcome == 'failure'
-              uses: aliencube/microsoft-teams-actions@v0.8.0                
+              uses: aliencube/microsoft-teams-actions@v0.8.0
               with:
                 webhook_uri: ${{ secrets.TEAMS_COMPOSER_VULNERABILITY_URI }}
-                title: There are vulnerabilities within found within the workflow run!
+                title: Vulnerabilities or outdated dependencies found in Composer!
                 summary: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}} 
-                text: "Please check ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}} \n ${{ env.VULNERABILITIES_ENV }} \n ${{ env.OUTDATED_ENV }} "
+                text: |
+                  Please check the following link for details: 
+                  ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
+                  
+                  **Outdated dependencies found:**
+                  ```
+                  ${{ env.OUTDATED_ENV }}
+                  ```
+            
+                  **Vulnerabilities found:**
+                  ```
+                  ${{ env.VULNERABILITIES_ENV }}
+                  ```
+            
+                  If the list is too long, please refer to the link above.
