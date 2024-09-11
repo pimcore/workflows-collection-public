@@ -79,7 +79,7 @@ jobs:
                 echo "Raw composer audit output:"
                 echo "$VULNERABILITIES"
             
-                if echo "$VULNERABILITIES" | grep -E 'Found [0-9]+ security vulnerability (advisory|advisories)'; then
+                if echo "$VULNERABILITIES" | grep -E 'Found [0-9]+ security vulnerability (advisory|advisories).*'; then
                     echo "Security vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
                     echo "$VULNERABILITIES" >> $GITHUB_STEP_SUMMARY
                     {
