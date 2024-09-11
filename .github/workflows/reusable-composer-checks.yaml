@@ -81,7 +81,7 @@ jobs:
             
                 if echo "$VULNERABILITIES" | grep -E 'Found [0-9]+ security vulnerability advisories|Found [0-9]+ abandoned packages'; then
                     echo "Security vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
-                    echo "$VULNERABILITIES" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
+                    echo "$VULNERABILITIES" >> $GITHUB_STEP_SUMMARY
                     {
                       echo "VULNERABILITIES_ENV<<EOF"
                       echo "$VULNERABILITIES"
