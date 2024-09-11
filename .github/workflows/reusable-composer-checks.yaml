@@ -66,7 +66,7 @@ jobs:
               id: parse-ignore-list
               run: |
                 if [[ -n "$IGNORE_LIST_KEY" ]]; then
-                  IGNORE_PACKAGES=$(jq -r --arg key "$IGNORE_LIST_KEY" '.[$key] | join(",")' .workflows-centralized/config/composer-ignore-list.json)
+                  IGNORE_PACKAGES=$(jq -r --arg key "$IGNORE_LIST_KEY" '.[$key] | join(",")' .workflows-collection-public/config/composer-ignore-list.json)
                   echo "IGNORE_PACKAGES=$IGNORE_PACKAGES" >> $GITHUB_ENV
                 fi
 
