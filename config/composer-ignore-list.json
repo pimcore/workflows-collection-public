@@ -1,6 +1,6 @@
 {
   "public": 
-  [ ],
+  [ "symfony/*","doctrine/*","phpunit/phpunit"],
   "private": 
   [ ],
   "lts": 
