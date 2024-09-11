@@ -111,6 +111,13 @@ jobs:
                     exit 1
                 fi
 
+            - name: "Generate Summary"
+              run: |
+                echo "### Vulnerabilities Report" >> $GITHUB_STEP_SUMMARY
+                echo "$VULNERABILITIES_ENV" >> $GITHUB_STEP_SUMMARY
+                echo "### Outdated Dependencies Report" >> $GITHUB_STEP_SUMMARY
+                echo "$OUTDATED_ENV" >> $GITHUB_STEP_SUMMARY
+
             - name: Send results of previous checks to Microsoft Teams
               if: steps.vulnerabilities.outcome == 'failure' || steps.dependencies.outcome == 'failure'
               uses: aliencube/microsoft-teams-actions@v0.8.0
