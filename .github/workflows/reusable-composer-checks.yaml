@@ -19,9 +19,6 @@ on:
               default: "-M"
               type: string
               description: -M for major, -m for minor, -p for patch
-        secrets:
-          TEAMS_COMPOSER_OUTDATED_URI:
-              required: false
 
 permissions:
   contents: read
