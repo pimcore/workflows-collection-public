@@ -14,9 +14,6 @@ on:
               required: false
               type: string
               description: Ignore list type (e.g., public, private, lts)
-        secrets:
-          TEAMS_COMPOSER_VULNERABILITY_URI:
-              required: false
 
 permissions:
   contents: read
