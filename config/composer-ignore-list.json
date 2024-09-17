@@ -2,7 +2,7 @@
   "public": 
   [ "symfony/*","doctrine/*","phpunit/phpunit"],
   "private": 
-  [ ],
+  [ "symfony/*","doctrine/*","phpunit/phpunit"],
   "lts": 
   [ ]
 }
