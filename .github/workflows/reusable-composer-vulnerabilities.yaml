@@ -69,6 +69,37 @@ jobs:
                   dependency-versions: "highest"
                   composer-options: "--no-scripts"
 
+            - name: "Check if composer.json has a config section and add CVEs to ignore list"
+              id: update-composer-json
+              run: |
+                COMPOSER_FILE="composer.json"
+
+                # Extract the CVE ignore list from vulnerabilities-ignore-list.json based on the key
+                IGNORE_CVES=$(jq -r --arg key "$IGNORE_LIST_KEY" '.[$key] | join(",")' .workflows-collection-public/config/vulnerabilities-ignore-list.json)
+
+                # Check if composer.json already has a config section
+                if jq -e '.config' $COMPOSER_FILE > /dev/null; then
+                  echo "Config section exists, updating it..."
+                  
+                  # Check if the 'audit' section exists under 'config'
+                  if jq -e '.config.audit' $COMPOSER_FILE > /dev/null; then
+                    echo "Audit section exists, appending CVEs to the ignore list..."
+                    # Add the CVEs to the existing audit.ignore array
+                    jq --argjson cves "[$IGNORE_CVES]" '.config.audit.ignore += $cves' $COMPOSER_FILE > composer.json.tmp && mv composer.json.tmp $COMPOSER_FILE
+                  else
+                    echo "Audit section does not exist, creating audit.ignore..."
+                    # Create the audit section with the ignore array
+                    jq --argjson cves "[$IGNORE_CVES]" '.config.audit.ignore = $cves' $COMPOSER_FILE > composer.json.tmp && mv composer.json.tmp $COMPOSER_FILE
+                  fi
+                else
+                  echo "Config section does not exist, creating config.audit.ignore..."
+                  # Add the config and audit sections with the ignore array
+                  jq --argjson cves "[$IGNORE_CVES]" '.config.audit.ignore = $cves' $COMPOSER_FILE > composer.json.tmp && mv composer.json.tmp $COMPOSER_FILE
+                fi
+
+                # Print the updated composer.json
+                cat $COMPOSER_FILE
+
             - name: "Check for security vulnerabilities"
               id: vulnerabilities
               continue-on-error: true
@@ -78,7 +109,7 @@ jobs:
                 echo "Raw composer audit output:"
                 echo "$VULNERABILITIES"
             
-                if echo "$VULNERABILITIES" | grep -E '.*[1-9][0-9]*.*'; then
+                if echo "$VULNERABILITIES" | grep -E '.*[1-9][0-9]*.*' | grep -v 'ignored'; then
                     echo "Security vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
                     echo "$VULNERABILITIES" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
                     {
