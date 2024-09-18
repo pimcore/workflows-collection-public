@@ -39,7 +39,7 @@ jobs:
               with:
                   repository: "pimcore/workflows-collection-public"
                   path: ".workflows-collection-public"
-                  ref: "main"
+                  ref: "vulnerabilities_ignore_list"
 
             - name: "Install PHP"
               uses: "shivammathur/setup-php@v2"
