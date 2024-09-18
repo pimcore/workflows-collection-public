@@ -115,11 +115,12 @@ jobs:
               continue-on-error: true
               run: |
                 VULNERABILITIES=$(composer audit || true)
-                
+                STATUS_CODE=$($?)
+
                 echo "Raw composer audit output:"
                 echo "$VULNERABILITIES"
             
-                if echo "$VULNERABILITIES" | grep -E '.*[1-9][0-9]*.*' | grep -v 'ignored'; then
+                if [ "$STATUS_CODE" -ne 0 ]; then
                     echo "Security vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
                     echo "$VULNERABILITIES" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
                     {
