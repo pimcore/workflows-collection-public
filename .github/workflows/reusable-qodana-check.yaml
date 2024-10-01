@@ -10,7 +10,7 @@ on:
 
 jobs:
   Qodana:
-    timeout-minutes: 15
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -45,7 +45,7 @@ jobs:
       - name: "Qodana Scan"
         uses: JetBrains/qodana-action@latest
         with:
-          use-caches: false
+          use-caches: true
           args: --baseline,qodana.sarif.json
         env:
           QODANA_TOKEN: ${{ secrets.QODANA_TOKEN }}
