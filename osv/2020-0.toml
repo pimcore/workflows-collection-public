@@ -12,3 +12,10 @@ reason = "Well known. Not fixable"
 id = "GHSA-jjxq-ff2g-95vh"
 # ignoreUntil = 2022-11-09 # Optional exception expiry date
 reason = "Well known. Not fixable"
+
+[[IgnoredVulns]]
+id = "GHSA-c38c-c8mh-vq68"
+# ignoreUntil = 2022-11-09 # Optional exception expiry date
+reason = "Duplicate of GHSA-g273-wppx-82w4"
+
+[[IgnoredVulns]]
