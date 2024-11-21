@@ -8,7 +8,7 @@ id = "GHSA-6j75-5wfj-gh66"
 # ignoreUntil = 2022-11-09 # Optional exception expiry date
 reason = "Well known. Not fixable"
 
-[[IgnoredVulns]]
-id = "GHSA-jjxq-ff2g-95vh"
+#[[IgnoredVulns]]
+#id = "GHSA-jjxq-ff2g-95vh"
 # ignoreUntil = 2022-11-09 # Optional exception expiry date
-reason = "Well known. Not fixable"
+#reason = "Well known. Not fixable"
