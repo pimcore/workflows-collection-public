@@ -22,3 +22,8 @@ reason = "Duplicate of GHSA-g273-wppx-82w4"
 id = "GHSA-g273-wppx-82w4"
 # ignoreUntil = 2022-11-09 # Optional exception expiry date
 reason = "Low impact."
+
+[[IgnoredVulns]]
+id = "GHSA-7q22-x757-cmgc"
+# ignoreUntil = 2022-11-09 # Optional exception expiry date
+reason = "Low impact."
