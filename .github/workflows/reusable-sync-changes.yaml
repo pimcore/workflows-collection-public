@@ -29,8 +29,8 @@ jobs:
     env:
       PAT: ${{ secrets.SYNC_TOKEN }}
       TARGET_REPO: ${{ inputs.target_repo }}
-      TARGET_BRANCH: ${{ inputs.ref_name }}
-      BASE_BRANCH: ${{ inputs.base_ref}}
+      TARGET_BRANCH: ${{ inputs.base_ref }}
+      BASE_BRANCH: ${{ inputs.ref_name }}
       GIT_NAME: ${{ secrets.GIT_NAME }}
       GIT_EMAIL: ${{ secrets.GIT_EMAIL }}
       WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -38,7 +38,7 @@ jobs:
       AUTO_MERGE: ${{ inputs.auto_merge }}
 
     steps:
-      - name: Checkout base branch
+      - name: Checkout target branch
         uses: actions/checkout@v4
         with:
             ref: ${{ inputs.base_ref }}
