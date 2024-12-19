@@ -23,6 +23,10 @@ on:
               required: false
               default: false
               type: boolean
+            platform-repo:
+              required: false
+              default: false
+              type: boolean
 
 permissions:
   contents: read
@@ -58,12 +62,29 @@ jobs:
               with:
                 key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
                 known_hosts: ".... we add this in the next step ;-)"
+
+            - name: Install jq
+              if: ${{ inputs.platform-repo == true }}
+              run: sudo apt-get install jq
   
             - name: "Add authentication for private pimcore packages"
               if: ${{ inputs.private-repo == true }}
               run: |
                 composer config repositories.private-packagist composer https://repo.pimcore.com/github-actions/
                 composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
+
+            - name: Read and modify composer.json
+              if: ${{ inputs.platform-repo == true }}
+              id: update_composer
+              run: |
+                original_content=$(<composer.json)
+                for conflict in $(echo "$original_content" | jq -r '.conflict | to_entries[] | @base64'); do
+                  _jq() {
+                    echo ${conflict} | base64 --decode | jq -r ${1}
+                  }
+                  package_name=$(_jq '.key')
+                  composer require "$package_name:*" --no-update
+                done
 
             - name: Get Composer cache directory
               id: composer-cache
@@ -112,7 +133,7 @@ jobs:
                 fi
 
             - name: Send results of previous checks to Microsoft Teams
-              if: steps.vulnerabilities.outcome == 'failure' || steps.dependencies.outcome == 'failure'
+              if: steps.dependencies.outcome == 'failure'
               uses: aliencube/microsoft-teams-actions@v0.8.0
               with:
                 webhook_uri: ${{ secrets.TEAMS_COMPOSER_OUTDATED_URI }}
