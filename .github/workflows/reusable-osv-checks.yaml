@@ -28,7 +28,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: pimcore/workflows-collection-public
-          ref: osv_reusable
+          ref: main
           path: tools
           sparse-checkout: |
             osv/${{ inputs.platform-version }}.toml
