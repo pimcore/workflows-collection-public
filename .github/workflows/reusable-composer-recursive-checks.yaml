@@ -1,0 +1,150 @@
+name: "Reusable composer outdated check"
+
+on:
+    workflow_call:
+        inputs:
+            php-version:
+              required: false
+              default: "8.2"
+              type: string
+            branch:
+              required: true
+              type: string
+            ignore-list:
+              required: false
+              type: string
+              description: Ignore list type (e.g., public, private, lts)
+            version-type:
+              required: false
+              default: "-M"
+              type: string
+              description: -M for major, -m for minor, -p for patch
+            private-repo:
+              required: false
+              default: false
+              type: boolean
+            platform-repo:
+              required: false
+              default: false
+              type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+    composer-checks:
+        name: "Composer Checks"
+        runs-on: "ubuntu-latest"
+        env: 
+          IGNORE_LIST_KEY: ${{ inputs.ignore-list }}
+        steps:
+            - name: "Checkout depdendent workflow code"
+              uses: "actions/checkout@v4"
+              with:
+                  ref: ${{ inputs.branch }}
+
+            - name: "Checkout reusable workflow repository"
+              uses: "actions/checkout@v4"
+              with:
+                  repository: "pimcore/workflows-collection-public"
+                  path: ".workflows-collection-public"
+                  ref: "main"
+
+            - name: "Install PHP"
+              uses: "shivammathur/setup-php@v2"
+              with:
+                  coverage: "none"
+                  php-version: ${{ inputs.php-version }}
+
+            - name: Install SSH Key # this is necessary for Composer to be able to clone source from pimcore/ee-pimcore
+              if: ${{ inputs.private-repo == true }}
+              uses: shimataro/ssh-key-action@v2
+              with:
+                key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
+                known_hosts: ".... we add this in the next step ;-)"
+
+            - name: Install jq
+              if: ${{ inputs.platform-repo == true }}
+              run: sudo apt-get install jq
+  
+            - name: "Add authentication for private pimcore packages"
+              if: ${{ inputs.private-repo == true }}
+              run: |
+                composer config repositories.private-packagist composer https://repo.pimcore.com/github-actions/
+                composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
+
+            - name: Read and modify composer.json
+              if: ${{ inputs.platform-repo == true }}
+              id: update_composer
+              run: |
+                original_content=$(<composer.json)
+                for conflict in $(echo "$original_content" | jq -r '.conflict | to_entries[] | @base64'); do
+                  _jq() {
+                    echo ${conflict} | base64 --decode | jq -r ${1}
+                  }
+                  package_name=$(_jq '.key')
+                  composer require "$package_name:*" --no-update
+                done
+
+            - name: Get Composer cache directory
+              id: composer-cache
+              run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+            - name: Cache Composer dependencies
+              uses: actions/cache@v4
+              with:
+                  path: ${{ steps.composer-cache.outputs.dir }}
+                  key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
+
+            - name: "Install dependencies with Composer"
+              uses: "ramsey/composer-install@v2"
+              with:
+                  dependency-versions: "highest"
+                  composer-options: "--no-scripts"
+
+            - name: "Parse ignore list from JSON"
+              id: parse-ignore-list
+              run: |
+                if [[ -n "$IGNORE_LIST_KEY" ]]; then
+                  IGNORE_PACKAGES=$(jq -r --arg key "$IGNORE_LIST_KEY" '.[$key] | join(",")' .workflows-collection-public/config/composer-ignore-list.json)
+                  echo "IGNORE_PACKAGES=$IGNORE_PACKAGES" >> $GITHUB_ENV
+                fi
+                          
+            - name: "Check for outdated dependencies"
+              id: dependencies
+              continue-on-error: true
+              run: |
+                VERSION_TYPE="${{ inputs.version-type }}"
+                IGNORE_OPTIONS=""
+                if [[ -n "$IGNORE_PACKAGES" ]]; then
+                  IGNORE_OPTIONS=$(echo "$IGNORE_PACKAGES" | sed 's/,/ --ignore /g' | sed 's/^/--ignore /')
+                fi
+            
+                OUTDATED=$(composer outdated $VERSION_TYPE $IGNORE_OPTIONS || true)
+                if [[ -n "$OUTDATED" ]] && echo "$OUTDATED" | grep -E ' [!~] '; then
+                    echo "Outdated dependencies found!" >> $GITHUB_STEP_SUMMARY
+                    echo "$OUTDATED" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
+                    {
+                      echo "OUTDATED_ENV<<EOF"
+                      echo "$OUTDATED"
+                      echo "EOF"
+                    } >> $GITHUB_ENV
+                    exit 1
+                fi
+
+            - name: Send results of previous checks to Microsoft Teams
+              if: steps.dependencies.outcome == 'failure'
+              uses: aliencube/microsoft-teams-actions@v0.8.0
+              with:
+                webhook_uri: ${{ secrets.TEAMS_COMPOSER_OUTDATED_URI }}
+                title: ${{ github.repository }}@${{ inputs.branch }} outdated - vulnerabilities report
+                summary: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}} 
+                text: |
+                  Please check the following link for details: 
+                  ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
+                  
+                  **Outdated dependencies found:**
+                  ```
+                  ${{ env.OUTDATED_ENV }}
+                  ```            
+                  If the list is too long, please refer to the link above.
