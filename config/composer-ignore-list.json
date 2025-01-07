@@ -6,5 +6,5 @@
   "lts": 
   [ ],
   "none":
-  [ ]
+  [ "phpunit/phpunit" ]
 }
