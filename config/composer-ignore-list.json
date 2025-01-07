@@ -4,5 +4,7 @@
   "private": 
   [ "symfony/*","doctrine/*","phpunit/phpunit","codeception/*,pimcore/static-resolver-bundle"],
   "lts": 
+  [ ],
+  "none":
   [ ]
 }
