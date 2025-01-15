@@ -67,17 +67,17 @@
       "php_version": "8.3,8.4",
       "matrix": [
         {
-          "php-version": "8.2",
+          "php-version": "8.3",
           "dependencies": "lowest",
           "experimental": "false"
         },
         {
-          "php-version": "8.3",
+          "php-version": "8.4",
           "dependencies": "highest",
           "experimental": "false"
         },
         {
-          "php-version": "8.3",
+          "php-version": "8.4",
           "dependencies": "highest",
           "pimcore_version": "12.x-dev as 12.99.9",
           "experimental": "true"
