@@ -111,5 +111,5 @@ jobs:
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-            name: phpstan-baseline${{ inputs.PHP_VERSION }}-${{ input.PIMCORE_VERSION }}.neon
+            name: phpstan-baseline-${{ github.jobs[github.job].name }}.neon
             path: phpstan-baseline.neon
