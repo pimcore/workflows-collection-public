@@ -16,7 +16,7 @@
         {
           "php-version": "8.3",
           "dependencies": "highest",
-          "pimcore_version": "11.x-dev as 11.99.9",
+          "pimcore_version": "12.x-dev as 12.99.9",
           "experimental": "true"
         }
       ]
@@ -37,7 +37,7 @@
         {
           "php-version": "8.3",
           "dependencies": "highest",
-          "pimcore_version": "11.x-dev as 11.99.9",
+          "pimcore_version": "12.x-dev as 12.99.9",
           "experimental": "true"
         }
       ]
@@ -58,7 +58,7 @@
         {
           "php-version": "8.3",
           "dependencies": "highest",
-          "pimcore_version": "11.x-dev as 11.99.9",
+          "pimcore_version": "12.x-dev as 12.99.9",
           "experimental": "true"
         }
       ]
@@ -96,12 +96,6 @@
           "php-version": "8.2",
           "dependencies": "highest",
           "experimental": "false"
-        },
-        {
-          "php-version": "8.2",
-          "dependencies": "highest",
-          "pimcore_version": "11.x-dev as 11.99.9",
-          "experimental": "true"
         }
       ]
     },
@@ -117,12 +111,6 @@
           "php-version": "8.2",
           "dependencies": "highest",
           "experimental": "false"
-        },
-        {
-          "php-version": "8.2",
-          "dependencies": "highest",
-          "pimcore_version": "11.x-dev as 11.99.9",
-          "experimental": "true"
         }
       ]
     }

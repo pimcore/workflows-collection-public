@@ -19,7 +19,7 @@
           "php-version": "8.3",
           "database": "mariadb:10.7",
           "dependencies": "highest",
-          "pimcore_version": "11.x-dev as 11.99.9",
+          "pimcore_version": "11.2-dev as 12.99.9",
           "experimental": "true"
         }
       ]
@@ -43,7 +43,7 @@
           "php-version": "8.3",
           "database": "mariadb:10.7",
           "dependencies": "highest",
-          "pimcore_version": "11.x-dev as 11.99.9",
+          "pimcore_version": "12.x-dev as 12.99.9",
           "experimental": "true"
         }
       ]
@@ -67,7 +67,7 @@
           "php-version": "8.3",
           "database": "mariadb:10.7",
           "dependencies": "highest",
-          "pimcore_version": "11.x-dev as 11.99.9",
+          "pimcore_version": "12.x-dev as 12.99.9",
           "experimental": "true"
         }
       ]
@@ -110,13 +110,6 @@
           "database": "mariadb:10.7",
           "dependencies": "highest",
           "experimental": "false"
-        },
-        {
-          "php-version": "8.2",
-          "database": "mariadb:10.7",
-          "dependencies": "highest",
-          "pimcore_version": "11.x-dev as 11.99.9",
-          "experimental": "true"
         }
       ]
     },
@@ -134,13 +127,6 @@
           "database": "mariadb:10.7",
           "dependencies": "highest",
           "experimental": "false"
-        },
-        {
-          "php-version": "8.2",
-          "database": "mariadb:10.7",
-          "dependencies": "highest",
-          "pimcore_version": "11.x-dev as 11.99.9",
-          "experimental": "true"
         }
       ]
     }
