@@ -6,12 +6,14 @@
         {
           "php-version": "8.1",
           "dependencies": "lowest",
-          "experimental": "false"
+          "experimental": "false",
+          "require_admin_bundle" : "false"
         },
         {
           "php-version": "8.3",
           "dependencies": "highest",
-          "experimental": "false"
+          "experimental": "false",
+          "require_admin_bundle" : "true"
         }
       ]
     },
@@ -21,12 +23,14 @@
         {
           "php-version": "8.1",
           "dependencies": "lowest",
-          "experimental": "false"
+          "experimental": "false",
+          "require_admin_bundle" : "false"
         },
         {
           "php-version": "8.3",
           "dependencies": "highest",
-          "experimental": "false"
+          "experimental": "false",
+          "require_admin_bundle" : "true"
         }
       ]
     },
@@ -36,12 +40,14 @@
         {
           "php-version": "8.2",
           "dependencies": "lowest",
-          "experimental": "false"
+          "experimental": "false",
+          "require_admin_bundle" : "false"
         },
         {
           "php-version": "8.3",
           "dependencies": "highest",
-          "experimental": "false"
+          "experimental": "false",
+          "require_admin_bundle" : "true"
         }
       ]
     },
@@ -51,18 +57,21 @@
         {
           "php-version": "8.3",
           "dependencies": "lowest",
-          "experimental": "false"
+          "experimental": "false",
+          "require_admin_bundle" : "true"
         },
         {
           "php-version": "8.4",
           "dependencies": "highest",
-          "experimental": "false"
+          "experimental": "false",
+          "require_admin_bundle" : "true"
         },
         {
           "php-version": "8.4",
           "dependencies": "highest",
           "pimcore_version": "12.x-dev as 12.99.9",
-          "experimental": "true"
+          "experimental": "true",
+          "require_admin_bundle" : "true"
         }
       ]
     },
@@ -72,12 +81,14 @@
         {
           "php-version": "8.1",
           "dependencies": "lowest",
-          "experimental": "false"
+          "experimental": "false",
+          "require_admin_bundle" : "false"
         },
         {
           "php-version": "8.2",
           "dependencies": "highest",
-          "experimental": "false"
+          "experimental": "false",
+          "require_admin_bundle" : "true"
         }
       ]
     },

@@ -27,6 +27,10 @@ on:
       PIMCORE_VERSION:
         required: false
         type: string
+      REQUIRE_ADMIN_BUNDLE:
+        required: false
+        type: string
+        default: "true"
       COVERAGE:
         required: false
         type: string
@@ -89,6 +93,7 @@ jobs:
       - name: "Update Pimcore version"
         env:
           PIMCORE_VERSION: "${{ inputs.PIMCORE_VERSION }}"
+          REQUIRE_ADMIN_BUNDLE: "${{ inputs.REQUIRE_ADMIN_BUNDLE }}"
         run: |
           if [ ! -z "$PIMCORE_VERSION" ]; then
                 composer require --no-update pimcore/pimcore:"${PIMCORE_VERSION}"
