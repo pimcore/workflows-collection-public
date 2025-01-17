@@ -87,6 +87,8 @@ jobs:
           mysql -e "CREATE DATABASE pimcore_test CHARSET=utf8mb4;"
 
       - name: "Setup Pimcore environment"
+        env:
+          REQUIRE_ADMIN_BUNDLE: "${{ inputs.REQUIRE_ADMIN_BUNDLE }}"
         run: |
           chmod 755 .github/ci/scripts/setup-pimcore-environment.sh
           .github/ci/scripts/setup-pimcore-environment.sh

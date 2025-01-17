@@ -66,6 +66,8 @@ jobs:
           php-version: "${{ inputs.PHP_VERSION }}"
 
       - name: "Setup Pimcore environment"
+        env:
+          REQUIRE_ADMIN_BUNDLE: "${{ inputs.REQUIRE_ADMIN_BUNDLE }}"
         run: |
             .github/ci/scripts/setup-pimcore-environment.sh
 
