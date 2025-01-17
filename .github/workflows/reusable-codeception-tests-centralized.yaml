@@ -52,7 +52,7 @@ jobs:
     runs-on: "ubuntu-20.04"
     continue-on-error: ${{ inputs.EXPERIMENTAL == 'true' }}
     env:
-      PIMCORE_TEST_DB_DSN: "mysql://root@127.0.0.1:33006/pimcore_test?serverVersion=10.7.8"
+      PIMCORE_TEST_DB_DSN: "mysql://root@127.0.0.1:33006/pimcore_test?serverVersion=mariadb-10.7.8"
       PIMCORE_PROJECT_ROOT: ${{ github.workspace }}
       APP_ENV: ${{ inputs.APP_ENV }}
       PIMCORE_TEST: ${{ inputs.PIMCORE_TEST }}
