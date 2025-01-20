@@ -45,6 +45,10 @@ on:
         required: false
       SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER:
         required: false
+      GOOGLE_CLIENT_ID:
+        required: false
+      GOOGLE_CLIENT_SECRET:
+        required: false
 
 jobs:
   codeception-tests:
@@ -56,6 +60,8 @@ jobs:
       PIMCORE_PROJECT_ROOT: ${{ github.workspace }}
       APP_ENV: ${{ inputs.APP_ENV }}
       PIMCORE_TEST: ${{ inputs.PIMCORE_TEST }}
+      PIMCORE_TEST_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      PIMCORE_TEST_GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
     services:
       mariadb:
         image: "${{ inputs.DATABASE }}"
