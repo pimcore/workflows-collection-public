@@ -35,6 +35,30 @@
       ]
     },
     {
+      "php_version": "8.1,8.2,8.3,8.4",
+      "matrix": [
+        {
+          "php-version": "8.1",
+          "dependencies": "lowest",
+          "experimental": "false",
+          "require_admin_bundle" : "false"
+        },
+        {
+          "php-version": "8.4",
+          "dependencies": "highest",
+          "experimental": "false",
+          "require_admin_bundle" : "true"
+        },
+        {
+          "php-version": "8.4",
+          "dependencies": "highest",
+          "pimcore_version": "12.x-dev as 12.99.9",
+          "experimental": "true",
+          "require_admin_bundle" : "true"
+        }
+      ]
+    },
+    {
       "php_version": "8.2,8.3",
       "matrix": [
         {
