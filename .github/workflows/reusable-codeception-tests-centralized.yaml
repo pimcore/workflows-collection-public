@@ -35,6 +35,10 @@ on:
         required: false
         type: string
         default: "true"
+      PIMCORE_OPEN_SEARCH_HOST:
+        required: false
+        type: string
+        default: "localhost:39200"
       COVERAGE:
         required: false
         type: string
@@ -57,7 +61,7 @@ jobs:
     continue-on-error: ${{ inputs.EXPERIMENTAL == 'true' }}
     env:
       PIMCORE_TEST_DB_DSN: "mysql://root@127.0.0.1:33006/pimcore_test"
-      PIMCORE_OPEN_SEARCH_HOST: 'localhost:39200'
+      PIMCORE_OPEN_SEARCH_HOST: ${{ inputs.PIMCORE_OPEN_SEARCH_HOST }}
       PIMCORE_PROJECT_ROOT: ${{ github.workspace }}
       APP_ENV: ${{ inputs.APP_ENV }}
       PIMCORE_TEST: ${{ inputs.PIMCORE_TEST }}
@@ -70,6 +74,20 @@ jobs:
           - 33006:3306
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: yes
+
+      opensearch:
+        image: opensearchproject/opensearch:latest
+        ports:
+          - 39200:9200
+        env:
+          cluster.name: "opensearch-cluster"
+          node.name: "opensearch-node"
+          discovery.seed_hosts: "opensearch-node"
+          bootstrap.memory_lock: true
+          OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+          discovery.type: "single-node"
+          DISABLE_SECURITY_PLUGIN: true
+
     steps:
       - name: "Checkout code"
         uses: "actions/checkout@v4"
