@@ -1,0 +1,78 @@
+name: "Reusable composer test"
+
+on:
+  workflow_call:
+    inputs:
+      check-php-version:
+        required: false
+        default: true
+        type: boolean
+      check-stability:
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  composer-checks:
+    name: "Composer Tests"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: "Checkout code"
+        uses: "actions/checkout@v4"
+
+      - name: "Test that php version is set in composer.json"
+        if: ${{ inputs.check-php-version == true }}
+        id: check_php_version
+        run: |
+          if [ -f composer.json ]; then
+            php_versions=$(jq -r '.require.php' composer.json | grep -oP '\d+\.\d+' | tr '\n' ',' | sed 's/,$//')
+            if [ -z "$php_versions" ]; then
+              echo "No PHP versions found in composer.json"
+              exit 1
+            else
+              echo "php_versions=$php_versions" >> $GITHUB_OUTPUT
+              echo "#### php versions #### : $php_versions"
+            fi
+          else
+            echo "composer.json not found"
+            exit 1
+          fi
+
+      - name: "Test that php version is set in composer.json"
+        if: ${{ inputs.check-stability == true }}
+        id: check_prefer_stable
+        run: |
+          if [ -f composer.json ]; then
+              if jq -e 'has("prefer-stable")' composer.json > /dev/null; then
+                  prefer_stable=$(jq -r '."prefer-stable"' composer.json)
+                  if [ "$prefer_stable" = "true" ]; then
+                      echo "prefer_stable is set to true in composer.json"
+                  else
+                      echo "prefer_stable is set, but not true in composer.json"
+                      exit 1
+                  fi
+              else
+                  echo "prefer_stable is not set in composer.json"
+                  exit 1
+              fi
+          
+            if jq -e 'has("minimum-stability")' composer.json > /dev/null; then
+                minimum_stability=$(jq -r '."minimum-stability"' composer.json)
+                if [ "$minimum_stability" = "dev" ]; then
+                  echo "minimum-stability is set to dev in composer.json"
+                else
+                  echo "minimum-stability is set, but not to dev in composer.json"
+                  exit 1
+                fi
+            else
+              echo "minimum-stability is not set in composer.json"
+              exit 1
+            fi
+          
+          else
+              echo "composer.json not found"
+              exit 1
+          fi
