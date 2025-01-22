@@ -22,7 +22,7 @@ jobs:
       - name: Checkout the code
         uses: actions/checkout@v4
         with:
-          ref: 'v${{ inputs.platform-version }}'
+          ref: '${{ inputs.platform-version }}'
 
       - name: Checkout osv configuration
         uses: actions/checkout@v4
