@@ -98,21 +98,21 @@ jobs:
           echo "$VULNERABILITIES_ENV" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      - name: Send results of checks to Microsoft Teams
-        if: ${{ failure() && steps.osvscanner.conclusion == 'failure' }}
-        uses: aliencube/microsoft-teams-actions@v0.8.0
-        with:
-          webhook_uri: ${{ secrets.TEAMS_COMPOSER_VULNERABILITY_URI }}
-          title: ${{ github.repository }} - ${{ inputs.platform-version }} vulnerabilities report
-          summary: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
-          text: |
-            Please check the following link for details: 
-            ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
+#      - name: Send results of checks to Microsoft Teams
+        #if: ${{ failure() && steps.osvscanner.conclusion == 'failure' }}
+        #+uses: aliencube/microsoft-teams-actions@v0.8.0
+        #with:
+          #webhook_uri: ${{ secrets.TEAMS_COMPOSER_VULNERABILITY_URI }}
+          #title: ${{ github.repository }} - ${{ inputs.platform-version }} vulnerabilities report
+          #summary: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
+          #text: |
+            #Please check the following link for details:
+            #${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
             
-            **Vulnerabilities found:**
-            ```
+            #**Vulnerabilities found:**
+            #```
             
-            ${{ env.VULNERABILITIES_ENV }}
+            #${{ env.VULNERABILITIES_ENV }}
             
-            ```
-            If the list is too long, please refer to the link above.
+            #```
+            #If the list is too long, please refer to the link above.
