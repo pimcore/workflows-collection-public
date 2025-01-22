@@ -75,13 +75,21 @@ jobs:
             composer require "$package_name:*" --no-update
           done
 
-      - name: Allow SBOM Plugin
+      - name: Set Composer stability
         run: |
-          composer config --no-plugins allow-plugins.cyclonedx/cyclonedx-php-composer true
           composer config minimum-stability dev
           composer config prefer-stable true
 
+      - name: Allow SBOM Plugin
+        if: ${{ inputs.composer-check-only == false }}
+        run: composer config --no-plugins allow-plugins.cyclonedx/cyclonedx-php-composer true
+
+      - name: Test composer
+        if: ${{ inputs.composer-check-only == true }}
+        run: composer --dry-run update
+
       - name: Install SBOM Plugin
+        if: ${{ inputs.composer-check-only == false }}
         run: composer require cyclonedx/cyclonedx-php-composer
 
       - name: CREATE SBOM
