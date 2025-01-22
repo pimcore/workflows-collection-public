@@ -80,19 +80,16 @@ jobs:
             composer require "$package_name:*" --no-update
           done
 
-      - name: Run Composer update
-        run: composer update
-
-      - name: Allow SBOM Plugin
-        if: ${{ inputs.composer-check-only == false }}
-        run: composer config --no-plugins allow-plugins.cyclonedx/cyclonedx-php-composer true
-
       - name: Upload composer artifacts
         if: ${{ inputs.composer-check-only == false }}
         uses: actions/upload-artifact@v4
         with:
           name: composer.json
           path: composer.json
+
+      - name: Allow SBOM Plugin
+        if: ${{ inputs.composer-check-only == false }}
+        run: composer config --no-plugins allow-plugins.cyclonedx/cyclonedx-php-composer true
 
       - name: Install SBOM Plugin
         if: ${{ inputs.composer-check-only == false }}
