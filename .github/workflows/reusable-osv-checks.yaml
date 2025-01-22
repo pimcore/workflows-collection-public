@@ -80,13 +80,6 @@ jobs:
             composer require "$package_name:*" --no-update
           done
 
-      - name: Upload composer artifacts
-        if: ${{ inputs.composer-check-only == false }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: composer.json
-          path: composer.json
-
       - name: Allow SBOM Plugin
         if: ${{ inputs.composer-check-only == false }}
         run: composer config --no-plugins allow-plugins.cyclonedx/cyclonedx-php-composer true
@@ -137,5 +130,5 @@ jobs:
             
             ${{ env.VULNERABILITIES_ENV }}
             
-            #```
+            ```
             #If the list is too long, please refer to the link above.
