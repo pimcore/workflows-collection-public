@@ -42,7 +42,7 @@ on:
       PIMCORE_ELASTIC_SEARCH_HOST:
         required: false
         type: string
-        default: "39200"
+        default: "39201"
       COVERAGE:
         required: false
         type: string
@@ -76,14 +76,14 @@ jobs:
       mariadb:
         image: "${{ inputs.DATABASE }}"
         ports:
-          - ${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}:3306
+          - 33006:3306
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: yes
 
       opensearch:
         image: opensearchproject/opensearch:latest
         ports:
-          - ${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}:9200
+          - ${{ inputs.PIMCORE_OPEN_SEARCH_HOST }}:9200
         env:
           cluster.name: "opensearch-cluster"
           node.name: "opensearch-node"
@@ -96,7 +96,7 @@ jobs:
       elastic:
         image: elasticsearch:${{ matrix.es_version }}
         ports:
-          - ${{ inputs.PHP_VERSION }}:9200
+          - ${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}:9200
         env:
           discovery.type: "single-node"
           ES_JAVA_OPTS: "-Xms512m -Xmx512m"
