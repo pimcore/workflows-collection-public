@@ -70,6 +70,8 @@ jobs:
 
       - name: Allow SBOM Plugin
         run: composer config --no-plugins allow-plugins.cyclonedx/cyclonedx-php-composer true
+        run: composer config --stability dev
+        run: composer config ----prefer-stable true
 
       - name: Install SBOM Plugin
         run: composer require cyclonedx/cyclonedx-php-composer
