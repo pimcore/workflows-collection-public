@@ -77,7 +77,7 @@ jobs:
 
       - name: Set Composer stability
         run: |
-          composer config minimum-stability dev
+          composer config minimum-stability "dev"
           composer config prefer-stable true
 
       - name: Allow SBOM Plugin
