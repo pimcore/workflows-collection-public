@@ -77,9 +77,11 @@ jobs:
               echo ${conflict} | base64 --decode | jq -r ${1}
             }
             package_name=$(_jq '.key')
-            composer require "$package_name:*"
+            composer require "$package_name:*" --no-update
           done
 
+      - name: Run Composer update
+        run: composer update
 
       - name: Allow SBOM Plugin
         if: ${{ inputs.composer-check-only == false }}
