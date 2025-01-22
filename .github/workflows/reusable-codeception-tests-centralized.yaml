@@ -43,6 +43,10 @@ on:
         required: false
         type: string
         default: "39201"
+      PIMCORE_ELASTIC_SEARCH_VERSION:
+        required: false
+        type: string
+        default: "8.4.3"
       COVERAGE:
         required: false
         type: string
@@ -94,7 +98,7 @@ jobs:
           DISABLE_SECURITY_PLUGIN: true
 
       elastic:
-        image: elasticsearch:${{ matrix.es_version }}
+        image: elasticsearch:${{ inputs.PIMCORE_ELASTIC_SEARCH_VERSION }}
         ports:
           - ${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}:9200
         env:
