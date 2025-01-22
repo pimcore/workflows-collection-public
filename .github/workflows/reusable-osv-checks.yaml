@@ -11,6 +11,10 @@ on:
               required: true
               type: string
               description: Platform version to check e.g., 2024.4
+            composer-check-only:
+              required: false
+              default: false
+              type: boolean
 
 jobs:
   osv:
@@ -25,6 +29,7 @@ jobs:
           ref: '${{ inputs.platform-version }}'
 
       - name: Checkout osv configuration
+        if: ${{ inputs.composer-check-only == false }}
         uses: actions/checkout@v4
         with:
           repository: pimcore/workflows-collection-public
@@ -40,9 +45,11 @@ jobs:
           php-version: ${{ inputs.php-version }}
 
       - name: Install jq
+        if: ${{ inputs.composer-check-only == false }}
         run: sudo apt-get install jq
 
       - name: Install OSV-Scanner
+        if: ${{ inputs.composer-check-only == false }}
         run : sudo snap install osv-scanner
 
       - name: Install SSH Key # this is necessary for Composer to be able to clone source from pimcore/ee-pimcore
@@ -78,9 +85,11 @@ jobs:
         run: composer require cyclonedx/cyclonedx-php-composer
 
       - name: CREATE SBOM
+        if: ${{ inputs.composer-check-only == false }}
         run: composer CycloneDX:make-sbom --output-file=sbom.json --output-format=json
 
       - name: Run OSV-Scanner
+        if: ${{ inputs.composer-check-only == false }}
         id: osvscanner
         run: |
           osv-scanner --sbom=sbom.json --output=osv-results.txt --config=tools/osv/${{inputs.platform-version}}.toml
@@ -93,7 +102,7 @@ jobs:
           path: osv-results.txt
 
       - name: Get new vulnerabilities
-        if: ${{ failure() && steps.osvscanner.conclusion == 'failure' }}
+        if: ${{ failure() && steps.osvscanner.conclusion == 'failure' && inputs.composer-check-only == false }}
         id: get_vulnerabilities
         run: |
           VULNERABILITIES_ENV=$(grep '^| ' osv-results.txt | cut -d'|' -f2,5,6)
@@ -101,21 +110,21 @@ jobs:
           echo "$VULNERABILITIES_ENV" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-#      - name: Send results of checks to Microsoft Teams
-        #if: ${{ failure() && steps.osvscanner.conclusion == 'failure' }}
-        #+uses: aliencube/microsoft-teams-actions@v0.8.0
-        #with:
-          #webhook_uri: ${{ secrets.TEAMS_COMPOSER_VULNERABILITY_URI }}
-          #title: ${{ github.repository }} - ${{ inputs.platform-version }} vulnerabilities report
-          #summary: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
-          #text: |
-            #Please check the following link for details:
-            #${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
+      - name: Send results of checks to Microsoft Teams
+        if: ${{ failure() && steps.osvscanner.conclusion == 'failure' && inputs.composer-check-only == false }}
+        uses: aliencube/microsoft-teams-actions@v0.8.0
+        with:
+          webhook_uri: ${{ secrets.TEAMS_COMPOSER_VULNERABILITY_URI }}
+          title: ${{ github.repository }} - ${{ inputs.platform-version }} vulnerabilities report
+          summary: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
+          text: |
+            Please check the following link for details:
+            ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
             
-            #**Vulnerabilities found:**
-            #```
+            **Vulnerabilities found:**
+            ```
             
-            #${{ env.VULNERABILITIES_ENV }}
+            ${{ env.VULNERABILITIES_ENV }}
             
             #```
             #If the list is too long, please refer to the link above.
