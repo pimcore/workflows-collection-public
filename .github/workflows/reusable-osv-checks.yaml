@@ -63,6 +63,11 @@ jobs:
           composer config repositories.private-packagist composer https://repo.pimcore.com/github-actions/
           composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
 
+      - name: Set Composer stability
+        run: |
+          composer config minimum-stability dev
+          composer config prefer-stable true
+
       - name: Read and modify composer.json
         id: update_composer
         run: |
@@ -72,13 +77,9 @@ jobs:
               echo ${conflict} | base64 --decode | jq -r ${1}
             }
             package_name=$(_jq '.key')
-            composer require "$package_name:*" --no-update
+            composer require "$package_name:*"
           done
 
-      - name: Set Composer stability
-        run: |
-          composer config minimum-stability "dev"
-          composer config prefer-stable true
 
       - name: Allow SBOM Plugin
         if: ${{ inputs.composer-check-only == false }}
