@@ -87,9 +87,12 @@ jobs:
         if: ${{ inputs.composer-check-only == false }}
         run: composer config --no-plugins allow-plugins.cyclonedx/cyclonedx-php-composer true
 
-      - name: Test composer
-        if: ${{ inputs.composer-check-only == true }}
-        run: composer --dry-run update
+      - name: Upload composer artifacts
+        if: ${{ inputs.composer-check-only == false }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: composer.json
+          path: composer.json
 
       - name: Install SBOM Plugin
         if: ${{ inputs.composer-check-only == false }}
