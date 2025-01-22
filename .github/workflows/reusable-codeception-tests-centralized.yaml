@@ -38,7 +38,11 @@ on:
       PIMCORE_OPEN_SEARCH_HOST:
         required: false
         type: string
-        default: "localhost:39200"
+        default: "39200"
+      PIMCORE_ELASTIC_SEARCH_HOST:
+        required: false
+        type: string
+        default: "39200"
       COVERAGE:
         required: false
         type: string
@@ -61,8 +65,8 @@ jobs:
     continue-on-error: ${{ inputs.EXPERIMENTAL == 'true' }}
     env:
       PIMCORE_TEST_DB_DSN: "mysql://root@127.0.0.1:33006/pimcore_test"
-      PIMCORE_OPEN_SEARCH_HOST: ${{ inputs.PIMCORE_OPEN_SEARCH_HOST }}
-      PIMCORE_ELASTIC_SEARCH_HOST: ${{ inputs.PIMCORE_OPEN_SEARCH_HOST }}
+      PIMCORE_OPEN_SEARCH_HOST: "localhost:${{ inputs.PIMCORE_OPEN_SEARCH_HOST }}"
+      PIMCORE_ELASTIC_SEARCH_HOST: "localhost:${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}"
       PIMCORE_PROJECT_ROOT: ${{ github.workspace }}
       APP_ENV: ${{ inputs.APP_ENV }}
       PIMCORE_TEST: ${{ inputs.PIMCORE_TEST }}
@@ -72,14 +76,14 @@ jobs:
       mariadb:
         image: "${{ inputs.DATABASE }}"
         ports:
-          - 33006:3306
+          - ${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}:3306
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: yes
 
       opensearch:
         image: opensearchproject/opensearch:latest
         ports:
-          - 39200:9200
+          - ${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}:9200
         env:
           cluster.name: "opensearch-cluster"
           node.name: "opensearch-node"
@@ -88,6 +92,16 @@ jobs:
           OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
           discovery.type: "single-node"
           DISABLE_SECURITY_PLUGIN: true
+
+      elastic:
+        image: elasticsearch:${{ matrix.es_version }}
+        ports:
+          - ${{ inputs.PHP_VERSION }}:9200
+        env:
+          discovery.type: "single-node"
+          ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+          xpack.security.enabled: "true"
+          xpack.security.authc.anonymous.roles: "superuser"
 
     steps:
       - name: "Checkout code"
