@@ -4,6 +4,29 @@ name: "Reusable codeception tests for public repositories"
 on:
   workflow_call:
     inputs:
+      PIMCORE_PROJECT_ROOT:
+        required: true
+        type: string
+      APP_ENV:
+        required: false
+        default: "test"
+        type: string
+      PIMCORE_TEST:
+        required: false
+        default: 1
+        type: number
+      PIMCORE_TEST_DB_DSN:
+        required: true
+        type: string
+      PIMCORE_TEST_REDIS_DSN:
+        required: true
+        type: string      
+      MINIO_ACCESS_KEY:
+        required: true
+        type: string                
+      MINIO_SECRET_KEY:     
+        required: true
+        type: string
       php-version:
         required: true
         default: "8.3"
@@ -34,6 +57,15 @@ on:
       repository:
         required: true
         type: string
+        
+env:
+    PIMCORE_PROJECT_ROOT: ${{ inputs.PIMCORE_PROJECT_ROOT }}
+    APP_ENV: ${{ inputs.APP_ENV }}
+    PIMCORE_TEST: ${{ inputs.PIMCORE_TEST }}
+    PIMCORE_TEST_DB_DSN: ${{ inputs.PIMCORE_TEST_DB_DSN }}
+    PIMCORE_TEST_REDIS_DSN: ${{ inputs.PIMCORE_TEST_REDIS_DSN }}
+    MINIO_ACCESS_KEY: ${{ inputs.MINIO_ACCESS_KEY }}
+    MINIO_SECRET_KEY: ${{ inputs.MINIO_SECRET_KEY }}
 
 jobs:
     codeception-tests:
