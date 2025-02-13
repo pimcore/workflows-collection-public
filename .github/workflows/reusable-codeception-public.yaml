@@ -4,29 +4,6 @@ name: "Reusable codeception tests for public repositories"
 on:
   workflow_call:
     inputs:
-      PIMCORE_PROJECT_ROOT:
-        required: true
-        type: string
-      APP_ENV:
-        required: false
-        default: "test"
-        type: string
-      PIMCORE_TEST:
-        required: false
-        default: 1
-        type: number
-      PIMCORE_TEST_DB_DSN:
-        required: true
-        type: string
-      PIMCORE_TEST_REDIS_DSN:
-        required: true
-        type: string      
-      MINIO_ACCESS_KEY:
-        required: true
-        type: string                
-      MINIO_SECRET_KEY:     
-        required: true
-        type: string
       php-version:
         required: true
         default: "8.3"
@@ -69,10 +46,10 @@ jobs:
                 ports:
                     - 9000:9000
                 env:
-                    MINIO_ROOT_USER: "${{ inputs.MINIO_ACCESS_KEY }}"
-                    MINIO_ROOT_PASSWORD: "${{ inputs.MINIO_SECRET_KEY }}"
-                    MINIO_SERVER_ACCESS_KEY: "${{ inputs.MINIO_ACCESS_KEY }}"
-                    MINIO_SERVER_SECRET_KEY: "${{ inputs.MINIO_SECRET_KEY }}"
+                    MINIO_ROOT_USER: "${{ env.MINIO_ACCESS_KEY }}"
+                    MINIO_ROOT_PASSWORD: "${{ env.MINIO_SECRET_KEY }}"
+                    MINIO_SERVER_ACCESS_KEY: "${{ env.MINIO_ACCESS_KEY }}"
+                    MINIO_SERVER_SECRET_KEY: "${{ env.MINIO_SECRET_KEY }}"
                     MINIO_DEFAULT_BUCKETS: "asset,assetcache,thumbnail,version,recyclebin,admin,emaillog,temp,applicationlog"
                 options: --name minio-server
             redis:
@@ -130,7 +107,7 @@ jobs:
               uses: "ramsey/composer-install@v2"
               with:
                   dependency-versions: "${{ inputs.dependencies }}"
-                  composer-options: "${{ inputs .composer-options }}"
+                  composer-options: "${{ inputs.composer-options }}"
 
             - name: "Test environment infos"
               run: |
