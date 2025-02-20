@@ -51,6 +51,10 @@ on:
         required: false
         type: string
         default: "none"
+      CACHE_CLEAR:
+        required: false
+        type: string
+        default: "false"
 
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
@@ -163,6 +167,11 @@ jobs:
         uses: "ramsey/composer-install@v3"
         with:
           dependency-versions: "${{ inputs.DEPENDENCIES }}"
+      
+      - name: "Run cache clear"
+        if: ${{ inputs.CACHE_CLEAR == 'true' }}
+        run: |
+          ./bin/console cache:clear --no-interaction
 
       - name: "Run Codeception"
         run: "vendor/bin/codecept run -c . -vvv --xml"
