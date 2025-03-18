@@ -38,6 +38,10 @@ on:
       COMPOSER_OPTIONS:
         required: false
         type: string
+      PRIVATE_PACKAGIST_CANONICAL:
+        required: false
+        type: string
+        default: "true"
 
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
@@ -89,7 +93,7 @@ jobs:
       - name: "Add authentication for private pimcore packages"
         if: ${{ inputs.PRIVATE_REPO == 'true' }}
         run: |
-          composer config repositories.private-packagist composer https://repo.pimcore.com/github-actions/
+          composer config repositories.private-packagist '{"type": "composer", "url": "https://repo.pimcore.com/github-actions/", "canonical": ${{ inputs.PRIVATE_PACKAGIST_CANONICAL }}}'
           composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
 
       - name: "Update Pimcore version"
