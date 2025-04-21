@@ -178,6 +178,8 @@ jobs:
       - name: "Run cache clear"
         if: ${{ inputs.CACHE_CLEAR == 'true' }}
         run: |
+          cat config/services.yaml
+          cat config/packages/test/config.yaml
           ./bin/console cache:clear --no-interaction
 
       - name: "Run Codeception"
