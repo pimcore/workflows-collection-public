@@ -177,14 +177,11 @@ jobs:
       
       - name: "Run cache clear"
         env:
-          PIMCORE_INSTANCE_IDENTIFIER: ${{ inputs.PRIVATE_REPO }}
-          PIMCORE_ENCRYPTION_SECRET1: ${{ secrets.PIMCORE_CI_ENCRYPTION_SECRET }}
-          PIMCORE_PRODUCT_KEY: ${{ secrets.PIMCORE_CI_PRODUCT_KEY }}
-          PIMCORE_PRODUCT_KEY1: "foobar"
+          PIMCORE_ENCRYPTION_SECRET: "foobar"
         if: ${{ inputs.CACHE_CLEAR == 'true' }}
         run: |
           echo "MY_SECRET=${PIMCORE_INSTANCE_IDENTIFIER}"
-          echo "MY_SECRET2=${PIMCORE_PRODUCT_KEY1}"
+          echo "MY_SECRET2=${PIMCORE_ENCRYPTION_SECRET}"
           ./bin/console cache:clear --no-interaction
 
       - name: "Run Codeception"
