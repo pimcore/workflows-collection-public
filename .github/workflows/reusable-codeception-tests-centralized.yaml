@@ -184,8 +184,6 @@ jobs:
       - name: "Run cache clear"
         if: ${{ inputs.CACHE_CLEAR == 'true' }}
         run: |
-          echo "MY_SECRET=${PIMCORE_ENCRYPTION_SECRET}"
-          echo "MY_SECRET2=${PIMCORE_ENCRYPTION_SECRET2}"
           ./bin/console cache:clear --no-interaction
 
       - name: "Run Codeception"
