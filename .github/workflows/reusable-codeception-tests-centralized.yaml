@@ -74,7 +74,7 @@ on:
       PIMCORE_ENCRYPTION_SECRET:
         required: false
       PIMCORE_PRODUCT_KEY:
-        required: false        
+        required: false
 
 jobs:
   codeception-tests:
@@ -184,6 +184,7 @@ jobs:
       - name: "Run cache clear"
         if: ${{ inputs.CACHE_CLEAR == 'true' }}
         run: |
+          echo "MY_SECRET=${PIMCORE_TEST_GOOGLE_CLIENT_ID}"
           ./bin/console cache:clear --no-interaction
 
       - name: "Run Codeception"
