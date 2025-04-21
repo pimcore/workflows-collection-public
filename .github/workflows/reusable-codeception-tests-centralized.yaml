@@ -180,6 +180,7 @@ jobs:
         run: |
           cat config/services.yaml
           cat config/packages/test/config.yaml
+          echo ${{ secrets.PIMCORE_CI_ENCRYPTION_SECRET }}
           ./bin/console cache:clear --no-interaction
 
       - name: "Run Codeception"
