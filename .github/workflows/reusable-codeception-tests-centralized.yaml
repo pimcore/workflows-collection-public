@@ -69,6 +69,12 @@ on:
         required: false
       GOOGLE_CLIENT_SECRET:
         required: false
+      PIMCORE_INSTANCE_IDENTIFIER:
+        required: false
+      PIMCORE_ENCRYPTION_SECRET:
+        required: false
+      PIMCORE_PRODUCT_KEY:
+        required: false        
 
 jobs:
   codeception-tests:
@@ -176,12 +182,8 @@ jobs:
           dependency-versions: "${{ inputs.DEPENDENCIES }}"
       
       - name: "Run cache clear"
-        env:
-          PIMCORE_ENCRYPTION_SECRET: "def00000620ba8d1ee36295fcf97492ccac5606408790aca72e1fa8cc7183e8f4dc4a4d9f0be8a5b9544410908e1d1e4ddb0b5bb351b3377fa4958059a9cac88e30684c4"
         if: ${{ inputs.CACHE_CLEAR == 'true' }}
         run: |
-          echo "MY_SECRET=${PIMCORE_INSTANCE_IDENTIFIER}"
-          echo "MY_SECRET2=${PIMCORE_ENCRYPTION_SECRET}"
           ./bin/console cache:clear --no-interaction
 
       - name: "Run Codeception"
