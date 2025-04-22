@@ -62,11 +62,11 @@ on:
       GOTENBERG_DNS:
         required: false
         type: string
-        default: "http://gotenberg:3000"
+        default: "http://127.0.0.1:31234"
       REDIS_DSN:
         required: false
         type: string
-        default: "redis://redis:6379"
+        default: "redis://127.0.0.1:63379"
 
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
