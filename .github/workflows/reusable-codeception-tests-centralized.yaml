@@ -62,9 +62,11 @@ on:
       GOTENBERG_DNS:
         require: false
         type: string
+        default: ""
       REDIS_DSN:
         require: false
         type: string
+        default: ""
 
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
