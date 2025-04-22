@@ -156,6 +156,11 @@ jobs:
           ini-values: display_errors=On, display_startup_errors=On, error_reporting=32767
           php-version: "${{ inputs.PHP_VERSION }}"
 
+      - name: "Install Ghostscript and PDFInfo"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ghostscript poppler-utils
+
       - name: Verify MariaDB connection
         run: |
           cp .github/ci/files/.my.cnf ~/.my.cnf
