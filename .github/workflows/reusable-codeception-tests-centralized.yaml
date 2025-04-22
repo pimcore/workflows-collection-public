@@ -102,7 +102,7 @@ jobs:
       PIMCORE_ENCRYPTION_SECRET: ${{ secrets.PIMCORE_ENCRYPTION_SECRET }}
       PIMCORE_PRODUCT_KEY: ${{ secrets.PIMCORE_PRODUCT_KEY }}
       PIMCORE_TEST_REDIS_DSN: ${{inputs.REDIS_DSN}}
-      PIMCORE_TEST_GOTENBERG_DNS: {{inputs.GOTENBERG_DNS}}
+      PIMCORE_TEST_GOTENBERG_DNS: ${{inputs.GOTENBERG_DNS}}
     services:
       mariadb:
         image: "${{ inputs.DATABASE }}"
