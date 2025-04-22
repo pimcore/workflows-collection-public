@@ -60,11 +60,11 @@ on:
         type: string
         default: "true"
       GOTENBERG_DNS:
-        require: false
+        required: false
         type: string
         default: ""
       REDIS_DSN:
-        require: false
+        required: false
         type: string
         default: ""
 
