@@ -59,6 +59,12 @@ on:
         required: false
         type: string
         default: "true"
+      GOTENBERG_DNS:
+        require: false
+        type: string
+      REDIS_DSN:
+        require: false
+        type: string
 
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
@@ -93,6 +99,8 @@ jobs:
       PIMCORE_INSTANCE_IDENTIFIER: ${{ secrets.PIMCORE_INSTANCE_IDENTIFIER }}
       PIMCORE_ENCRYPTION_SECRET: ${{ secrets.PIMCORE_ENCRYPTION_SECRET }}
       PIMCORE_PRODUCT_KEY: ${{ secrets.PIMCORE_PRODUCT_KEY }}
+      PIMCORE_TEST_REDIS_DSN: ${{inputs.REDIS_DSN}}
+      PIMCORE_TEST_GOTENBERG_DNS: {{inputs.GOTENBERG_DNS}}
     services:
       mariadb:
         image: "${{ inputs.DATABASE }}"
