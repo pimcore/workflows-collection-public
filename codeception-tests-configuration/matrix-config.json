@@ -9,7 +9,9 @@
           "dependencies": "lowest",
           "experimental": "false",
           "require_admin_bundle" : "false",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         },
         {
           "php-version": "8.3",
@@ -17,7 +19,9 @@
           "dependencies": "highest",
           "experimental": "false",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         }
       ]
     },
@@ -30,7 +34,9 @@
           "dependencies": "lowest",
           "experimental": "false",
           "require_admin_bundle" : "false",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         },
         {
           "php-version": "8.3",
@@ -38,7 +44,9 @@
           "dependencies": "highest",
           "experimental": "false",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         }
       ]
     },
@@ -51,7 +59,9 @@
           "dependencies": "lowest",
           "experimental": "false",
           "require_admin_bundle" : "false",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         },
         {
           "php-version": "8.4",
@@ -60,7 +70,9 @@
           "pimcore_version": "12.x-dev as 12.99.9",
           "experimental": "true",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         }
       ]
     },
@@ -73,7 +85,9 @@
           "dependencies": "lowest",
           "experimental": "false",
           "require_admin_bundle" : "false",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         },
         {
           "php-version": "8.3",
@@ -81,7 +95,9 @@
           "dependencies": "highest",
           "experimental": "false",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         }
       ]
     },
@@ -94,7 +110,9 @@
           "dependencies": "lowest",
           "experimental": "false",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         },
         {
           "php-version": "8.3",
@@ -102,7 +120,9 @@
           "dependencies": "lowest",
           "experimental": "false",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         },
         {
           "php-version": "8.4",
@@ -110,7 +130,9 @@
           "dependencies": "highest",
           "experimental": "false",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         },
         {
           "php-version": "8.4",
@@ -119,7 +141,9 @@
           "pimcore_version": "12.x-dev as 12.99.9",
           "experimental": "true",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         },
         {
           "php-version": "8.4",
@@ -128,7 +152,9 @@
           "pimcore_version": "12.x-dev as 12.99.9",
           "experimental": "true",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         }
       ]
     },
@@ -142,7 +168,9 @@
           "dependencies": "lowest",
           "experimental": "false",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         },
         {
           "php-version": "8.4",
@@ -150,7 +178,9 @@
           "dependencies": "highest",
           "experimental": "false",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         },
         {
           "php-version": "8.4",
@@ -159,7 +189,9 @@
           "pimcore_version": "12.x-dev as 12.99.9",
           "experimental": "true",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         }
       ]
     },
@@ -172,7 +204,9 @@
           "dependencies": "lowest",
           "experimental": "false",
           "require_admin_bundle" : "false",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         },
         {
           "php-version": "8.2",
@@ -180,7 +214,9 @@
           "dependencies": "highest",
           "experimental": "false",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         }
       ]
     },
@@ -193,7 +229,9 @@
           "dependencies": "lowest",
           "experimental": "false",
           "require_admin_bundle" : "false",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         },
         {
           "php-version": "8.2",
@@ -201,7 +239,9 @@
           "dependencies": "highest",
           "experimental": "false",
           "require_admin_bundle" : "true",
-          "es_version": "8.4.3"
+          "es_version": "8.4.3",
+          "gotenberg_dns": "http://gotenberg:3000",
+          "redis_dns": "redis://redis:6379"
         }
       ]
     }
