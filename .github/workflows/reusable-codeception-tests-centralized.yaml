@@ -158,9 +158,9 @@ jobs:
 
       - name: "Install Ghostscript and PDFInfo"
         run: |
-          sudo apt-get update
+          sudo apt-get update --allow-releaseinfo-change
           sudo apt-get install -y ghostscript poppler-utils
-
+          
       - name: Verify MariaDB connection
         run: |
           cp .github/ci/files/.my.cnf ~/.my.cnf
