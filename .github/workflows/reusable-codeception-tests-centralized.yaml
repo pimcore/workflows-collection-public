@@ -90,6 +90,7 @@ jobs:
     runs-on: "ubuntu-22.04"
     continue-on-error: ${{ inputs.EXPERIMENTAL == 'true' }}
     env:
+      SYMFONY_DEPRECATIONS_HELPER: "weak"
       PIMCORE_TEST_DB_DSN: "mysql://root@127.0.0.1:33006/pimcore_test"
       PIMCORE_OPEN_SEARCH_HOST: "localhost:${{ inputs.PIMCORE_OPEN_SEARCH_HOST }}"
       PIMCORE_ELASTIC_SEARCH_HOST: "localhost:${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}"
