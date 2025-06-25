@@ -47,6 +47,10 @@ on:
         required: false
         type: string
         default: "8.4.3"
+      PIMCORE_OPENSEARCH_VERSION:
+        required: false
+        type: string
+        default: "latest"
       COVERAGE:
         required: false
         type: string
@@ -113,7 +117,7 @@ jobs:
           MYSQL_ALLOW_EMPTY_PASSWORD: yes
 
       opensearch:
-        image: opensearchproject/opensearch:latest
+        image: opensearchproject/opensearch:${{ inputs.PIMCORE_OPENSEARCH_VERSION }}
         ports:
           - ${{ inputs.PIMCORE_OPEN_SEARCH_HOST }}:9200
         env:
