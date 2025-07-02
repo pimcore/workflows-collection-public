@@ -50,7 +50,7 @@ on:
       PIMCORE_OPENSEARCH_VERSION:
         required: false
         type: string
-        default: "latest"
+        default: "2"
       COVERAGE:
         required: false
         type: string
