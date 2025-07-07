@@ -19,6 +19,6 @@ jobs:
           path-to-signatures: "signatures/version1/cla.json"
           path-to-document: "https://github.com/pimcore/pimcore/blob/master/CLA.md"
           branch: "main"
-          allowlist: user1,bot*,copilot*
+          allowlist: user1,bot*,Copilot
           remote-organization-name: "pimcore"
           remote-repository-name: "cla"
