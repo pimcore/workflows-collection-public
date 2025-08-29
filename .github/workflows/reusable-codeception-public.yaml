@@ -13,8 +13,8 @@ on:
         type: string
       PIMCORE_TEST:
         required: false
-        default: 1
-        type: number
+        default: "1"
+        type: string
       PIMCORE_TEST_DB_DSN:
         required: true
         type: string
@@ -57,7 +57,21 @@ on:
       repository:
         required: true
         type: string
-        
+    secrets:
+      COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
+        required: false
+      SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER:
+        required: false
+      GOOGLE_CLIENT_ID:
+        required: false
+      GOOGLE_CLIENT_SECRET:
+        required: false
+      PIMCORE_INSTANCE_IDENTIFIER:
+        required: false
+      PIMCORE_ENCRYPTION_SECRET:
+        required: false
+      PIMCORE_PRODUCT_KEY:
+        required: false        
 env:
     PIMCORE_PROJECT_ROOT: ${{ inputs.PIMCORE_PROJECT_ROOT }}
     APP_ENV: ${{ inputs.APP_ENV }}
@@ -66,6 +80,9 @@ env:
     PIMCORE_TEST_REDIS_DSN: ${{ inputs.PIMCORE_TEST_REDIS_DSN }}
     MINIO_ACCESS_KEY: ${{ inputs.MINIO_ACCESS_KEY }}
     MINIO_SECRET_KEY: ${{ inputs.MINIO_SECRET_KEY }}
+    PIMCORE_INSTANCE_IDENTIFIER: ${{ secrets.PIMCORE_INSTANCE_IDENTIFIER }}
+    PIMCORE_ENCRYPTION_SECRET: ${{ secrets.PIMCORE_ENCRYPTION_SECRET }}
+    PIMCORE_PRODUCT_KEY: ${{ secrets.PIMCORE_PRODUCT_KEY }}
 
 jobs:
     codeception-tests:
