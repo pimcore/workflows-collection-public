@@ -118,6 +118,9 @@ jobs:
             - name: "Setup minio buckets"
               run: |
                   curl -sL https://dl.min.io/client/mc/release/linux-amd64/mc -o mc
+                  curl -sL https://dl.min.io/client/mc/release/linux-amd64/mc.sha256sum -o mc.sha256sum
+                  # Verify checksum
+                  sha256sum -c mc.sha256sum
                   chmod +x mc
                   ./mc alias set myminio http://localhost:9000 ${{ env.MINIO_ACCESS_KEY }} ${{ env.MINIO_SECRET_KEY }}
                   for bucket in asset assetcache thumbnail version recyclebin admin emaillog temp applicationlog; do
