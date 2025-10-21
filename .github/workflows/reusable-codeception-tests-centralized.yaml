@@ -173,24 +173,6 @@ jobs:
             sleep 1
           done
 
-
-      - name: Verify OpenSearch connection
-        run: |
-            sleep 20
-            for i in {1..60}; do
-              STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${{ inputs.PIMCORE_OPEN_SEARCH_HOST }})
-              if [ $STATUS -eq 200 ]; then
-                echo "OpenSearch is ready."
-                break
-              fi
-              echo "Waiting for OpenSearch... ($i/60)"
-              sleep 1
-            done
-            if [ $STATUS -ne 200 ]; then
-              echo "OpenSearch failed to start"
-              exit 1
-            fi
-
       - name: "Create Database"
         run: |
           mysql -e "CREATE DATABASE pimcore_test CHARSET=utf8mb4;"
@@ -235,4 +217,7 @@ jobs:
           ./bin/console cache:clear --no-interaction
 
       - name: "Run Codeception"
-        run: "vendor/bin/codecept run -c . -vvv --xml"
+        run: |
+          sleep 60
+          vendor/bin/codecept run -c . -vvv --xml
+
