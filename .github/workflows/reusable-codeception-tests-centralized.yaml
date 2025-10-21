@@ -177,7 +177,7 @@ jobs:
       - name: Verify OpenSearch connection
         run: |
             for i in {1..60}; do
-              STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9200)
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${{ inputs.PIMCORE_OPEN_SEARCH_HOST }})
               if [ $STATUS -eq 200 ]; then
                 echo "OpenSearch is ready."
                 break
