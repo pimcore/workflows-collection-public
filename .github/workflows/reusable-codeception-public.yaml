@@ -137,6 +137,22 @@ jobs:
                     sleep 1
                   done
 
+            - name: Verify OpenSearch connection
+              run: |
+                  for i in {1..60}; do
+                    STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9200)
+                    if [ $STATUS -eq 200 ]; then
+                      echo "OpenSearch is ready."
+                      break
+                    fi
+                    echo "Waiting for OpenSearch... ($i/60)"
+                    sleep 1
+                  done
+                  if [ $STATUS -ne 200 ]; then
+                    echo "OpenSearch failed to start"
+                    exit 1
+                  fi
+
             - name: "Setup Pimcore environment"
               env:
                   PIMCORE_STORAGE: "${{ inputs.storage }}"
