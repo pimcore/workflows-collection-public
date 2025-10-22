@@ -216,8 +216,11 @@ jobs:
         run: |
           ./bin/console cache:clear --no-interaction
 
+      - name: "Create OpenSearch indices"
+        run: |
+          ./bin/console generic-data-index:update:index -r
+
       - name: "Run Codeception"
         run: |
-          sleep 60
           vendor/bin/codecept run -c . -vvv --xml
 
