@@ -210,19 +210,11 @@ jobs:
         uses: "ramsey/composer-install@v3"
         with:
           dependency-versions: "${{ inputs.DEPENDENCIES }}"
-      
-      - name: "Run Pimcore migrations"
-        run: |
-          ./bin/console doctrine:migrations:migrate --no-interaction --allow-no-migration
           
       - name: "Run cache clear"
         if: ${{ inputs.CACHE_CLEAR == 'true' }}
         run: |
           ./bin/console cache:clear --no-interaction
-
-      - name: "Create OpenSearch indices"
-        run: |
-          ./bin/console generic-data-index:update:index -r
 
       - name: "Run Codeception"
         run: |
