@@ -211,6 +211,10 @@ jobs:
         with:
           dependency-versions: "${{ inputs.DEPENDENCIES }}"
       
+      - name: "Run Pimcore migrations"
+        run: |
+          ./bin/console doctrine:migrations:migrate --no-interaction --allow-no-migration
+          
       - name: "Run cache clear"
         if: ${{ inputs.CACHE_CLEAR == 'true' }}
         run: |
