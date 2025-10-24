@@ -134,15 +134,15 @@ jobs:
           DISABLE_SECURITY_PLUGIN: true
 
       elastic:
-        image: ${{ inputs.ENABLE_ELASTICSEARCH && format('elasticsearch:{0}', inputs.PIMCORE_ELASTIC_SEARCH_VERSION) || 'bash:latest' }}
-        ports: ${{ inputs.ENABLE_ELASTICSEARCH && format('[ "{0}:9200" ]', inputs.PIMCORE_ELASTIC_SEARCH_HOST) || '' }}
+        image: ${{ inputs.ENABLE_ELASTICSEARCH && format('elasticsearch:{0}', inputs.PIMCORE_ELASTIC_SEARCH_VERSION) || 'bash:5' }}
+        ports:
+          - ${{ inputs.ENABLE_ELASTICSEARCH && inputs.PIMCORE_ELASTIC_SEARCH_HOST || '39299' }}:9200
         env:
-          ${{
-            inputs.ENABLE_ELASTICSEARCH && (
-              format('discovery.type: "single-node"\nES_JAVA_OPTS: "-Xms512m -Xmx512m"\nxpack.security.enabled: "true"\nxpack.security.authc.anonymous.roles: "superuser"')
-            ) || ''
-          }}
-        options: ${{ inputs.ENABLE_ELASTICSEARCH && '' || '--entrypoint=""' }}
+          discovery.type: ${{ inputs.ENABLE_ELASTICSEARCH && 'single-node' || 'none' }}
+          ES_JAVA_OPTS: ${{ inputs.ENABLE_ELASTICSEARCH && '-Xms512m -Xmx512m' || '-Xms1m -Xmx1m' }}
+          xpack.security.enabled: ${{ inputs.ENABLE_ELASTICSEARCH && 'true' || 'false' }}
+          xpack.security.authc.anonymous.roles: ${{ inputs.ENABLE_ELASTICSEARCH && 'superuser' || 'none' }}
+        options: ${{ !inputs.ENABLE_ELASTICSEARCH && 'bash -c "sleep infinity"' || '' }}
 
       gotenberg:
         image: gotenberg/gotenberg:8
