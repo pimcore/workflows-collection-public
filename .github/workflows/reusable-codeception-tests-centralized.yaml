@@ -135,13 +135,13 @@ jobs:
 
       elastic:
         image: ${{ inputs.ENABLE_ELASTICSEARCH && format('elasticsearch:{0}', inputs.PIMCORE_ELASTIC_SEARCH_VERSION) || 'bash:latest' }}
-        ports:
-          - ${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}:9200
+        ports: ${{ inputs.ENABLE_ELASTICSEARCH && format('[ "{0}:9200" ]', inputs.PIMCORE_ELASTIC_SEARCH_HOST) || '' }}
         env:
-          discovery.type: "single-node"
-          ES_JAVA_OPTS: "-Xms512m -Xmx512m"
-          xpack.security.enabled: "true"
-          xpack.security.authc.anonymous.roles: "superuser"
+          ${{
+            inputs.ENABLE_ELASTICSEARCH && (
+              format('discovery.type: "single-node"\nES_JAVA_OPTS: "-Xms512m -Xmx512m"\nxpack.security.enabled: "true"\nxpack.security.authc.anonymous.roles: "superuser"')
+            ) || ''
+          }}
         options: ${{ inputs.ENABLE_ELASTICSEARCH && '' || '--entrypoint=""' }}
 
       gotenberg:
