@@ -71,6 +71,10 @@ on:
         required: false
         type: string
         default: "redis://127.0.0.1:63379"
+      ENABLE_ELASTICSEARCH:
+        required: false
+        type: boolean
+        default: false         
 
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
@@ -108,6 +112,7 @@ jobs:
       PIMCORE_PRODUCT_KEY: ${{ secrets.PIMCORE_PRODUCT_KEY }}
       PIMCORE_TEST_REDIS_DSN: ${{inputs.REDIS_DSN}}
       PIMCORE_TEST_GOTENBERG_DNS: ${{inputs.GOTENBERG_DNS}}
+
     services:
       mariadb:
         image: "${{ inputs.DATABASE }}"
@@ -130,14 +135,10 @@ jobs:
           DISABLE_SECURITY_PLUGIN: true
 
       elastic:
-        image: elasticsearch:${{ inputs.PIMCORE_ELASTIC_SEARCH_VERSION }}
+        image: ${{ inputs.ENABLE_ELASTICSEARCH && format('elasticsearch:{0}', inputs.PIMCORE_ELASTIC_SEARCH_VERSION) || 'nginx:alpine' }}
         ports:
-          - ${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}:9200
-        env:
-          discovery.type: "single-node"
-          ES_JAVA_OPTS: "-Xms512m -Xmx512m"
-          xpack.security.enabled: "true"
-          xpack.security.authc.anonymous.roles: "superuser"
+          - ${{ inputs.ENABLE_ELASTICSEARCH && inputs.PIMCORE_ELASTIC_SEARCH_HOST || '0' }}:9200
+        env: ${{ inputs.ENABLE_ELASTICSEARCH && fromJSON('{"discovery.type":"single-node","ES_JAVA_OPTS":"-Xms512m -Xmx512m","xpack.security.enabled":"true","xpack.security.authc.anonymous.roles":"superuser"}') || fromJSON('{}') }}
 
       gotenberg:
         image: gotenberg/gotenberg:8
