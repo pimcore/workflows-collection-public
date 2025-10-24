@@ -71,6 +71,10 @@ on:
         required: false
         type: string
         default: "redis://127.0.0.1:63379"
+      ENABLE_ELASTICSEARCH:
+        required: false
+        type: boolean
+        default: false
 
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
@@ -129,15 +133,16 @@ jobs:
           discovery.type: "single-node"
           DISABLE_SECURITY_PLUGIN: true
 
-      # elastic:
-      #   image: elasticsearch:${{ inputs.PIMCORE_ELASTIC_SEARCH_VERSION }}
-      #   ports:
-      #     - ${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}:9200
-      #   env:
-      #     discovery.type: "single-node"
-      #     ES_JAVA_OPTS: "-Xms512m -Xmx512m"
-      #     xpack.security.enabled: "true"
-      #     xpack.security.authc.anonymous.roles: "superuser"
+      elastic:
+        image: ${{ inputs.ENABLE_ELASTICSEARCH && format('elasticsearch:{0}', inputs.PIMCORE_ELASTIC_SEARCH_VERSION) || 'bash:latest' }}
+        ports:
+          - ${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}:9200
+        env:
+          discovery.type: "single-node"
+          ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+          xpack.security.enabled: "true"
+          xpack.security.authc.anonymous.roles: "superuser"
+        options: ${{ inputs.ENABLE_ELASTICSEARCH && '' || '--entrypoint=""' }}
 
       gotenberg:
         image: gotenberg/gotenberg:8
