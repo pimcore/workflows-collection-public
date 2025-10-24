@@ -71,10 +71,6 @@ on:
         required: false
         type: string
         default: "redis://127.0.0.1:63379"
-      ENABLE_ELASTICSEARCH:
-        required: false
-        type: boolean
-        default: false
 
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
@@ -101,7 +97,7 @@ jobs:
       SYMFONY_DEPRECATIONS_HELPER: "weak"
       PIMCORE_TEST_DB_DSN: "mysql://root@127.0.0.1:33006/pimcore_test"
       PIMCORE_OPEN_SEARCH_HOST: "localhost:${{ inputs.PIMCORE_OPEN_SEARCH_HOST }}"
-      PIMCORE_ELASTIC_SEARCH_HOST: "${{ inputs.ENABLE_ELASTICSEARCH && format('localhost:{0}', inputs.PIMCORE_ELASTIC_SEARCH_HOST) || '' }}"
+      PIMCORE_ELASTIC_SEARCH_HOST: "localhost:${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}"
       PIMCORE_PROJECT_ROOT: ${{ github.workspace }}
       APP_ENV: ${{ inputs.APP_ENV }}
       PIMCORE_TEST: ${{ inputs.PIMCORE_TEST }}
@@ -132,6 +128,16 @@ jobs:
           OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
           discovery.type: "single-node"
           DISABLE_SECURITY_PLUGIN: true
+
+      elastic:
+        image: elasticsearch:${{ inputs.PIMCORE_ELASTIC_SEARCH_VERSION }}
+        ports:
+          - ${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}:9200
+        env:
+          discovery.type: "single-node"
+          ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+          xpack.security.enabled: "true"
+          xpack.security.authc.anonymous.roles: "superuser"
 
       gotenberg:
         image: gotenberg/gotenberg:8
@@ -170,28 +176,6 @@ jobs:
       - name: "Create Database"
         run: |
           mysql -e "CREATE DATABASE pimcore_test CHARSET=utf8mb4;"
-
-      - name: "Start Elasticsearch"
-        if: ${{ inputs.ENABLE_ELASTICSEARCH }}
-        run: |
-          docker rm -f codeception-elastic || true
-          docker pull elasticsearch:${{ inputs.PIMCORE_ELASTIC_SEARCH_VERSION }}
-          docker run -d --name codeception-elastic \
-            -p ${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}:9200 \
-            -e discovery.type=single-node \
-            -e ES_JAVA_OPTS="-Xms512m -Xmx512m" \
-            -e xpack.security.enabled=true \
-            -e xpack.security.authc.anonymous.roles=superuser \
-            elasticsearch:${{ inputs.PIMCORE_ELASTIC_SEARCH_VERSION }}
-          for attempt in {1..30}; do
-            if curl -fs "http://localhost:${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}/_cluster/health?wait_for_status=yellow&timeout=1s" > /dev/null; then
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "Elasticsearch did not become ready in time" >&2
-          docker logs codeception-elastic || true
-          exit 1
 
       - name: "Setup Pimcore environment"
         env:
@@ -234,7 +218,3 @@ jobs:
 
       - name: "Run Codeception"
         run: "vendor/bin/codecept run -c . -vvv --xml"
-
-      - name: "Stop Elasticsearch"
-        if: ${{ always() && inputs.ENABLE_ELASTICSEARCH }}
-        run: docker rm -f codeception-elastic || true
