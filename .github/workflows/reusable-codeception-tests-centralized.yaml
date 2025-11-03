@@ -258,72 +258,37 @@ jobs:
           TARGET_BRANCH: "${{ steps.branch-info.outputs.target_branch }}"
           REPO_NAME: "${{ github.repository }}"
         run: |
-          echo "Checking Symfony6 freeze configuration for repository: $REPO_NAME, branch: $TARGET_BRANCH"
-          
-          # Define the config file path
           CONFIG_FILE="config/symfony6-freeze.json"
           
-          # Check if config file exists
           if [ ! -f "$CONFIG_FILE" ]; then
-            echo "❌ Symfony6 freeze configuration file $CONFIG_FILE not found"
-            echo "Skipping Symfony6 freeze package installation"
             echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
             exit 0
-          else
-            echo "✅ Found Symfony6 freeze configuration file: $CONFIG_FILE"
           fi
           
-          # Extract repo name from full repository path (owner/repo -> repo)
           REPO_SHORT_NAME=$(echo "$REPO_NAME" | cut -d'/' -f2)
-          echo "Full repository name: $REPO_NAME"
-          echo "Repository short name: $REPO_SHORT_NAME"
-          echo "Target branch: $TARGET_BRANCH"
           
-          # Debug: Show what we're looking for
-          echo "Looking for repository key: '$REPO_SHORT_NAME' in config file"
-          echo "Config file contents:"
-          cat "$CONFIG_FILE"
+          echo "Checking Symfony6 freeze for $REPO_SHORT_NAME:$TARGET_BRANCH"
           
-          # Use jq to check if the repo exists and if the branch is in the array
           if command -v jq >/dev/null 2>&1; then
-            # Check if the repository exists in the config
-            echo "Checking if repository '$REPO_SHORT_NAME' exists in config..."
             if jq -e ".\"$REPO_SHORT_NAME\"" "$CONFIG_FILE" >/dev/null 2>&1; then
-              echo "✅ Found repository $REPO_SHORT_NAME in Symfony6 freeze configuration"
-              
-              # Check if the current branch is in the array for this repository
-              echo "Checking if branch '$TARGET_BRANCH' is in the array for repository '$REPO_SHORT_NAME'..."
-              BRANCH_ARRAY=$(jq -r ".\"$REPO_SHORT_NAME\"" "$CONFIG_FILE")
-              echo "Available branches for $REPO_SHORT_NAME: $BRANCH_ARRAY"
-              
               if jq -e ".\"$REPO_SHORT_NAME\" | index(\"$TARGET_BRANCH\")" "$CONFIG_FILE" >/dev/null 2>&1; then
-                echo "✅ Branch $TARGET_BRANCH is configured for Symfony6 freeze for repository $REPO_SHORT_NAME"
-                echo "Installing pimcore/symfony-freeze package..."
-                
-                # Install the Symfony freeze package
+                echo "Installing pimcore/symfony-freeze:^6.0 for $REPO_SHORT_NAME:$TARGET_BRANCH"
+              
                 composer require --no-update pimcore/symfony-freeze:^6.0
                 
                 if [ $? -eq 0 ]; then
-                  echo "Successfully added pimcore/symfony-freeze:^6.0 to composer.json"
+                  echo "Successfully added pimcore/symfony-freeze:^6.0"
                   echo "SYMFONY_FREEZE_INSTALLED=true" >> $GITHUB_ENV
                 else
-                  echo "Error: Failed to add pimcore/symfony-freeze package"
                   exit 1
                 fi
               else
-                echo "❌ Branch $TARGET_BRANCH is not configured for Symfony6 freeze for repository $REPO_SHORT_NAME"
-                echo "Skipping Symfony6 freeze package installation"
                 echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
               fi
             else
-              echo "❌ Repository $REPO_SHORT_NAME not found in Symfony6 freeze configuration"
-              echo "Available repositories in config:"
-              jq -r 'keys[]' "$CONFIG_FILE"
-              echo "Skipping Symfony6 freeze package installation"
               echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
             fi
           else
-            echo "Error: jq not found. Cannot parse JSON configuration."
             echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
             exit 1
           fi
