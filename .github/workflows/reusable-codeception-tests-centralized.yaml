@@ -227,17 +227,37 @@ jobs:
         run: |
           echo "Checking Symfony6 freeze configuration for repository: $REPO_NAME, branch: $TARGET_BRANCH"
           
+          # Debug: Show current working directory and list files
+          echo "Current working directory: $(pwd)"
+          echo "Files in current directory:"
+          ls -la
+          echo "Files in config directory (if exists):"
+          ls -la config/ 2>/dev/null || echo "Config directory not found"
+          
           # Define the config file path
           CONFIG_FILE="config/symfony6-freeze.json"
           
           # Check if config file exists
           if [ ! -f "$CONFIG_FILE" ]; then
-            echo "Symfony6 freeze configuration file $CONFIG_FILE not found"
-            echo "Skipping Symfony6 freeze package installation"
-            exit 0
+            echo "❌ Symfony6 freeze configuration file $CONFIG_FILE not found"
+            echo "Checking alternative paths..."
+            
+            # Try alternative paths
+            if [ -f ".github/config/symfony6-freeze.json" ]; then
+              CONFIG_FILE=".github/config/symfony6-freeze.json"
+              echo "✅ Found config file at: $CONFIG_FILE"
+            elif [ -f "symfony6-freeze.json" ]; then
+              CONFIG_FILE="symfony6-freeze.json"
+              echo "✅ Found config file at: $CONFIG_FILE"
+            else
+              echo "❌ No Symfony6 freeze configuration file found in any expected location"
+              echo "Skipping Symfony6 freeze package installation"
+              echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
+              exit 0
+            fi
+          else
+            echo "✅ Found Symfony6 freeze configuration file: $CONFIG_FILE"
           fi
-          
-          echo "Found Symfony6 freeze configuration file: $CONFIG_FILE"
           
           # Extract repo name from full repository path (owner/repo -> repo)
           REPO_SHORT_NAME=$(echo "$REPO_NAME" | cut -d'/' -f2)
