@@ -222,15 +222,12 @@ jobs:
 
       - name: "Download Symfony6 freeze configuration"
         run: |
-          echo "Downloading Symfony6 freeze configuration file..."
           mkdir -p config
           
-          # Smart branch detection: try common development branches first, then main
           BRANCHES_TO_TRY=("symfony6-freeze" "develop" "main")
           SUCCESS=false
           
           for BRANCH in "${BRANCHES_TO_TRY[@]}"; do
-            echo "Trying to download from branch: $BRANCH"
             
             curl -s -H "Authorization: token ${{ github.token }}" \
                  -H "Accept: application/vnd.github.v3.raw" \
@@ -238,17 +235,16 @@ jobs:
                  "https://api.github.com/repos/pimcore/workflows-collection-public/contents/config/symfony6-freeze.json?ref=$BRANCH"
             
             if [ $? -eq 0 ] && [ -f "config/symfony6-freeze.json" ] && [ -s "config/symfony6-freeze.json" ]; then
-              echo "✅ Successfully downloaded Symfony6 freeze configuration from branch: $BRANCH"
+              echo "Successfully downloaded Symfony6 freeze configuration from branch: $BRANCH"
               SUCCESS=true
               break
             else
-              echo "⚠️ Failed to download from branch: $BRANCH"
               rm -f config/symfony6-freeze.json 2>/dev/null
             fi
           done
           
           if [ "$SUCCESS" = false ]; then
-            echo "❌ Failed to download Symfony6 freeze configuration from any branch"
+            echo "Failed to download Symfony6 freeze configuration from any branch"
             echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
             exit 0
           fi
