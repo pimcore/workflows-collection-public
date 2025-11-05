@@ -220,83 +220,27 @@ jobs:
                 composer require --no-update pimcore/pimcore:"${PIMCORE_VERSION}"
           fi
 
-      - name: "Download Symfony6 freeze configuration"
-        run: |
-          mkdir -p config
-          
-          # Determine the actual workflows repository branch from the workflow reference
-          WORKFLOW_REF="${{ github.workflow_ref }}"
-          if [[ "$WORKFLOW_REF" =~ @(.+)$ ]]; then
-            WORKFLOWS_BRANCH="${BASH_REMATCH[1]}"
-            echo "Detected workflows branch from reference: $WORKFLOWS_BRANCH"
-            BRANCHES_TO_TRY=("$WORKFLOWS_BRANCH" "main")
-          else
-            echo "Could not detect workflows branch, using main as fallback"
-            BRANCHES_TO_TRY=("main")
-          fi
-          
-          SUCCESS=false
-          
-          for BRANCH in "${BRANCHES_TO_TRY[@]}"; do
-            
-            curl -s -H "Authorization: token ${{ github.token }}" \
-                 -H "Accept: application/vnd.github.v3.raw" \
-                 -o config/symfony6-freeze.json \
-                 "https://api.github.com/repos/pimcore/workflows-collection-public/contents/config/symfony6-freeze.json?ref=$BRANCH"
-            
-            if [ $? -eq 0 ] && [ -f "config/symfony6-freeze.json" ] && [ -s "config/symfony6-freeze.json" ]; then
-              echo "Successfully downloaded Symfony6 freeze configuration from branch: $BRANCH"
-              SUCCESS=true
-              break
-            else
-              rm -f config/symfony6-freeze.json 2>/dev/null
-            fi
-          done
-          
-          if [ "$SUCCESS" = false ]; then
-            echo "Failed to download Symfony6 freeze configuration from any branch"
-            echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
-            exit 0
-          fi
-
-      - name: "Check Symfony6 freeze configuration"
+      - name: "Check Symfony6 freeze requirement"
         env:
           TARGET_BRANCH: "${{ steps.branch-info.outputs.target_branch }}"
-          REPO_NAME: "${{ github.repository }}"
         run: |
-          CONFIG_FILE="config/symfony6-freeze.json"
+          echo "Checking if Symfony6 freeze is needed for branch: $TARGET_BRANCH"
           
-          if [ ! -f "$CONFIG_FILE" ]; then
-            echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
-            exit 0
-          fi
-          
-          REPO_SHORT_NAME=$(echo "$REPO_NAME" | cut -d'/' -f2)
-          
-          echo "Checking Symfony6 freeze for $REPO_SHORT_NAME:$TARGET_BRANCH"
-          
-          if command -v jq >/dev/null 2>&1; then
-            if jq -e ".\"$REPO_SHORT_NAME\"" "$CONFIG_FILE" >/dev/null 2>&1; then
-              if jq -e ".\"$REPO_SHORT_NAME\" | index(\"$TARGET_BRANCH\")" "$CONFIG_FILE" >/dev/null 2>&1; then
-                echo "Installing pimcore/symfony-freeze:^6.0 for $REPO_SHORT_NAME:$TARGET_BRANCH"
-              
-                composer require --no-update pimcore/symfony-freeze:^6.0
-                
-                if [ $? -eq 0 ]; then
-                  echo "Successfully added pimcore/symfony-freeze:^6.0"
-                  echo "SYMFONY_FREEZE_INSTALLED=true" >> $GITHUB_ENV
-                else
-                  exit 1
-                fi
-              else
-                echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
-              fi
+          # Add Symfony freeze if TARGET_BRANCH doesn't end with ".x"
+          if [[ ! "$TARGET_BRANCH" =~ \.x$ ]]; then
+            echo "✅ Installing pimcore/symfony-freeze:^6.0 for branch: $TARGET_BRANCH"
+            composer require --no-update pimcore/symfony-freeze:^6.0
+            
+            if [ $? -eq 0 ]; then
+              echo "Successfully added pimcore/symfony-freeze:^6.0"
+              echo "SYMFONY_FREEZE_INSTALLED=true" >> $GITHUB_ENV
             else
-              echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
+              echo "❌ Failed to add pimcore/symfony-freeze package"
+              exit 1
             fi
           else
+            echo "ℹ️ Branch $TARGET_BRANCH ends with .x, skipping Symfony6 freeze"
             echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
-            exit 1
           fi
 
       - name: "Install dependencies with Composer"
