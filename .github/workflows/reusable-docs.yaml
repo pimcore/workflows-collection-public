@@ -3,13 +3,18 @@ name: "Documentation Workflow (Reusable)"
 on:
   workflow_call:
     inputs:
-      docs-path:
+      docs_path:
         description: "Path to the docs folder"
         required: false
         type: string
         default: "doc"
-      allowed-repo:
+      allowed_repo:
         description: "Only run for this repository (empty = any repo)"
+        required: false
+        type: string
+        default: ""
+      checkout_ref:
+        description: "Commit/branch/SHA to checkout (PR head vs default)"
         required: false
         type: string
         default: ""
@@ -25,13 +30,13 @@ jobs:
   docs:
     name: "Generate docs Pimcore Docs Generator"
     runs-on: ubuntu-latest
-    if: ${{ inputs.allowed-repo == '' || github.repository == inputs.allowed-repo }}
+    if: ${{ inputs.allowed_repo == '' || github.repository == inputs.allowed_repo }}
     
     steps:
       - name: "Checkout code"
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
 
       - name: "Checkout Docs Generator"
         uses: actions/checkout@v4
@@ -52,7 +57,7 @@ jobs:
         run: |
           mkdir docs
           # copy docs to working directory
-          cp -r ../${{ inputs.docs-path }} ./docs/
+          cp -r ../${{ inputs.docs_path }} ./docs/
           
           # copy index page
           cp bin/resources/00_index_empty.md ./docs/00_index.md
