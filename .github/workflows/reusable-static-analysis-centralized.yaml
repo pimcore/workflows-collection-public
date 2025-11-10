@@ -128,9 +128,7 @@ jobs:
           # Add Symfony freeze if TARGET_BRANCH doesn't end with ".x"
           if [[ ! "$TARGET_BRANCH" =~ \.x$ ]]; then
             echo "✅ Installing pimcore/symfony-freeze:^6.0 for branch: $TARGET_BRANCH"
-            composer require --no-update pimcore/symfony-freeze:^6.0
-            
-            if [ $? -eq 0 ]; then
+            if composer require --no-update pimcore/symfony-freeze:^6.0; then
               echo "Successfully added pimcore/symfony-freeze:^6.0"
               echo "SYMFONY_FREEZE_INSTALLED=true" >> $GITHUB_ENV
             else
