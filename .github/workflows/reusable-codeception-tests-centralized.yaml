@@ -153,6 +153,19 @@ jobs:
       - name: "Checkout code"
         uses: "actions/checkout@v4"
 
+      - name: "Get target branch information"
+        id: branch-info
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
+            echo "target_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
+            echo "Using PR target branch: $TARGET_BRANCH"
+          else
+            TARGET_BRANCH="${{ github.ref_name }}"
+            echo "target_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
+            echo "Using current branch: $TARGET_BRANCH"
+          fi
+
       - name: "Install PHP"
         uses: "shivammathur/setup-php@v2"
         with:
@@ -180,7 +193,9 @@ jobs:
       - name: "Setup Pimcore environment"
         env:
           REQUIRE_ADMIN_BUNDLE: "${{ inputs.REQUIRE_ADMIN_BUNDLE }}"
+          BRANCH_NAME: "${{ steps.branch-info.outputs.target_branch }}"
         run: |
+          echo "Setting up environment for branch: $BRANCH_NAME"
           chmod 755 .github/ci/scripts/setup-pimcore-environment.sh
           .github/ci/scripts/setup-pimcore-environment.sh
 
@@ -206,6 +221,28 @@ jobs:
                 composer require --no-update pimcore/pimcore:"${PIMCORE_VERSION}"
           fi
 
+      - name: "Check Symfony6 freeze requirement"
+        env:
+          TARGET_BRANCH: "${{ steps.branch-info.outputs.target_branch }}"
+        run: |
+          echo "Checking if Symfony6 freeze is needed for branch: $TARGET_BRANCH"
+          
+          # Add Symfony freeze if TARGET_BRANCH doesn't end with ".x"
+          if [[ ! "$TARGET_BRANCH" =~ \.x$ ]]; then
+            echo "✅ Installing pimcore/symfony-freeze:^6.0 for branch: $TARGET_BRANCH"
+            
+            if composer require --no-update pimcore/symfony-freeze:^6.0; then
+              echo "Successfully added pimcore/symfony-freeze:^6.0"
+              echo "SYMFONY_FREEZE_INSTALLED=true" >> $GITHUB_ENV
+            else
+              echo "❌ Failed to add pimcore/symfony-freeze package"
+              exit 1
+            fi
+          else
+            echo "ℹ️ Branch $TARGET_BRANCH ends with .x, skipping Symfony6 freeze"
+            echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
+          fi
+
       - name: "Install dependencies with Composer"
         uses: "ramsey/composer-install@v3"
         with:
@@ -217,4 +254,8 @@ jobs:
           ./bin/console cache:clear --no-interaction
 
       - name: "Run Codeception"
-        run: "vendor/bin/codecept run -c . -vvv --xml"
+        env:
+          TARGET_BRANCH: "${{ steps.branch-info.outputs.target_branch }}"
+        run: |
+          echo "Running Codeception tests for target branch: $TARGET_BRANCH"
+          vendor/bin/codecept run -c . -vvv --xml
