@@ -193,6 +193,7 @@ jobs:
       - name: "Setup Pimcore environment"
         env:
           REQUIRE_ADMIN_BUNDLE: "${{ inputs.REQUIRE_ADMIN_BUNDLE }}"
+          BRANCH_NAME: "${{ steps.branch-info.outputs.target_branch }}"
         run: |
           echo "Setting up environment for branch: $BRANCH_NAME"
           chmod 755 .github/ci/scripts/setup-pimcore-environment.sh
