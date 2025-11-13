@@ -71,6 +71,8 @@ on:
       PIMCORE_ENCRYPTION_SECRET:
         required: false
       PIMCORE_PRODUCT_KEY:
+        required: false
+      BRANCH_NAME:
         required: false        
 env:
     PIMCORE_PROJECT_ROOT: ${{ inputs.PIMCORE_PROJECT_ROOT }}
