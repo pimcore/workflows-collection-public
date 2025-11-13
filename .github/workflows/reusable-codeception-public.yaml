@@ -57,6 +57,9 @@ on:
       repository:
         required: true
         type: string
+      BRANCH_NAME:
+        required: false
+        type: string        
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
         required: false
@@ -72,8 +75,7 @@ on:
         required: false
       PIMCORE_PRODUCT_KEY:
         required: false
-      BRANCH_NAME:
-        required: false        
+
 env:
     PIMCORE_PROJECT_ROOT: ${{ inputs.PIMCORE_PROJECT_ROOT }}
     APP_ENV: ${{ inputs.APP_ENV }}
@@ -119,6 +121,7 @@ jobs:
               uses: "actions/checkout@v4"
               with:
                 repository: ${{ inputs.repository}}
+                ref: ${{ inputs.BRANCH_NAME }}
 
             - uses: "actions/setup-node@v4"
               with:
