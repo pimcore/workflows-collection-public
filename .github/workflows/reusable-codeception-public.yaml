@@ -117,6 +117,12 @@ jobs:
                     MYSQL_ALLOW_EMPTY_PASSWORD: yes
 
         steps:
+
+            - name: "Debug BRANCH_NAME"
+              run: |
+                echo "BRANCH_NAME: ${{ inputs.BRANCH_NAME }}"
+                echo "github.ref: ${{ github.ref }}"
+
             - name: "Checkout code"
               uses: "actions/checkout@v4"
               with:
