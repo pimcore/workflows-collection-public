@@ -118,10 +118,10 @@ jobs:
 
         steps:
 
-            - name: "Debug BRANCH_NAME"
+            - name: "Debug BRANCH_NAME and repository"
               run: |
                 echo "BRANCH_NAME: ${{ inputs.BRANCH_NAME }}"
-                echo "github.ref: ${{ github.ref }}"
+                echo "repository: ${{ inputs.repository }}"
 
             - name: "Checkout code"
               uses: "actions/checkout@v4"
