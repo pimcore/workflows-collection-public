@@ -58,7 +58,7 @@ on:
         required: true
         type: string
       BRANCH_NAME:
-        required: false
+        required: true
         type: string        
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
