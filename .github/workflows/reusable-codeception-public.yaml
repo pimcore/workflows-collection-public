@@ -126,6 +126,7 @@ jobs:
             - name: "Checkout code"
               uses: "actions/checkout@v4"
               with:
+                repository: ${{ inputs.repository }}
                 ref: ${{ inputs.BRANCH_NAME }}
                 fetch-depth: 0
 
