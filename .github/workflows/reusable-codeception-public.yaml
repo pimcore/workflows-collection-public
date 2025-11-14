@@ -57,6 +57,9 @@ on:
       repository:
         required: true
         type: string
+      BRANCH_NAME:
+        required: false
+        type: string        
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
         required: false
@@ -71,7 +74,8 @@ on:
       PIMCORE_ENCRYPTION_SECRET:
         required: false
       PIMCORE_PRODUCT_KEY:
-        required: false        
+        required: false
+
 env:
     PIMCORE_PROJECT_ROOT: ${{ inputs.PIMCORE_PROJECT_ROOT }}
     APP_ENV: ${{ inputs.APP_ENV }}
@@ -113,10 +117,17 @@ jobs:
                     MYSQL_ALLOW_EMPTY_PASSWORD: yes
 
         steps:
+
+            - name: "Debug BRANCH_NAME"
+              run: |
+                echo "BRANCH_NAME: ${{ inputs.BRANCH_NAME }}"
+                echo "github.ref: ${{ github.ref }}"
+
             - name: "Checkout code"
               uses: "actions/checkout@v4"
               with:
-                repository: ${{ inputs.repository}}
+                ref: ${{ inputs.BRANCH_NAME }}
+                fetch-depth: 0
 
             - uses: "actions/setup-node@v4"
               with:
