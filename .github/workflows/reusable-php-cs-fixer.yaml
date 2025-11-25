@@ -32,7 +32,7 @@ jobs:
       - name: PHP-CS-Fixer
         uses: docker://oskarstark/php-cs-fixer-ga:latest
         with:
-          args: --config=${{ inputs.config_file }} --allow-risky yes
+          args: ${{ inputs.config_file != 'auto' && format('--config={0} --allow-risky yes', inputs.config_file) || '--allow-risky yes' }}
 
       - uses: stefanzweifel/git-auto-commit-action@v5
         with:
