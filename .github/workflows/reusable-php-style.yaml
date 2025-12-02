@@ -7,7 +7,7 @@ on:
         required: true
         type: string
       config_file:
-        default: ".php_cs.dist"
+        default: ".php-cs-fixer.dist.php"
         required: false
         type: string
     secrets:
