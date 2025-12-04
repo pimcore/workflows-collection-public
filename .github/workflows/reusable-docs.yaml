@@ -14,10 +14,19 @@ on:
         type: string
         default: ""
       checkout_ref:
-        description: "Commit/branch/SHA to checkout (PR head vs default)"
+        description: >
+          Explicit commit/branch/SHA to checkout.
+          If empty, the workflow will:
+          - use PR head SHA for pull_request_target
+          - otherwise use github.sha
         required: false
         type: string
         default: ""
+      docs_generator_ref:
+        description: "Ref (branch/tag/SHA) for pimcore/docs-generator"
+        required: false
+        type: string
+        default: "main"
     secrets:
       DOCS_GENERATOR_ACCESS_TOKEN:
         description: "Token to access pimcore/docs-generator"
@@ -36,13 +45,19 @@ jobs:
       - name: "Checkout code"
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+          ref: >-
+            ${{
+              inputs.checkout_ref != '' && inputs.checkout_ref ||
+              (github.event_name == 'pull_request_target'
+                && github.event.pull_request.head.sha
+                || github.sha)
+            }}
 
       - name: "Checkout Docs Generator"
         uses: actions/checkout@v4
         with:
           repository: "pimcore/docs-generator"
-          ref: "main"
+          ref: ${{ inputs.docs_generator_ref }}
           path: "./docs-generator"
           token: ${{ secrets.DOCS_GENERATOR_ACCESS_TOKEN }}
 
