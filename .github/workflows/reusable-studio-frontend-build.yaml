@@ -1,0 +1,98 @@
+name: "Studio Frontend Build (reusable)"
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory containing the frontend project"
+        required: false
+        type: string
+        default: "assets/studio"
+      lint:
+        description: "Run lint (and optionally fix) before build"
+        required: false
+        type: boolean
+        default: true
+      typecheck:
+        description: "Run type checks before build"
+        required: false
+        type: boolean
+        default: true
+      lint-script:
+        description: "NPM script to run for linting"
+        required: false
+        type: string
+        default: "lint-fix"
+      typecheck-script:
+        description: "NPM script to run for type checks"
+        required: false
+        type: string
+        default: "check-types"
+      build-script:
+        description: "NPM script to run for production build"
+        required: false
+        type: string
+        default: "build"
+      commit-build-output:
+        description: "Automatically commit build output"
+        required: false
+        type: boolean
+        default: true
+      build-output-path:
+        description: "Path (from repo root) to built assets to commit"
+        required: false
+        type: string
+        default: "assets/studio/public"
+
+permissions:
+  contents: write
+
+env:
+  BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+
+jobs:
+  studio-frontend:
+    name: "Studio frontend lint / typecheck / build"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # In a reusable workflow, this is the caller repo
+          ref: ${{ env.BRANCH_NAME }}
+          repository: ${{ github.repository }}
+
+      - name: Set up Node.js (LTS)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: "npm"
+          cache-dependency-path: |
+            ${{ inputs.working-directory }}/package-lock.json
+            ${{ inputs.working-directory }}/package.json
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+
+      - name: Run lint
+        if: inputs.lint == true
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run ${{ inputs.lint-script }}
+
+      - name: Run type checks
+        if: inputs.typecheck == true
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run ${{ inputs.typecheck-script }}
+
+      - name: Run production build
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run ${{ inputs.build-script }}
+
+      - name: Commit build output
+        if: inputs.commit-build-output == true
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          file_pattern: ${{ inputs.build-output-path }}
+          commit_message: "Automatic frontend build"
