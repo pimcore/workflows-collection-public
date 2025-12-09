@@ -1,0 +1,87 @@
+name: "Documentation Workflow (Reusable)"
+
+on:
+  workflow_call:
+    inputs:
+      docs_path:
+        description: "Path to the docs folder"
+        required: false
+        type: string
+        default: "doc"
+      allowed_repo:
+        description: "Only run for this repository (empty = any repo)"
+        required: false
+        type: string
+        default: ""
+      checkout_ref:
+        description: >
+          Explicit commit/branch/SHA to checkout.
+          If empty, the workflow will:
+          - use PR head SHA for pull_request_target
+          - otherwise use github.sha
+        required: false
+        type: string
+        default: ""
+      docs_generator_ref:
+        description: "Ref (branch/tag/SHA) for pimcore/docs-generator"
+        required: false
+        type: string
+        default: "main"
+    secrets:
+      DOCS_GENERATOR_ACCESS_TOKEN:
+        description: "Token to access pimcore/docs-generator"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    name: "Generate docs Pimcore Docs Generator"
+    runs-on: ubuntu-latest
+    if: ${{ inputs.allowed_repo == '' || github.repository == inputs.allowed_repo }}
+    
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+        with:
+          ref: >-
+            ${{
+              inputs.checkout_ref != '' && inputs.checkout_ref ||
+              (github.event_name == 'pull_request_target'
+                && github.event.pull_request.head.sha
+                || github.sha)
+            }}
+
+      - name: "Checkout Docs Generator"
+        uses: actions/checkout@v4
+        with:
+          repository: "pimcore/docs-generator"
+          ref: ${{ inputs.docs_generator_ref }}
+          path: "./docs-generator"
+          token: ${{ secrets.DOCS_GENERATOR_ACCESS_TOKEN }}
+
+      - name: "Install Node"
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: "Prepare Docs"
+        working-directory: "./docs-generator"
+        run: |
+          mkdir docs
+          # copy docs to working directory
+          cp -r ../${{ inputs.docs_path }} ./docs/
+          
+          # copy index page
+          cp bin/resources/00_index_empty.md ./docs/00_index.md
+          
+          # use special docusaurus config (to exclude search plugin) and check for broken links
+          mv docusaurus.config.js.repos-tests docusaurus.config.js
+
+      - name: "Build Docs"
+        working-directory: "./docs-generator"
+        run: |
+          npm install
+          npm run build
