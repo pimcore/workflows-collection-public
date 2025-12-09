@@ -19,8 +19,8 @@ on:
       private_repo:
         description: "Enable private repository authentication"
         required: false
-        type: boolean
-        default: false
+        type: string
+        default: "false"
 
       checkout_ref:
         description: "Git ref to checkout (auto-detects PR head if empty)"
