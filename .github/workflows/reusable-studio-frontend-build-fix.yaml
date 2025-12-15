@@ -1,0 +1,200 @@
+name: "Studio Frontend Build (reusable)"
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory containing the frontend project"
+        required: false
+        type: string
+        default: "assets/studio"
+      node-version:
+        description: "Node.js version to use"
+        required: false
+        type: string
+        default: "22"
+      lint:
+        description: "Run lint (and optionally fix) before build"
+        required: false
+        type: boolean
+        default: true
+      typecheck:
+        description: "Run type checks before build"
+        required: false
+        type: boolean
+        default: true
+      lint-script:
+        description: "NPM script to run for linting"
+        required: false
+        type: string
+        default: "lint-fix"
+      typecheck-script:
+        description: "NPM script to run for type checks"
+        required: false
+        type: string
+        default: "check-types"
+      build-script:
+        description: "NPM script to run for production build"
+        required: false
+        type: string
+        default: "build"
+      commit-lint-output:
+        description: "Automatically commit lint fixes"
+        required: false
+        type: boolean
+        default: true
+      commit-build-output:
+        description: "Automatically commit build output"
+        required: false
+        type: boolean
+        default: true
+      build-output-path:
+        description: "Path (from repo root) to built assets to commit"
+        required: false
+        type: string
+        default: "./src/Resources/public/"
+
+permissions:
+  contents: read
+
+env:
+  BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH_NAME }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ./${{ inputs.working-directory }}/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+
+  lint:
+    needs: install
+    if: ${{ inputs.lint }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH_NAME }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ./${{ inputs.working-directory }}/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Run code linting
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run ${{ inputs.lint-script }}
+
+      - name: Commit lint fixes
+        if: ${{ inputs.commit-lint-output }}
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: Apply eslint-fixer changes
+
+  check-types:
+    needs: install
+    if: ${{ inputs.typecheck }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH_NAME }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ./${{ inputs.working-directory }}/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Run type checks
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run ${{ inputs.typecheck-script }}
+
+  build:
+    needs:
+      - lint
+      - check-types
+    if: ${{ always() && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.check-types.result == 'success' || needs.check-types.result == 'skipped') }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH_NAME }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ./${{ inputs.working-directory }}/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Run production build
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run ${{ inputs.build-script }}
+
+      - name: Commit build output
+        if: ${{ inputs.commit-build-output }}
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          file_pattern: ${{ inputs.build-output-path }}
+          commit_message: Automatic frontend build
