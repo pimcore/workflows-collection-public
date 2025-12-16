@@ -50,6 +50,10 @@ on:
         required: false
         type: string
         default: "true"
+      INSTALL_PIMCORE:
+        required: false
+        type: string
+        default: "true"
 
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
@@ -116,12 +120,14 @@ jobs:
           composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
 
       - name: "Setup Pimcore environment"
+        if: ${{ inputs.INSTALL_PIMCORE == 'true' }}
         env:
           REQUIRE_ADMIN_BUNDLE: ${{ inputs.REQUIRE_ADMIN_BUNDLE }}
         run: |
           .github/ci/scripts/setup-pimcore-environment.sh
 
       - name: "Update Pimcore version"
+        if: ${{ inputs.INSTALL_PIMCORE == 'true' }}
         env:
           PIMCORE_VERSION: ${{ matrix.pimcore_version }}
           REQUIRE_ADMIN_BUNDLE: ${{ inputs.REQUIRE_ADMIN_BUNDLE }}
