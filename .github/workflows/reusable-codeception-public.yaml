@@ -95,16 +95,13 @@ jobs:
         continue-on-error: ${{ inputs.experimental }}
         services:
             minio:
-                image: bitnamilegacy/minio:latest
+                image: minio/minio:latest
                 ports:
                     - 9000:9000
+                    - 9001:9001
                 env:
                     MINIO_ROOT_USER: "${{ env.MINIO_ACCESS_KEY }}"
                     MINIO_ROOT_PASSWORD: "${{ env.MINIO_SECRET_KEY }}"
-                    MINIO_SERVER_ACCESS_KEY: "${{ env.MINIO_ACCESS_KEY }}"
-                    MINIO_SERVER_SECRET_KEY: "${{ env.MINIO_SECRET_KEY }}"
-                    MINIO_DEFAULT_BUCKETS: "asset,assetcache,thumbnail,version,recyclebin,admin,emaillog,temp,applicationlog"
-                options: --name minio-server
             redis:
                 image: redis
                 ports:
@@ -129,6 +126,18 @@ jobs:
                 repository: ${{ inputs.repository }}
                 ref: ${{ inputs.BRANCH_NAME }}
                 fetch-depth: 0
+
+            - name: "Setup minio buckets"
+              run: |
+                  curl -sL https://dl.min.io/client/mc/release/linux-amd64/mc -o mc
+                  curl -sL https://dl.min.io/client/mc/release/linux-amd64/mc.sha256sum -o mc.sha256sum
+                  # Verify checksum
+                  sha256sum -c mc.sha256sum
+                  chmod +x mc
+                  ./mc alias set myminio http://localhost:9000 ${{ env.MINIO_ACCESS_KEY }} ${{ env.MINIO_SECRET_KEY }}
+                  for bucket in asset assetcache thumbnail version recyclebin admin emaillog temp applicationlog; do
+                      ./mc mb myminio/$bucket --ignore-existing
+                  done
 
             - uses: "actions/setup-node@v4"
               with:
