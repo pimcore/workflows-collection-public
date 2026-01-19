@@ -19,7 +19,7 @@ on:
         required: true
         default: false
         type: boolean
-        description: "Release directly (not recommended - by default releases are created as drafts)"
+        description: "Release directly (not recommended) by default releases are created as drafts"
       autoChangelog:
         description: "Auto generated release notes"
         required: true
