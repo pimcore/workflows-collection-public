@@ -19,7 +19,7 @@ on:
         required: true
         default: false
         type: boolean
-        description: "If true, publish release immediately. If false (default), create as draft for manual review."
+        description: "Release directly (not recommended - by default releases are created as drafts)"
       autoChangelog:
         description: "Auto generated release notes"
         required: true
