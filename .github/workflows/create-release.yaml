@@ -529,7 +529,8 @@ jobs:
             fi
           elif [[ "${KIND}" == "bugfix" ]]; then
             NEXT_PATCH="${A}.${B}.$((C+1))"
-            echo "create_titles=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+            NEXT_PATCH_2="${A}.${B}.$((C+2))"
+            echo "create_titles=${NEXT_PATCH},${NEXT_PATCH_2}" >> "$GITHUB_OUTPUT"
             echo "move_from_title=${TAG}" >> "$GITHUB_OUTPUT"
             echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
           fi
