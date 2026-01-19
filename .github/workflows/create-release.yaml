@@ -3,208 +3,262 @@ name: Create release
 on:
   workflow_dispatch:
     inputs:
-      commit_url:
+      repository:
         required: true
         type: string
-        description: 'URL of commit for which release will be created'
-      tag_name:
+        description: "Target repository in owner/repo format (e.g. pimcore/pimcore)"
+      base_branch:
         required: true
         type: string
-        description: 'The tag name of the release with leading v'
-      release_type:
-        description: 'Choose relase type'
-        default: latest
-        required: false
-        type: choice
-        options:
-          - latest
-          - prerelase
-          - regular
-      draft:
-        description: 'Draft release'
+        description: "Base branch to take latest commit from (e.g. 12.x or 12.3)"
+      to_tag:
+        required: true
+        type: string
+        description: "Release version without leading v (e.g. 12.4.0)"
+      publish_immediately:
         required: true
         default: false
         type: boolean
+        description: "If true, publish release immediately. If false (default), create as draft for manual review."
       autoChangelog:
-        description: 'Auto generated release notes'
+        description: "Auto generated release notes"
         required: true
         default: true
         type: boolean
       changeLog:
-        description: 'Custom release notes'
-        required: false
-        type: string
-      close_milestone:
-        description: 'Milestone title to close in target repo after release (optional)'
-        required: false
-        type: string
-      new_milestone:
-        description: 'Milestone title to create in target repo after release (optional)'
-        required: false
-        type: string
-      move_issues:
-        description: 'Comma-separated issue numbers to move into new milestone (optional), e.g. 123,456'
+        description: "Custom release notes (optional)"
         required: false
         type: string
 
 env:
-  COMMIT_URL:  ${{ inputs.commit_url }}
-  TAG_NAME: ${{ inputs.tag_name }}
-  RELEASE_TYPE: ${{ inputs.release_type }}
-  DRAFT: ${{ inputs.draft }}
+  REPOSITORY: ${{ inputs.repository }}
+  BASE_BRANCH: ${{ inputs.base_branch }}
+  TO_TAG: ${{ inputs.to_tag }}
+  PUBLISH_IMMEDIATELY: ${{ inputs.publish_immediately }}
   AUTO_CHANGELOG: ${{ inputs.autoChangelog }}
   CHANGELOG: ${{ inputs.changeLog }}
-  CLOSE_MILESTONE: ${{ inputs.close_milestone }}
-  NEW_MILESTONE: ${{ inputs.new_milestone }}
-  MOVE_ISSUES: ${{ inputs.move_issues }}
 
 jobs:
-  display-parameters:
+  prepare:
+    name: Prepare parameters
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
-      latest: ${{ steps.step1.outputs.latest }}
-      prerelease: ${{ steps.step1.outputs.prerelease }}
-      target_repo: ${{ steps.step1.outputs.repo_name }}
-      commit_hash: ${{ steps.step1.outputs.commit_hash }}
+      owner: ${{ steps.calc.outputs.owner }}
+      repo: ${{ steps.calc.outputs.repo }}
+      base_branch: ${{ steps.calc.outputs.base_branch }}
+      latest_sha: ${{ steps.calc.outputs.latest_sha }}
+      tag_name: ${{ steps.calc.outputs.tag_name }}
+      release_name: ${{ steps.calc.outputs.release_name }}
+      release_kind: ${{ steps.calc.outputs.release_kind }}
+      prerelease: ${{ steps.calc.outputs.prerelease }}
+      make_latest: ${{ steps.calc.outputs.make_latest }}
+      draft: ${{ steps.calc.outputs.draft }}
+      auto_changelog_norm: ${{ steps.calc.outputs.auto_changelog_norm }}
     steps:
-      - name: Display parameters
-        id: step1
+      - name: Validate and calculate
+        id: calc
         shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
 
-          # Normalize release_type (keep accepting "prerelase" input option)
-          if [[ "${RELEASE_TYPE}" == "prerelase" ]]; then
-            PRERELEASE=true
-            LATEST=false
-          elif [[ "${RELEASE_TYPE}" == "latest" ]]; then
-            PRERELEASE=false
-            LATEST=true
-          elif [[ "${RELEASE_TYPE}" == "regular" ]]; then
-            PRERELEASE=false
-            LATEST=false
-          else
-            echo "Unsupported release_type: ${RELEASE_TYPE}" >> "$GITHUB_STEP_SUMMARY"
+          if ! [[ "${REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "Invalid repository format. Expected owner/repo, got: ${REPOSITORY}" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
-          # Extract target repository and commit hash from commit URL
-          TARGET_REPO=$(echo "${COMMIT_URL}" | awk -F'/' '{print $(NF-2)}')
-          COMMIT_HASH=$(echo "${COMMIT_URL}" | awk -F'/' '{print $NF}')
+          OWNER="${REPOSITORY%%/*}"
+          REPO="${REPOSITORY##*/}"
+          BASE="${BASE_BRANCH}"
+          TAG="${TO_TAG}"
 
-          if [[ -z "${TARGET_REPO}" || -z "${COMMIT_HASH}" ]]; then
-            echo "Failed to parse commit_url: ${COMMIT_URL}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -z "${BASE}" || -z "${TAG}" ]]; then
+            echo "base_branch and to_tag must be non-empty" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
-          # Set outputs
-          echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
-          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
-          echo "repo_name=${TARGET_REPO}" >> "$GITHUB_OUTPUT"
-          echo "commit_hash=${COMMIT_HASH}" >> "$GITHUB_OUTPUT"
-
-          {
-            echo "Target repository: ${TARGET_REPO}"
-            echo "Commit hash: ${COMMIT_HASH}"
-            echo "Tag name: ${TAG_NAME}"
-            echo "Draft: ${DRAFT}"
-            echo "Auto changelog: ${AUTO_CHANGELOG}"
-            echo "Custom changelog provided: $([[ -n "${CHANGELOG}" ]] && echo yes || echo no)"
-            echo "Release type: ${RELEASE_TYPE}"
-            echo "Pre-release: ${PRERELEASE}"
-            echo "Latest: ${LATEST}"
-            echo "Commit url: ${COMMIT_URL}"
-            echo "Close milestone: ${CLOSE_MILESTONE}"
-            echo "New milestone: ${NEW_MILESTONE}"
-            echo "Move issues: ${MOVE_ISSUES}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  create-release:
-    runs-on: ubuntu-latest
-    environment: production
-    permissions:
-      contents: read
-    needs: display-parameters
-    env:
-      COMMIT_HASH: ${{ needs.display-parameters.outputs.commit_hash }}
-      TARGET_REPO: ${{ needs.display-parameters.outputs.target_repo }}
-      LATEST: ${{ needs.display-parameters.outputs.latest }}
-      PRERELEASE: ${{ needs.display-parameters.outputs.prerelease }}
-      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-    outputs:
-      target_repo: ${{ needs.display-parameters.outputs.target_repo }}
-      commit_hash: ${{ needs.display-parameters.outputs.commit_hash }}
-    steps:
-      - name: Check existence of commit hash and tag name in target repo
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Check if commit hash exists in target repo
-          CHECK_COMMIT_HASH=$(curl -s -o /dev/null -w "%{http_code}" --location \
-            "https://api.github.com/repos/pimcore/${TARGET_REPO}/commits/${COMMIT_HASH}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${RELEASE_TOKEN}")
-
-          if [[ "${CHECK_COMMIT_HASH}" -ne 200 ]]; then
-            echo "Non existing commit hash: ${COMMIT_HASH}" >> "$GITHUB_STEP_SUMMARY"
+          if ! [[ "${TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "Invalid to_tag format. Expected X.Y.Z or X.Y.Z.W (numeric), got: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
-          # Check if tag name exists in target repo
-          CHECK_TAG_NAME=$(curl -s -o /dev/null -w "%{http_code}" --location \
-            "https://api.github.com/repos/pimcore/${TARGET_REPO}/git/refs/tags/${TAG_NAME}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${RELEASE_TOKEN}")
-
-          if [[ "${CHECK_TAG_NAME}" -eq 200 ]]; then
-            echo "Tag name already exists: ${TAG_NAME}" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-      - name: Create a release in target repo
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Remove leading v from tag name for release name
-          RELEASE_NAME="${TAG_NAME#v}"
-
-          # Handle auto-generated + custom notes properly
-          FINAL_BODY="${CHANGELOG}"
-          
-          if [[ "${AUTO_CHANGELOG}" == "true" && -n "${CHANGELOG}" ]]; then
-            # Generate notes first, then append custom notes
-            GEN_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
-              "https://api.github.com/repos/pimcore/${TARGET_REPO}/releases/generate-notes" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${RELEASE_TOKEN}" \
-              -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${COMMIT_HASH}" '{tag_name:$tag, target_commitish:$target}')")
-            
-            GEN_STATUS=$(echo "${GEN_RESPONSE}" | awk -F: '/HTTP_STATUS:/ {print $2}')
-            
-            if [[ "${GEN_STATUS}" -eq 200 ]]; then
-              GEN_NOTES=$(echo "${GEN_RESPONSE}" | sed '\$d' | jq -r '.body // ""')
-              FINAL_BODY="${GEN_NOTES}\n\n---\n\n${CHANGELOG}"
-            else
-              echo "⚠️ Warning: generate-notes API failed (HTTP ${GEN_STATUS}), falling back to custom notes only" >> "$GITHUB_STEP_SUMMARY"
-              FINAL_BODY="${CHANGELOG}"
+          if [[ "${BASE}" == *.x ]]; then
+            BASE_MAJOR_PART="${BASE%%.*}"
+            if ! [[ "${BASE_MAJOR_PART}" =~ ^[0-9]+$ ]]; then
+              echo "Invalid base_branch format. Expected numeric major version, got: ${BASE}" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
             fi
           fi
 
-          # Use jq to safely build JSON (avoids breaking on quotes/newlines in CHANGELOG)
+          TAG_NAME="v${TAG}"
+          RELEASE_NAME="${TAG}"
+
+          BASE_IS_X=false
+          if [[ "${BASE}" == *.x ]]; then
+            BASE_IS_X=true
+          fi
+
+          BASE_MAJOR="$(echo "${BASE}" | cut -d'.' -f1)"
+          TAG_MAJOR="$(echo "${TAG}" | cut -d'.' -f1)"
+          TAG_PARTS_COUNT="$(echo "${TAG}" | awk -F'.' '{print NF}')"
+
+          RELEASE_KIND=""
+          if [[ "${BASE_IS_X}" == "true" && "${TAG_MAJOR}" != "${BASE_MAJOR}" ]]; then
+            RELEASE_KIND="major"
+          elif [[ "${BASE_IS_X}" == "true" && "${TAG_MAJOR}" == "${BASE_MAJOR}" ]]; then
+            RELEASE_KIND="minor"
+          elif [[ "${BASE_IS_X}" == "false" && "${TAG_PARTS_COUNT}" -ne 4 ]]; then
+            RELEASE_KIND="bugfix"
+          elif [[ "${BASE_IS_X}" == "false" && "${TAG_PARTS_COUNT}" -eq 4 ]]; then
+            RELEASE_KIND="hotfix"
+          else
+            echo "Could not classify release kind. base_branch=${BASE} to_tag=${TAG}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if [[ "${PUBLISH_IMMEDIATELY}" == "true" ]]; then
+            DRAFT=false
+          else
+            DRAFT=true
+          fi
+
+          MAKE_LATEST=false
+          PRERELEASE=false
+
+          if [[ "${DRAFT}" == "false" ]]; then
+            if [[ "${RELEASE_KIND}" == "major" || "${RELEASE_KIND}" == "minor" ]]; then
+              MAKE_LATEST=true
+            fi
+          fi
+
+          SHA_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/commits/${BASE}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+          SHA_STATUS=$(echo "${SHA_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          if [[ "${SHA_STATUS}" -ne 200 ]]; then
+            echo "Failed to fetch latest commit from ${OWNER}/${REPO}@${BASE}. HTTP ${SHA_STATUS}" >> "$GITHUB_STEP_SUMMARY"
+            echo "$(echo "${SHA_RESP}" | head -c 2000)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          LATEST_SHA=$(echo "${SHA_RESP}" | sed '$d' | jq -r '.sha')
+          if [[ -z "${LATEST_SHA}" || "${LATEST_SHA}" == "null" ]]; then
+            echo "Failed to parse sha for ${OWNER}/${REPO}@${BASE}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
+          echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
+          echo "base_branch=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "latest_sha=${LATEST_SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "release_kind=${RELEASE_KIND}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
+          echo "make_latest=${MAKE_LATEST}" >> "$GITHUB_OUTPUT"
+          echo "draft=${DRAFT}" >> "$GITHUB_OUTPUT"
+
+          AUTO_CHANGELOG_NORM=false
+          if [[ "${AUTO_CHANGELOG}" == "true" ]]; then AUTO_CHANGELOG_NORM=true; fi
+          echo "auto_changelog_norm=${AUTO_CHANGELOG_NORM}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "Repository: ${OWNER}/${REPO}"
+            echo "Base branch: ${BASE}"
+            echo "Latest SHA: ${LATEST_SHA}"
+            echo "To tag: ${TAG}"
+            echo "Tag name: ${TAG_NAME}"
+            echo "Release kind: ${RELEASE_KIND}"
+            echo "Publish immediately: ${PUBLISH_IMMEDIATELY}"
+            echo "Draft: ${DRAFT}"
+            echo "Make latest: ${MAKE_LATEST}"
+            echo "Auto changelog: ${AUTO_CHANGELOG}"
+            echo "Custom changelog provided: $([[ -n "${CHANGELOG}" ]] && echo yes || echo no)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  create-release-draft:
+    name: Create release (draft)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs: prepare
+    if: ${{ inputs.publish_immediately == false }}
+    env:
+      OWNER: ${{ needs.prepare.outputs.owner }}
+      REPO: ${{ needs.prepare.outputs.repo }}
+      BASE_BRANCH: ${{ needs.prepare.outputs.base_branch }}
+      LATEST_SHA: ${{ needs.prepare.outputs.latest_sha }}
+      TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+      RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
+      DRAFT: ${{ needs.prepare.outputs.draft }}
+      MAKE_LATEST: ${{ needs.prepare.outputs.make_latest }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      RELEASE_KIND: ${{ needs.prepare.outputs.release_kind }}
+      AUTO_CHANGELOG: ${{ needs.prepare.outputs.auto_changelog_norm }}
+    outputs:
+      owner: ${{ needs.prepare.outputs.owner }}
+      repo: ${{ needs.prepare.outputs.repo }}
+      release_kind: ${{ needs.prepare.outputs.release_kind }}
+      tag: ${{ needs.prepare.outputs.release_name }}
+    steps:
+      - name: Ensure tag does not already exist
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          CHECK_TAG=$(curl -s -o /dev/null -w "%{http_code}" --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/git/refs/tags/${TAG_NAME}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+          if [[ "${CHECK_TAG}" -eq 200 ]]; then
+            echo "Tag already exists: ${TAG_NAME} on ${OWNER}/${REPO}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Create release (draft by default)
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          FINAL_BODY="${CHANGELOG}"
+
+          # If auto notes requested and custom notes provided, generate and append.
+          if [[ "${AUTO_CHANGELOG}" == "true" && -n "${CHANGELOG}" ]]; then
+            GEN_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
+              "https://api.github.com/repos/${OWNER}/${REPO}/releases/generate-notes" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+              -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${LATEST_SHA}" '{tag_name:$tag, target_commitish:$target}')")
+
+            GEN_STATUS=$(echo "${GEN_RESPONSE}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+
+            if [[ "${GEN_STATUS}" -eq 200 ]]; then
+              GEN_NOTES=$(echo "${GEN_RESPONSE}" | sed '$d' | jq -r '.body // ""')
+              FINAL_BODY="${GEN_NOTES}\n\n---\n\n${CHANGELOG}"
+            else
+              echo "⚠️ Warning: generate-notes failed (HTTP ${GEN_STATUS}); using custom notes only" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+          # Build request body with proper JSON types
           if [[ -n "${FINAL_BODY}" ]]; then
-            # Body provided, disable auto-generation
             REQ_BODY=$(jq -n \
-              --arg target_commitish "${COMMIT_HASH}" \
+              --arg target_commitish "${LATEST_SHA}" \
               --arg name "${RELEASE_NAME}" \
               --arg tag_name "${TAG_NAME}" \
-              --arg make_latest "${LATEST}" \
+              --argjson make_latest "${MAKE_LATEST}" \
               --argjson draft "${DRAFT}" \
               --argjson prerelease "${PRERELEASE}" \
               --arg body "${FINAL_BODY}" \
@@ -219,12 +273,11 @@ jobs:
                 body: $body
               }')
           else
-            # No body, let GitHub auto-generate if requested
             REQ_BODY=$(jq -n \
-              --arg target_commitish "${COMMIT_HASH}" \
+              --arg target_commitish "${LATEST_SHA}" \
               --arg name "${RELEASE_NAME}" \
               --arg tag_name "${TAG_NAME}" \
-              --arg make_latest "${LATEST}" \
+              --argjson make_latest "${MAKE_LATEST}" \
               --argjson draft "${DRAFT}" \
               --argjson prerelease "${PRERELEASE}" \
               --argjson generate_release_notes "${AUTO_CHANGELOG}" \
@@ -240,7 +293,7 @@ jobs:
           fi
 
           CREATE_RELEASE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
-            "https://api.github.com/repos/pimcore/${TARGET_REPO}/releases" \
+            "https://api.github.com/repos/${OWNER}/${REPO}/releases" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}" \
@@ -249,213 +302,726 @@ jobs:
           HTTP_STATUS=$(echo "${CREATE_RELEASE}" | awk -F: '/HTTP_STATUS:/ {print $2}')
 
           if [[ "${HTTP_STATUS}" -ne 201 ]]; then
-            echo "Failed to create release. HTTP Response: ${HTTP_STATUS}" >> "$GITHUB_STEP_SUMMARY"
-            echo "Response payload (truncated):" >> "$GITHUB_STEP_SUMMARY"
-            echo "${CREATE_RELEASE}" | head -c 2000 >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Please create release manually..." >> "$GITHUB_STEP_SUMMARY"
+            echo "Failed to create release. HTTP ${HTTP_STATUS}" >> "$GITHUB_STEP_SUMMARY"
+            echo "$(echo "${CREATE_RELEASE}" | head -c 2000)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
-          else
-            RELEASE_URL=$(echo "${CREATE_RELEASE}" | awk -F'"' '/"html_url":/ {print $4; exit}')
-            echo "Release created successfully: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-  milestone-maintenance:
-    name: Milestone maintenance
+          RELEASE_URL=$(echo "${CREATE_RELEASE}" | sed '$d' | jq -r '.html_url // ""')
+          echo "Release created (draft): ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+
+  create-release-publish:
+    name: Create release (publish immediately)
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-    needs: create-release
-
-    # Run only when at least one milestone-related input is provided
-    if: ${{ needs.create-release.result == 'success' && (inputs.close_milestone != '' || inputs.new_milestone != '' || inputs.move_issues != '') }}
-
+      contents: write
+    needs: prepare
+    if: ${{ inputs.publish_immediately == true }}
+    environment: production
     env:
-      TARGET_REPO: ${{ needs.create-release.outputs.target_repo }}
-
+      OWNER: ${{ needs.prepare.outputs.owner }}
+      REPO: ${{ needs.prepare.outputs.repo }}
+      BASE_BRANCH: ${{ needs.prepare.outputs.base_branch }}
+      LATEST_SHA: ${{ needs.prepare.outputs.latest_sha }}
+      TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+      RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
+      DRAFT: false
+      MAKE_LATEST: ${{ needs.prepare.outputs.make_latest }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      RELEASE_KIND: ${{ needs.prepare.outputs.release_kind }}
+      AUTO_CHANGELOG: ${{ needs.prepare.outputs.auto_changelog_norm }}
+    outputs:
+      owner: ${{ needs.prepare.outputs.owner }}
+      repo: ${{ needs.prepare.outputs.repo }}
+      release_kind: ${{ needs.prepare.outputs.release_kind }}
+      tag: ${{ needs.prepare.outputs.release_name }}
     steps:
-      - name: Validate milestone inputs
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ -n "${MOVE_ISSUES}" && -z "${NEW_MILESTONE}" ]]; then
-            echo "move_issues was provided but new_milestone is empty. Refusing to move issues without a target milestone." >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-      - name: Close milestone (by title or number) if provided
-        if: ${{ inputs.close_milestone != '' }}
+      - name: Ensure tag does not already exist
         shell: bash
         env:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
-          INPUT="${CLOSE_MILESTONE}"
+          CHECK_TAG=$(curl -s -o /dev/null -w "%{http_code}" --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/git/refs/tags/${TAG_NAME}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-          # Check if input is numeric (milestone number) or text (title)
-          if [[ "${INPUT}" =~ ^[0-9]+$ ]]; then
-            MS_NUMBER="${INPUT}"
-            echo "Using milestone number: ${MS_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${CHECK_TAG}" -eq 200 ]]; then
+            echo "Tag already exists: ${TAG_NAME} on ${OWNER}/${REPO}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Create release (published immediately)
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          FINAL_BODY="${CHANGELOG}"
+
+          # If auto notes requested and custom notes provided, generate and append.
+          if [[ "${AUTO_CHANGELOG}" == "true" && -n "${CHANGELOG}" ]]; then
+            GEN_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
+              "https://api.github.com/repos/${OWNER}/${REPO}/releases/generate-notes" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+              -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${LATEST_SHA}" '{tag_name:$tag, target_commitish:$target}')")
+
+            GEN_STATUS=$(echo "${GEN_RESPONSE}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+
+            if [[ "${GEN_STATUS}" -eq 200 ]]; then
+              GEN_NOTES=$(echo "${GEN_RESPONSE}" | sed '$d' | jq -r '.body // ""')
+              FINAL_BODY="${GEN_NOTES}\n\n---\n\n${CHANGELOG}"
+            else
+              echo "⚠️ Warning: generate-notes failed (HTTP ${GEN_STATUS}); using custom notes only" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+          # Build request body with proper JSON types
+          if [[ -n "${FINAL_BODY}" ]]; then
+            REQ_BODY=$(jq -n \
+              --arg target_commitish "${LATEST_SHA}" \
+              --arg name "${RELEASE_NAME}" \
+              --arg tag_name "${TAG_NAME}" \
+              --argjson make_latest "${MAKE_LATEST}" \
+              --argjson draft "${DRAFT}" \
+              --argjson prerelease "${PRERELEASE}" \
+              --arg body "${FINAL_BODY}" \
+              '{
+                target_commitish: $target_commitish,
+                name: $name,
+                draft: $draft,
+                make_latest: $make_latest,
+                prerelease: $prerelease,
+                tag_name: $tag_name,
+                generate_release_notes: false,
+                body: $body
+              }')
           else
-            # Find milestone by title with pagination
-            TITLE="${INPUT}"
-            MS_NUMBER=""
+            REQ_BODY=$(jq -n \
+              --arg target_commitish "${LATEST_SHA}" \
+              --arg name "${RELEASE_NAME}" \
+              --arg tag_name "${TAG_NAME}" \
+              --argjson make_latest "${MAKE_LATEST}" \
+              --argjson draft "${DRAFT}" \
+              --argjson prerelease "${PRERELEASE}" \
+              --argjson generate_release_notes "${AUTO_CHANGELOG}" \
+              '{
+                target_commitish: $target_commitish,
+                name: $name,
+                draft: $draft,
+                make_latest: $make_latest,
+                prerelease: $prerelease,
+                tag_name: $tag_name,
+                generate_release_notes: $generate_release_notes
+              }')
+          fi
+
+          CREATE_RELEASE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/releases" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+            -d "${REQ_BODY}")
+
+          HTTP_STATUS=$(echo "${CREATE_RELEASE}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+
+          if [[ "${HTTP_STATUS}" -ne 201 ]]; then
+            echo "Failed to create release. HTTP ${HTTP_STATUS}" >> "$GITHUB_STEP_SUMMARY"
+            echo "$(echo "${CREATE_RELEASE}" | head -c 2000)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          RELEASE_URL=$(echo "${CREATE_RELEASE}" | sed '$d' | jq -r '.html_url // ""')
+          echo "Release created and published: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+
+  select-release:
+    name: Select release outputs
+    runs-on: ubuntu-latest
+    needs: [create-release-draft, create-release-publish]
+    if: ${{ !cancelled() && (needs.create-release-draft.result == 'success' || needs.create-release-publish.result == 'success') }}
+    outputs:
+      owner: ${{ steps.pick.outputs.owner }}
+      repo: ${{ steps.pick.outputs.repo }}
+      release_kind: ${{ steps.pick.outputs.release_kind }}
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - name: Select outputs
+        id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ needs.create-release-publish.result }}" == "success" ]]; then
+            echo "owner=${{ needs.create-release-publish.outputs.owner }}" >> "$GITHUB_OUTPUT"
+            echo "repo=${{ needs.create-release-publish.outputs.repo }}" >> "$GITHUB_OUTPUT"
+            echo "release_kind=${{ needs.create-release-publish.outputs.release_kind }}" >> "$GITHUB_OUTPUT"
+            echo "tag=${{ needs.create-release-publish.outputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "Selected outputs from: create-release-publish" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "owner=${{ needs.create-release-draft.outputs.owner }}" >> "$GITHUB_OUTPUT"
+            echo "repo=${{ needs.create-release-draft.outputs.repo }}" >> "$GITHUB_OUTPUT"
+            echo "release_kind=${{ needs.create-release-draft.outputs.release_kind }}" >> "$GITHUB_OUTPUT"
+            echo "tag=${{ needs.create-release-draft.outputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "Selected outputs from: create-release-draft" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  milestone-automation:
+    name: Milestone automation
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    needs: [select-release]
+    if: ${{ !cancelled() && needs.select-release.result == 'success' }}
+    env:
+      OWNER: ${{ needs.select-release.outputs.owner }}
+      REPO: ${{ needs.select-release.outputs.repo }}
+      RELEASE_KIND: ${{ needs.select-release.outputs.release_kind }}
+      TAG: ${{ needs.select-release.outputs.tag }}
+    steps:
+      - name: Decide milestone actions
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${TAG}"
+          KIND="${RELEASE_KIND}"
+
+          IFS='.' read -r A B C D <<< "${TAG}"
+          COUNT="$(echo "${TAG}" | awk -F'.' '{print NF}')"
+
+          echo "close_title=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "do_milestones=true" >> "$GITHUB_OUTPUT"
+          echo "create_titles=" >> "$GITHUB_OUTPUT"
+          echo "move_from_title=" >> "$GITHUB_OUTPUT"
+          echo "move_to_title=" >> "$GITHUB_OUTPUT"
+          echo "minor_move_prefix=" >> "$GITHUB_OUTPUT"
+
+          if [[ "${KIND}" == "hotfix" ]]; then
+            echo "do_milestones=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "${COUNT}" -lt 3 ]]; then
+            echo "Tag '${TAG}' must have at least 3 parts for major/minor/bugfix." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if [[ "${KIND}" == "major" ]]; then
+            NEXT_MAJOR="$((A+1)).0.0"
+            NEXT_PATCH="${A}.${B}.$((C+1))"
+            echo "create_titles=${NEXT_MAJOR},${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+            echo "move_from_title=" >> "$GITHUB_OUTPUT"
+            echo "move_to_title=" >> "$GITHUB_OUTPUT"
+          elif [[ "${KIND}" == "minor" ]]; then
+            NEXT_MINOR="${A}.$((B+1)).0"
+            NEXT_PATCH="${A}.${B}.$((C+1))"
+            echo "create_titles=${NEXT_MINOR},${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+            echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+            if [[ "${B}" =~ ^[0-9]+$ && "${B}" -gt 0 ]]; then
+              PREV_MINOR="${A}.$((B-1))."
+              echo "minor_move_prefix=${PREV_MINOR}" >> "$GITHUB_OUTPUT"
+            fi
+          elif [[ "${KIND}" == "bugfix" ]]; then
+            NEXT_PATCH="${A}.${B}.$((C+1))"
+            echo "create_titles=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+            echo "move_from_title=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip milestones for hotfix
+        if: ${{ steps.plan.outputs.do_milestones == 'false' }}
+        run: |
+          echo "Hotfix release detected; no milestone automation performed." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Find milestone to close
+        id: ms_find
+        if: ${{ steps.plan.outputs.do_milestones == 'true' }}
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          TITLE="${{ steps.plan.outputs.close_title }}"
+
+          PAGE=1
+          MS_NUMBER=""
+          while true; do
+            RESP=$(curl -s --location \
+              "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=all&per_page=100&page=${PAGE}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+            LEN=$(echo "${RESP}" | jq '. | length')
+            if [[ "${LEN}" -eq 0 ]]; then
+              break
+            fi
+
+            MS_NUMBER=$(echo "${RESP}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
+            if [[ -n "${MS_NUMBER}" && "${MS_NUMBER}" != "null" ]]; then
+              break
+            fi
+
+            PAGE=$((PAGE+1))
+            if [[ "${PAGE}" -gt 20 ]]; then
+              break
+            fi
+          done
+
+          if [[ -z "${MS_NUMBER}" || "${MS_NUMBER}" == "null" ]]; then
+            echo "⚠️ Close milestone not found by title: ${TITLE} (will not close)" >> "$GITHUB_STEP_SUMMARY"
+            echo "close_ms_number=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "close_ms_number=${MS_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "Found milestone '${TITLE}' as #${MS_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create next milestones
+        id: ms_create
+        if: ${{ steps.plan.outputs.do_milestones == 'true' && steps.plan.outputs.create_titles != '' }}
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          IFS=',' read -ra TITLES <<< "${{ steps.plan.outputs.create_titles }}"
+          CREATED=""
+
+          for TITLE in "${TITLES[@]}"; do
+            TITLE="$(echo "${TITLE}" | xargs)"
+            [[ -z "${TITLE}" ]] && continue
+
             PAGE=1
-            while [[ -z "${MS_NUMBER}" || "${MS_NUMBER}" == "null" ]]; do
-              MILESTONES_JSON=$(curl -s --location \
-                "https://api.github.com/repos/pimcore/${TARGET_REPO}/milestones?state=open&per_page=100&page=${PAGE}" \
+            FOUND=""
+            while true; do
+              RESP=$(curl -s --location \
+                "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=all&per_page=100&page=${PAGE}" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 -H "Accept: application/vnd.github+json" \
                 -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-              # Check if we got empty results (no more pages)
-              if [[ "$(echo "${MILESTONES_JSON}" | jq '. | length')" -eq 0 ]]; then
-                echo "Milestone to close not found (open) by title: ${TITLE}" >> "$GITHUB_STEP_SUMMARY"
-                exit 1
+              LEN=$(echo "${RESP}" | jq '. | length')
+              if [[ "${LEN}" -eq 0 ]]; then
+                break
               fi
 
-              MS_NUMBER=$(echo "${MILESTONES_JSON}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
-              PAGE=$((PAGE + 1))
+              FOUND=$(echo "${RESP}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
+              if [[ -n "${FOUND}" && "${FOUND}" != "null" ]]; then
+                break
+              fi
 
-              # Safety limit to prevent infinite loops
-              if [[ ${PAGE} -gt 20 ]]; then
-                echo "Milestone search exceeded 2000 milestones. Title not found: ${TITLE}" >> "$GITHUB_STEP_SUMMARY"
-                exit 1
+              PAGE=$((PAGE+1))
+              if [[ "${PAGE}" -gt 20 ]]; then
+                break
               fi
             done
+
+            if [[ -n "${FOUND}" && "${FOUND}" != "null" ]]; then
+              echo "Milestone exists '${TITLE}' (#${FOUND}); reusing" >> "$GITHUB_STEP_SUMMARY"
+              CREATED="${CREATED}${TITLE}:${FOUND},"
+              continue
+            fi
+
+            NEW_JSON=$(curl -s --fail-with-body -X POST --location \
+              "https://api.github.com/repos/${OWNER}/${REPO}/milestones" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+              -d "$(jq -n --arg t "${TITLE}" '{title:$t}')" )
+
+            NEW_NUM=$(echo "${NEW_JSON}" | jq -r '.number')
+            if [[ -z "${NEW_NUM}" || "${NEW_NUM}" == "null" ]]; then
+              echo "Failed to create milestone '${TITLE}'" >> "$GITHUB_STEP_SUMMARY"
+              echo "$(echo "${NEW_JSON}" | head -c 2000)" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+
+            echo "Created milestone '${TITLE}' (#${NEW_NUM})" >> "$GITHUB_STEP_SUMMARY"
+            CREATED="${CREATED}${TITLE}:${NEW_NUM},"
+          done
+
+          echo "created_map=${CREATED}" >> "$GITHUB_OUTPUT"
+
+      - name: Move issues for bugfix (from old milestone to new milestone)
+        if: ${{ steps.plan.outputs.do_milestones == 'true' && steps.plan.outputs.move_from_title != '' && steps.plan.outputs.move_to_title != '' && env.RELEASE_KIND == 'bugfix' }}
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          FROM_TITLE="${{ steps.plan.outputs.move_from_title }}"
+          TO_TITLE="${{ steps.plan.outputs.move_to_title }}"
+
+          resolve_ms () {
+            local TITLE="$1"
+            local PAGE=1
+            while true; do
+              local RESP
+              RESP=$(curl -s --location \
+                "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=all&per_page=100&page=${PAGE}" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${RELEASE_TOKEN}")
+              local LEN
+              LEN=$(echo "${RESP}" | jq '. | length')
+              if [[ "${LEN}" -eq 0 ]]; then
+                echo ""
+                return 0
+              fi
+              local NUM
+              NUM=$(echo "${RESP}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
+              if [[ -n "${NUM}" && "${NUM}" != "null" ]]; then
+                echo "${NUM}"
+                return 0
+              fi
+              PAGE=$((PAGE+1))
+              if [[ "${PAGE}" -gt 20 ]]; then
+                echo ""
+                return 0
+              fi
+            done
+          }
+
+          FROM_NUM="$(resolve_ms "${FROM_TITLE}")"
+          TO_NUM="$(resolve_ms "${TO_TITLE}")"
+
+          if [[ -z "${FROM_NUM}" || -z "${TO_NUM}" ]]; then
+            echo "⚠️ Cannot move issues: milestone numbers not found (from='${FROM_TITLE}', to='${TO_TITLE}')" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
 
+          PAGE=1
+          MOVED=0
+          while true; do
+            ISSUES=$(curl -s --location \
+              "https://api.github.com/repos/${OWNER}/${REPO}/issues?state=open&milestone=${FROM_NUM}&per_page=100&page=${PAGE}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+            LEN=$(echo "${ISSUES}" | jq '. | length')
+            if [[ "${LEN}" -eq 0 ]]; then
+              break
+            fi
+
+            IDS=$(echo "${ISSUES}" | jq -r '.[].number')
+            for N in ${IDS}; do
+              RES=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH --location \
+                "https://api.github.com/repos/${OWNER}/${REPO}/issues/${N}" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+                -d "$(jq -n --argjson m "${TO_NUM}" '{milestone:$m}')")
+              if [[ "${RES}" -eq 200 ]]; then
+                MOVED=$((MOVED+1))
+              fi
+            done
+
+            PAGE=$((PAGE+1))
+            if [[ "${PAGE}" -gt 50 ]]; then
+              echo "⚠️ Stopped bugfix issue move after 50 pages (5000 issues)" >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
+          done
+
+          if [[ "${MOVED}" -gt 0 ]]; then
+            echo "Moved ${MOVED} open issues from '${FROM_TITLE}' -> '${TO_TITLE}'" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No open issues found in milestone '${FROM_TITLE}'" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Move issues (minor)
+        if: ${{ steps.plan.outputs.do_milestones == 'true' && env.RELEASE_KIND == 'minor' && steps.plan.outputs.minor_move_prefix != '' && steps.plan.outputs.move_to_title != '' }}
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          PREFIX="${{ steps.plan.outputs.minor_move_prefix }}"
+          TO_TITLE="${{ steps.plan.outputs.move_to_title }}"
+
+          PAGE=1
+          TO_NUM=""
+          while true; do
+            RESP=$(curl -s --location \
+              "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=all&per_page=100&page=${PAGE}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}")
+            LEN=$(echo "${RESP}" | jq '. | length')
+            if [[ "${LEN}" -eq 0 ]]; then
+              break
+            fi
+            TO_NUM=$(echo "${RESP}" | jq -r --arg t "${TO_TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
+            if [[ -n "${TO_NUM}" && "${TO_NUM}" != "null" ]]; then
+              break
+            fi
+            PAGE=$((PAGE+1))
+            if [[ "${PAGE}" -gt 20 ]]; then
+              break
+            fi
+          done
+
+          if [[ -z "${TO_NUM}" || "${TO_NUM}" == "null" ]]; then
+            echo "⚠️ Cannot move minor issues: target milestone '${TO_TITLE}' not found" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          PAGE=1
+          MOVED=0
+
+          while true; do
+            MS=$(curl -s --location \
+              "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=open&per_page=100&page=${PAGE}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+            LEN=$(echo "${MS}" | jq '. | length')
+            if [[ "${LEN}" -eq 0 ]]; then
+              break
+            fi
+
+            while IFS= read -r MS_TITLE; do
+              [[ -z "${MS_TITLE}" ]] && continue
+              
+              MS_NUM=$(echo "${MS}" | jq -r --arg t "${MS_TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
+              if [[ -z "${MS_NUM}" || "${MS_NUM}" == "null" ]]; then
+                continue
+              fi
+
+              ISSUE_PAGE=1
+              while true; do
+                ISSUES=$(curl -s --location \
+                  "https://api.github.com/repos/${OWNER}/${REPO}/issues?state=open&milestone=${MS_NUM}&per_page=100&page=${ISSUE_PAGE}" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+                ISSUE_LEN=$(echo "${ISSUES}" | jq '. | length')
+                if [[ "${ISSUE_LEN}" -eq 0 ]]; then
+                  break
+                fi
+
+                IDS=$(echo "${ISSUES}" | jq -r '.[].number')
+                for N in ${IDS}; do
+                  RES=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH --location \
+                    "https://api.github.com/repos/${OWNER}/${REPO}/issues/${N}" \
+                    -H "X-GitHub-Api-Version: 2022-11-28" \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+                    -d "$(jq -n --argjson m "${TO_NUM}" '{milestone:$m}')")
+                  if [[ "${RES}" -eq 200 ]]; then
+                    MOVED=$((MOVED+1))
+                  fi
+                done
+
+                ISSUE_PAGE=$((ISSUE_PAGE+1))
+                if [[ "${ISSUE_PAGE}" -gt 50 ]]; then
+                  echo "⚠️ Stopped after 50 pages for milestone '${MS_TITLE}'" >> "$GITHUB_STEP_SUMMARY"
+                  break
+                fi
+              done
+            done <<< "$(echo "${MS}" | jq -r --arg p "${PREFIX}" '.[] | select(.title | startswith($p)) | .title')"
+
+            PAGE=$((PAGE+1))
+            if [[ "${PAGE}" -gt 20 ]]; then
+              echo "⚠️ Stopped minor issue move after 20 pages of milestones" >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
+          done
+
+          if [[ "${MOVED}" -gt 0 ]]; then
+            echo "Moved ${MOVED} open issues from milestones starting with '${PREFIX}' -> '${TO_TITLE}'" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No open issues found in milestones starting with '${PREFIX}'" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Close current milestone (after issue moves)
+        if: ${{ steps.plan.outputs.do_milestones == 'true' && steps.ms_find.outputs.close_ms_number != '' }}
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          MS_NUMBER="${{ steps.ms_find.outputs.close_ms_number }}"
           curl -s --fail-with-body -X PATCH --location \
-            "https://api.github.com/repos/pimcore/${TARGET_REPO}/milestones/${MS_NUMBER}" \
+            "https://api.github.com/repos/${OWNER}/${REPO}/milestones/${MS_NUMBER}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}" \
             -d "$(jq -n '{state:"closed"}')" >/dev/null
+          echo "Closed milestone #${MS_NUMBER} (after moving issues)" >> "$GITHUB_STEP_SUMMARY"
 
-          echo "Closed milestone '${INPUT}' (number: ${MS_NUMBER})" >> "$GITHUB_STEP_SUMMARY"
+  branch-automation:
+    name: Branch automation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs: [select-release, milestone-automation]
+    if: ${{ !cancelled() && needs.select-release.result == 'success' && (needs.select-release.outputs.release_kind == 'major' || needs.select-release.outputs.release_kind == 'minor') }}
+    env:
+      OWNER: ${{ needs.select-release.outputs.owner }}
+      REPO: ${{ needs.select-release.outputs.repo }}
+      RELEASE_KIND: ${{ needs.select-release.outputs.release_kind }}
+      TAG: ${{ needs.select-release.outputs.tag }}
+    steps:
+      - name: Determine branch operations
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Create new milestone (by title or number) if provided (reuse if exists)
-        id: create_ms
-        if: ${{ inputs.new_milestone != '' }}
+          TAG="${TAG}"
+          KIND="${RELEASE_KIND}"
+
+          # Parse TAG parts
+          IFS='.' read -r A B C D <<< "${TAG}"
+
+          if [[ "${KIND}" == "major" ]]; then
+            if [[ "${A}" =~ ^[0-9]+$ && "${A}" -gt 0 ]]; then
+              PREV_MAJOR=$((A-1))
+              CLONE_FROM="${PREV_MAJOR}.x"
+              CLONE_TO="${A}.0"
+              RENAME_FROM="${PREV_MAJOR}.x"
+              RENAME_TO="${A}.x"
+            else
+              echo "Cannot determine previous major version for tag ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+
+            echo "clone_from=${CLONE_FROM}" >> "$GITHUB_OUTPUT"
+            echo "clone_to=${CLONE_TO}" >> "$GITHUB_OUTPUT"
+            echo "rename_from=${RENAME_FROM}" >> "$GITHUB_OUTPUT"
+            echo "rename_to=${RENAME_TO}" >> "$GITHUB_OUTPUT"
+            echo "do_clone=true" >> "$GITHUB_OUTPUT"
+            echo "do_rename=true" >> "$GITHUB_OUTPUT"
+
+          elif [[ "${KIND}" == "minor" ]]; then
+            CLONE_FROM="${A}.x"
+            CLONE_TO="${A}.${B}"
+
+            echo "clone_from=${CLONE_FROM}" >> "$GITHUB_OUTPUT"
+            echo "clone_to=${CLONE_TO}" >> "$GITHUB_OUTPUT"
+            echo "do_clone=true" >> "$GITHUB_OUTPUT"
+            echo "do_rename=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Clone branch for maintenance
+        if: ${{ steps.plan.outputs.do_clone == 'true' }}
         shell: bash
         env:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
-          INPUT="${NEW_MILESTONE}"
+          FROM="${{ steps.plan.outputs.clone_from }}"
+          TO="${{ steps.plan.outputs.clone_to }}"
 
-          # Check if input is numeric (milestone number to reuse) or text (title to create)
-          if [[ "${INPUT}" =~ ^[0-9]+$ ]]; then
-            MS_NUMBER="${INPUT}"
-            echo "Using existing milestone number: ${MS_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
-            echo "milestone_number=${MS_NUMBER}" >> "$GITHUB_OUTPUT"
-            exit 0
+          SHA_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/git/refs/heads/${FROM}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+          SHA_STATUS=$(echo "${SHA_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          if [[ "${SHA_STATUS}" -ne 200 ]]; then
+            echo "❌ Failed to get SHA for branch '${FROM}'. HTTP ${SHA_STATUS}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Branch '${FROM}' does not exist or is not accessible." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
-          TITLE="${INPUT}"
+          SHA=$(echo "${SHA_RESP}" | sed '$d' | jq -r '.object.sha')
+          if [[ -z "${SHA}" || "${SHA}" == "null" ]]; then
+            echo "❌ Failed to parse SHA for branch '${FROM}'" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
-          # Check if milestone already exists (open or closed) with pagination
-          EXISTING_NUMBER=""
-          PAGE=1
-          while [[ -z "${EXISTING_NUMBER}" || "${EXISTING_NUMBER}" == "null" ]]; do
-            EXISTING_JSON=$(curl -s --location \
-              "https://api.github.com/repos/pimcore/${TARGET_REPO}/milestones?state=all&per_page=100&page=${PAGE}" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${RELEASE_TOKEN}")
-
-            # Check if we got empty results (no more pages)
-            if [[ "$(echo "${EXISTING_JSON}" | jq '. | length')" -eq 0 ]]; then
-              break
-            fi
-
-            EXISTING_NUMBER=$(echo "${EXISTING_JSON}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
-            
-            if [[ -n "${EXISTING_NUMBER}" && "${EXISTING_NUMBER}" != "null" ]]; then
-              echo "Milestone already exists '${TITLE}' (number: ${EXISTING_NUMBER}); reusing it." >> "$GITHUB_STEP_SUMMARY"
-              echo "milestone_number=${EXISTING_NUMBER}" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-
-            PAGE=$((PAGE + 1))
-
-            # Safety limit
-            if [[ ${PAGE} -gt 20 ]]; then
-              break
-            fi
-          done
-
-          # Create new milestone if not found
-          CREATED_JSON=$(curl -s --fail-with-body -X POST --location \
-            "https://api.github.com/repos/pimcore/${TARGET_REPO}/milestones" \
+          CREATE_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/git/refs" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}" \
-            -d "$(jq -n --arg t "${TITLE}" '{title:$t}')" )
+            -d "$(jq -n --arg ref "refs/heads/${TO}" --arg sha "${SHA}" '{ref:$ref, sha:$sha}')")
 
-          NEW_NUMBER=$(echo "${CREATED_JSON}" | jq -r '.number')
-          if [[ -z "${NEW_NUMBER}" || "${NEW_NUMBER}" == "null" ]]; then
-            echo "Failed to create milestone '${TITLE}'. Response:" >> "$GITHUB_STEP_SUMMARY"
-            echo "${CREATED_JSON}" | head -c 2000 >> "$GITHUB_STEP_SUMMARY"
-            exit 1
+          CREATE_STATUS=$(echo "${CREATE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          if [[ "${CREATE_STATUS}" -eq 201 ]]; then
+            echo "✅ Created branch '${TO}' from '${FROM}' (${SHA})" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "${CREATE_STATUS}" -eq 422 ]]; then
+            echo "⚠️ Branch '${TO}' already exists; skipping creation" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "⚠️ Failed to create branch '${TO}'. HTTP ${CREATE_STATUS}" >> "$GITHUB_STEP_SUMMARY"
+            echo "$(echo "${CREATE_RESP}" | sed '$d' | head -c 2000)" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          echo "Created milestone '${TITLE}' (number: ${NEW_NUMBER})" >> "$GITHUB_STEP_SUMMARY"
-          echo "milestone_number=${NEW_NUMBER}" >> "$GITHUB_OUTPUT"
-
-      - name: Move specific issues into the new milestone
-        if: ${{ inputs.move_issues != '' && inputs.new_milestone != '' }}
+      - name: Rename branch (manual)
+        if: ${{ steps.plan.outputs.do_rename == 'true' }}
         shell: bash
-        env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
+          FROM="${{ steps.plan.outputs.rename_from }}"
+          TO="${{ steps.plan.outputs.rename_to }}"
+          
+          echo "⚠️ **Manual Action Required**: Rename branch '${FROM}' to '${TO}'" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "After renaming, please check and update:" >> "$GITHUB_STEP_SUMMARY"
+          echo "- composer.json (branch-alias)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Workflow files (any hardcoded version references)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Documentation files" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "See: https://github.com/${OWNER}/${REPO}/branches" >> "$GITHUB_STEP_SUMMARY"
 
-          MS_NUMBER="${{ steps.create_ms.outputs.milestone_number }}"
-          if [[ -z "${MS_NUMBER}" ]]; then
-            echo "No milestone number available; cannot move issues." >> "$GITHUB_STEP_SUMMARY"
-            exit 1
+  summary:
+    name: Release summary
+    runs-on: ubuntu-latest
+    needs: [prepare, create-release-draft, create-release-publish, select-release, milestone-automation, branch-automation]
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Release Workflow Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          
+          if [[ "${{ needs.select-release.result }}" == "success" ]]; then
+            echo "**Repository**: ${{ needs.select-release.outputs.owner }}/${{ needs.select-release.outputs.repo }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Tag**: v${{ needs.select-release.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Release Type**: ${{ needs.select-release.outputs.release_kind }}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Repository**: ${{ needs.prepare.outputs.owner }}/${{ needs.prepare.outputs.repo }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Tag**: ${{ needs.prepare.outputs.tag_name }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Release Type**: ${{ needs.prepare.outputs.release_kind }}" >> "$GITHUB_STEP_SUMMARY"
           fi
-
-          # Normalize and iterate issue numbers
-          IFS=',' read -ra ISSUES <<< "${MOVE_ISSUES}"
-          MOVED_COUNT=0
-          FAILED_COUNT=0
-
-          for raw in "${ISSUES[@]}"; do
-            ISSUE="$(echo "${raw}" | xargs)"
-            [[ -z "${ISSUE}" ]] && continue
-
-            # Verify issue exists before attempting to move
-            CHECK_ISSUE=$(curl -s -o /dev/null -w "%{http_code}" --location \
-              "https://api.github.com/repos/pimcore/${TARGET_REPO}/issues/${ISSUE}" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${RELEASE_TOKEN}")
-
-            if [[ "${CHECK_ISSUE}" -ne 200 ]]; then
-              echo "⚠️ Issue #${ISSUE} not found, skipping" >> "$GITHUB_STEP_SUMMARY"
-              FAILED_COUNT=$((FAILED_COUNT+1))
-              continue
-            fi
-
-            # PATCH issue to set milestone
-            MOVE_RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH --location \
-              "https://api.github.com/repos/pimcore/${TARGET_REPO}/issues/${ISSUE}" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${RELEASE_TOKEN}" \
-              -d "$(jq -n --argjson m "${MS_NUMBER}" '{milestone:$m}')")
-
-            if [[ "${MOVE_RESULT}" -eq 200 ]]; then
-              echo "✓ Moved issue #${ISSUE} -> milestone ${MS_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
-              MOVED_COUNT=$((MOVED_COUNT+1))
-            else
-              echo "⚠️ Failed to move issue #${ISSUE} (HTTP ${MOVE_RESULT})" >> "$GITHUB_STEP_SUMMARY"
-              FAILED_COUNT=$((FAILED_COUNT+1))
-            fi
-          done
-
-          echo "---" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Summary:** ${MOVED_COUNT} moved, ${FAILED_COUNT} failed/skipped" >> "$GITHUB_STEP_SUMMARY"
+          
+          echo "**Draft**: ${{ needs.prepare.outputs.draft }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          
+          if [[ "${{ needs.create-release-draft.result }}" == "success" || "${{ needs.create-release-publish.result }}" == "success" ]]; then
+            echo "✅ Release created successfully" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "${{ needs.create-release-draft.result }}" == "skipped" && "${{ needs.create-release-publish.result }}" == "skipped" ]]; then
+            echo "⏭️ Release creation skipped" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Release creation failed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          
+          if [[ "${{ needs.milestone-automation.result }}" == "success" ]]; then
+            echo "✅ Milestone automation completed" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "${{ needs.milestone-automation.result }}" == "skipped" ]]; then
+            echo "⏭️ Milestone automation skipped" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Milestone automation failed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          
+          if [[ "${{ needs.branch-automation.result }}" == "success" ]]; then
+            echo "✅ Branch automation completed" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "${{ needs.branch-automation.result }}" == "skipped" ]]; then
+            echo "⏭️ Branch automation skipped (not major/minor release)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Branch automation failed" >> "$GITHUB_STEP_SUMMARY"
+          fi
