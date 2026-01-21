@@ -369,7 +369,7 @@ jobs:
             echo "move_from_title=${TAG}" >> "$GITHUB_OUTPUT"
             echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
           fi
-        fi
+          fi
 
       - name: Skip milestones for hotfix
         if: ${{ steps.plan.outputs.do_milestones == 'false' }}
