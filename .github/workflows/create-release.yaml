@@ -63,6 +63,30 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Verify token is available
+          if [[ -z "${RELEASE_TOKEN}" ]]; then
+            echo "❌ RELEASE_TOKEN secret is not set or empty" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # Test token validity with a simple API call
+          TEST_RESP=$(curl -s -o /dev/null -w "%{http_code}" --location \
+            "https://api.github.com/user" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+          if [[ "${TEST_RESP}" -eq 401 ]]; then
+            echo "❌ RELEASE_TOKEN is invalid or expired (HTTP 401)" >> "$GITHUB_STEP_SUMMARY"
+            echo "Please ensure:" >> "$GITHUB_STEP_SUMMARY"
+            echo "1. The token has not expired" >> "$GITHUB_STEP_SUMMARY"
+            echo "2. The token has 'repo' scope for accessing repositories" >> "$GITHUB_STEP_SUMMARY"
+            echo "3. The token is a classic PAT or fine-grained token with repository access" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          elif [[ "${TEST_RESP}" -ne 200 ]]; then
+            echo "⚠️ Unexpected response from GitHub API when validating token (HTTP ${TEST_RESP})" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           if ! [[ "${REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
             echo "Invalid repository format. Expected owner/repo, got: ${REPOSITORY}" >> "$GITHUB_STEP_SUMMARY"
             exit 1
