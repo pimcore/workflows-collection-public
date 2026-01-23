@@ -126,6 +126,12 @@ jobs:
 
           RELEASE_KIND=""
           if [[ "${BASE_IS_X}" == "true" ]]; then
+            # .x branches should only have 3-part versions (major/minor releases)
+            if [[ "${TAG_PARTS_COUNT}" -eq 4 ]]; then
+              echo "Invalid configuration: 4-part version (${TAG}) cannot be released from .x branch (${BASE})" >> "$GITHUB_STEP_SUMMARY"
+              echo "Hotfix releases must use a maintenance branch (e.g., 12.3)" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
             if [[ "${TAG_MAJOR}" != "${BASE_MAJOR}" ]]; then
               RELEASE_KIND="major"
             else
@@ -194,7 +200,6 @@ jobs:
     permissions:
       contents: write
     needs: prepare
-    environment: ${{ inputs.publish_immediately && 'production' || '' }}
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       OWNER: ${{ needs.prepare.outputs.owner }}
@@ -249,19 +254,25 @@ jobs:
 
             if [[ "${GEN_STATUS}" -eq 200 ]]; then
               GEN_NOTES=$(echo "${GEN_RESPONSE}" | sed '$d' | jq -r '.body // ""')
-              FINAL_BODY="${GEN_NOTES}\n\n---\n\n${CHANGELOG}"
+              FINAL_BODY="${GEN_NOTES}"$'\n\n---\n\n'"${CHANGELOG}"
             else
               echo "⚠️ Warning: generate-notes failed (HTTP ${GEN_STATUS}); using custom notes only" >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
 
           # Build request body with proper JSON types
+          # Convert boolean env vars to proper strings for GitHub API
+          MAKE_LATEST_STR="true"
+          if [[ "${MAKE_LATEST}" == "false" ]]; then
+            MAKE_LATEST_STR="false"
+          fi
+          
           if [[ -n "${FINAL_BODY}" ]]; then
             REQ_BODY=$(jq -n \
               --arg target_commitish "${LATEST_SHA}" \
               --arg name "${RELEASE_NAME}" \
               --arg tag_name "${TAG_NAME}" \
-              --argjson make_latest "${MAKE_LATEST}" \
+              --arg make_latest "${MAKE_LATEST_STR}" \
               --argjson draft "${DRAFT}" \
               --argjson prerelease "${PRERELEASE}" \
               --arg body "${FINAL_BODY}" \
@@ -280,7 +291,7 @@ jobs:
               --arg target_commitish "${LATEST_SHA}" \
               --arg name "${RELEASE_NAME}" \
               --arg tag_name "${TAG_NAME}" \
-              --argjson make_latest "${MAKE_LATEST}" \
+              --arg make_latest "${MAKE_LATEST_STR}" \
               --argjson draft "${DRAFT}" \
               --argjson prerelease "${PRERELEASE}" \
               --argjson generate_release_notes "${AUTO_CHANGELOG}" \
@@ -526,15 +537,15 @@ jobs:
                 "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=all&per_page=100&page=${PAGE}" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 -H "Accept: application/vnd.github+json" \
-                -H "Authorization: Bearer ${RELEASE_TOKEN}")
+                -H "Authorization: Bearer ${RELEASE_TOKEN}") || return 1
               local LEN
-              LEN=$(echo "${RESP}" | jq '. | length')
+              LEN=$(echo "${RESP}" | jq '. | length') || return 1
               if [[ "${LEN}" -eq 0 ]]; then
                 echo ""
                 return 0
               fi
               local NUM
-              NUM=$(echo "${RESP}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
+              NUM=$(echo "${RESP}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1) || return 1
               if [[ -n "${NUM}" && "${NUM}" != "null" ]]; then
                 echo "${NUM}"
                 return 0
@@ -738,7 +749,7 @@ jobs:
           KIND="${RELEASE_KIND}"
 
           # Parse TAG parts
-          IFS='.' read -r A B C D <<< "${TAG}"
+          IFS='.' read -r A B C _ <<< "${TAG}"
 
           if [[ "${KIND}" == "major" ]]; then
             if [[ "${A}" =~ ^[0-9]+$ && "${A}" -gt 0 ]]; then
