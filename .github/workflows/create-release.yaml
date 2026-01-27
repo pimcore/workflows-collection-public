@@ -132,10 +132,26 @@ jobs:
               echo "Hotfix releases must use a maintenance branch (e.g., 12.3)" >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
+            
+            TAG_MINOR="$(echo "${TAG}" | cut -d'.' -f2)"
+            TAG_PATCH="$(echo "${TAG}" | cut -d'.' -f3)"
+            
             if [[ "${TAG_MAJOR}" != "${BASE_MAJOR}" ]]; then
               RELEASE_KIND="major"
+              # Major releases must be X.0.0
+              if [[ "${TAG_MINOR}" != "0" || "${TAG_PATCH}" != "0" ]]; then
+                echo "Invalid major release format. Expected ${TAG_MAJOR}.0.0, got: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+                echo "Major releases must use X.0.0 format" >> "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
             else
               RELEASE_KIND="minor"
+              # Minor releases must be X.Y.0
+              if [[ "${TAG_PATCH}" != "0" ]]; then
+                echo "Invalid minor release format. Expected ${TAG_MAJOR}.${TAG_MINOR}.0, got: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+                echo "Minor releases must use X.Y.0 format" >> "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
             fi
           else
             if [[ "${TAG_PARTS_COUNT}" -eq 4 ]]; then
