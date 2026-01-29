@@ -122,6 +122,8 @@ jobs:
 
           BASE_MAJOR="$(echo "${BASE}" | cut -d'.' -f1)"
           TAG_MAJOR="$(echo "${TAG}" | cut -d'.' -f1)"
+          TAG_MINOR="$(echo "${TAG}" | cut -d'.' -f2)"
+          TAG_PATCH="$(echo "${TAG}" | cut -d'.' -f3)"
           TAG_PARTS_COUNT="$(echo "${TAG}" | awk -F'.' '{print NF}')"
 
           RELEASE_KIND=""
@@ -132,9 +134,6 @@ jobs:
               echo "Hotfix releases must use a maintenance branch (e.g., 12.3)" >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
-            
-            TAG_MINOR="$(echo "${TAG}" | cut -d'.' -f2)"
-            TAG_PATCH="$(echo "${TAG}" | cut -d'.' -f3)"
             
             if [[ "${TAG_MAJOR}" != "${BASE_MAJOR}" ]]; then
               RELEASE_KIND="major"
@@ -154,6 +153,15 @@ jobs:
               fi
             fi
           else
+            BASE_MINOR="$(echo "${BASE}" | cut -d'.' -f2)"
+            if ! [[ "${BASE_MINOR}" =~ ^[0-9]+$ ]]; then
+              echo "Invalid base_branch format. Expected X.Y for maintenance branches, got: ${BASE}" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            if [[ "${TAG_MAJOR}" != "${BASE_MAJOR}" || "${TAG_MINOR}" != "${BASE_MINOR}" ]]; then
+              echo "Invalid tag for maintenance base. Expected ${BASE_MAJOR}.${BASE_MINOR}.* for base ${BASE}, got: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
             if [[ "${TAG_PARTS_COUNT}" -eq 4 ]]; then
               RELEASE_KIND="hotfix"
             elif [[ "${TAG_PARTS_COUNT}" -eq 3 ]]; then
@@ -388,10 +396,6 @@ jobs:
 
           echo "close_title=${TAG}" >> "$GITHUB_OUTPUT"
           echo "do_milestones=true" >> "$GITHUB_OUTPUT"
-          echo "create_titles=" >> "$GITHUB_OUTPUT"
-          echo "move_from_title=" >> "$GITHUB_OUTPUT"
-          echo "move_to_title=" >> "$GITHUB_OUTPUT"
-          echo "minor_move_prefix=" >> "$GITHUB_OUTPUT"
 
           if [[ "${KIND}" == "hotfix" ]]; then
             echo "do_milestones=false" >> "$GITHUB_OUTPUT"
@@ -402,8 +406,11 @@ jobs:
             NEXT_MAJOR="$((A+1)).0.0"
             NEXT_PATCH="${A}.${B}.$((C+1))"
             echo "create_titles=${NEXT_MAJOR},${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
-            echo "move_from_title=" >> "$GITHUB_OUTPUT"
-            echo "move_to_title=" >> "$GITHUB_OUTPUT"
+            if [[ "${A}" =~ ^[0-9]+$ && "${A}" -gt 0 ]]; then
+              PREV_MAJOR="$((A-1))."
+              echo "major_move_prefix=${PREV_MAJOR}" >> "$GITHUB_OUTPUT"
+              echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+            fi
           elif [[ "${KIND}" == "minor" ]]; then
             NEXT_MINOR="${A}.$((B+1)).0"
             NEXT_PATCH="${A}.${B}.$((C+1))"
@@ -727,6 +734,111 @@ jobs:
             echo "No open issues found in milestones starting with '${PREFIX}'" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Move issues (major)
+        if: ${{ steps.plan.outputs.do_milestones == 'true' && env.RELEASE_KIND == 'major' && steps.plan.outputs.major_move_prefix != '' && steps.plan.outputs.move_to_title != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREFIX="${{ steps.plan.outputs.major_move_prefix }}"
+          TO_TITLE="${{ steps.plan.outputs.move_to_title }}"
+
+          PAGE=1
+          TO_NUM=""
+          while true; do
+            RESP=$(curl -s --location \
+              "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=all&per_page=100&page=${PAGE}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}")
+            LEN=$(echo "${RESP}" | jq '. | length')
+            if [[ "${LEN}" -eq 0 ]]; then
+              break
+            fi
+            TO_NUM=$(echo "${RESP}" | jq -r --arg t "${TO_TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
+            if [[ -n "${TO_NUM}" && "${TO_NUM}" != "null" ]]; then
+              break
+            fi
+            PAGE=$((PAGE+1))
+            if [[ "${PAGE}" -gt 20 ]]; then
+              break
+            fi
+          done
+
+          if [[ -z "${TO_NUM}" || "${TO_NUM}" == "null" ]]; then
+            echo "⚠️ Cannot move major issues: target milestone '${TO_TITLE}' not found" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          PAGE=1
+          MOVED=0
+
+          while true; do
+            MS=$(curl -s --location \
+              "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=open&per_page=100&page=${PAGE}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+            LEN=$(echo "${MS}" | jq '. | length')
+            if [[ "${LEN}" -eq 0 ]]; then
+              break
+            fi
+
+            while IFS= read -r MS_TITLE; do
+              [[ -z "${MS_TITLE}" ]] && continue
+              
+              MS_NUM=$(echo "${MS}" | jq -r --arg t "${MS_TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
+              if [[ -z "${MS_NUM}" || "${MS_NUM}" == "null" ]]; then
+                continue
+              fi
+
+              ISSUE_PAGE=1
+              while true; do
+                ISSUES=$(curl -s --location \
+                  "https://api.github.com/repos/${OWNER}/${REPO}/issues?state=open&milestone=${MS_NUM}&per_page=100&page=${ISSUE_PAGE}" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+                ISSUE_LEN=$(echo "${ISSUES}" | jq '. | length')
+                if [[ "${ISSUE_LEN}" -eq 0 ]]; then
+                  break
+                fi
+
+                IDS=$(echo "${ISSUES}" | jq -r '.[].number')
+                for N in ${IDS}; do
+                  RES=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH --location \
+                    "https://api.github.com/repos/${OWNER}/${REPO}/issues/${N}" \
+                    -H "X-GitHub-Api-Version: 2022-11-28" \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+                    -d "$(jq -n --argjson m "${TO_NUM}" '{milestone:$m}')")
+                  if [[ "${RES}" -eq 200 ]]; then
+                    MOVED=$((MOVED+1))
+                  fi
+                done
+
+                ISSUE_PAGE=$((ISSUE_PAGE+1))
+                if [[ "${ISSUE_PAGE}" -gt 50 ]]; then
+                  echo "⚠️ Stopped after 50 pages for milestone '${MS_TITLE}'" >> "$GITHUB_STEP_SUMMARY"
+                  break
+                fi
+              done
+            done <<< "$(echo "${MS}" | jq -r --arg p "${PREFIX}" '.[] | select(.title | startswith($p)) | .title')"
+
+            PAGE=$((PAGE+1))
+            if [[ "${PAGE}" -gt 20 ]]; then
+              echo "⚠️ Stopped major issue move after 20 pages of milestones" >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
+          done
+
+          if [[ "${MOVED}" -gt 0 ]]; then
+            echo "Moved ${MOVED} open issues from milestones starting with '${PREFIX}' -> '${TO_TITLE}'" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No open issues found in milestones starting with '${PREFIX}'" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Close current milestone (after issue moves)
         if: ${{ steps.plan.outputs.do_milestones == 'true' && steps.ms_find.outputs.close_ms_number != '' }}
         shell: bash
@@ -772,8 +884,6 @@ jobs:
               PREV_MAJOR=$((A-1))
               CLONE_FROM="${PREV_MAJOR}.x"
               CLONE_TO="${A}.0"
-              RENAME_FROM="${PREV_MAJOR}.x"
-              RENAME_TO="${A}.x"
             else
               echo "Cannot determine previous major version for tag ${TAG}" >> "$GITHUB_STEP_SUMMARY"
               exit 1
@@ -781,10 +891,7 @@ jobs:
 
             echo "clone_from=${CLONE_FROM}" >> "$GITHUB_OUTPUT"
             echo "clone_to=${CLONE_TO}" >> "$GITHUB_OUTPUT"
-            echo "rename_from=${RENAME_FROM}" >> "$GITHUB_OUTPUT"
-            echo "rename_to=${RENAME_TO}" >> "$GITHUB_OUTPUT"
             echo "do_clone=true" >> "$GITHUB_OUTPUT"
-            echo "do_rename=true" >> "$GITHUB_OUTPUT"
 
           elif [[ "${KIND}" == "minor" ]]; then
             CLONE_FROM="${A}.x"
@@ -793,7 +900,6 @@ jobs:
             echo "clone_from=${CLONE_FROM}" >> "$GITHUB_OUTPUT"
             echo "clone_to=${CLONE_TO}" >> "$GITHUB_OUTPUT"
             echo "do_clone=true" >> "$GITHUB_OUTPUT"
-            echo "do_rename=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Clone branch for maintenance
@@ -839,23 +945,6 @@ jobs:
             echo "⚠️ Failed to create branch '${TO}'. HTTP ${CREATE_STATUS}" >> "$GITHUB_STEP_SUMMARY"
             echo "$(echo "${CREATE_RESP}" | sed '$d' | head -c 2000)" >> "$GITHUB_STEP_SUMMARY"
           fi
-
-      - name: Rename branch (manual)
-        if: ${{ steps.plan.outputs.do_rename == 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          FROM="${{ steps.plan.outputs.rename_from }}"
-          TO="${{ steps.plan.outputs.rename_to }}"
-          
-          echo "⚠️ **Manual Action Required**: Rename branch '${FROM}' to '${TO}'" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "After renaming, please check and update:" >> "$GITHUB_STEP_SUMMARY"
-          echo "- composer.json (branch-alias)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Workflow files (any hardcoded version references)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Documentation files" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "See: https://github.com/${OWNER}/${REPO}/branches" >> "$GITHUB_STEP_SUMMARY"
 
   summary:
     name: Release summary
