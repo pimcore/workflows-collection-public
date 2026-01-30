@@ -842,7 +842,7 @@ jobs:
             echo "**Release Type**: ${{ needs.select-release.outputs.release_kind }}" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "**Repository**: ${{ needs.prepare.outputs.owner }}/${{ needs.prepare.outputs.repo }}" >> "$GITHUB_STEP_SUMMARY"
-            echo "**Tag**: ${{ needs.prepare.outputs.tag_name }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Tag**: v${{ needs.prepare.outputs.release_name }}" >> "$GITHUB_STEP_SUMMARY"
             echo "**Release Type**: ${{ needs.prepare.outputs.release_kind }}" >> "$GITHUB_STEP_SUMMARY"
           fi
           
