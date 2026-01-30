@@ -476,55 +476,42 @@ jobs:
             TITLE="$(echo "${TITLE}" | xargs)"
             [[ -z "${TITLE}" ]] && continue
 
-            # Check if milestone exists (open only)
-            PAGE=1
-            FOUND=""
-            while true; do
-              RESP=$(curl -s --location \
-                "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=open&per_page=100&page=${PAGE}" \
-                -H "X-GitHub-Api-Version: 2022-11-28" \
-                -H "Accept: application/vnd.github+json" \
-                -H "Authorization: Bearer ${RELEASE_TOKEN}")
-
-              LEN=$(echo "${RESP}" | jq '. | length')
-              if [[ "${LEN}" -eq 0 ]]; then
-                break
-              fi
-
-              FOUND=$(echo "${RESP}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
-              if [[ -n "${FOUND}" && "${FOUND}" != "null" ]]; then
-                break
-              fi
-
-              PAGE=$((PAGE+1))
-              if [[ "${PAGE}" -gt 20 ]]; then
-                break
-              fi
-            done
-
-            if [[ -n "${FOUND}" && "${FOUND}" != "null" ]]; then
-              echo "Milestone exists '${TITLE}' (#${FOUND}); reusing" >> "$GITHUB_STEP_SUMMARY"
-              CREATED="${CREATED}${TITLE}:${FOUND},"
-              continue
-            fi
-
-            # Milestone not found, create it
-            NEW_JSON=$(curl -s --fail-with-body -X POST --location \
+            # Try to create milestone directly; handle 422 if already exists
+            CREATE_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
               "https://api.github.com/repos/${OWNER}/${REPO}/milestones" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}" \
-              -d "$(jq -n --arg t "${TITLE}" '{title:$t}')" )
+              -d "$(jq -n --arg t "${TITLE}" '{title:$t}')")
 
-            NEW_NUM=$(echo "${NEW_JSON}" | jq -r '.number')
-            if [[ -z "${NEW_NUM}" || "${NEW_NUM}" == "null" ]]; then
-              echo "Failed to create milestone '${TITLE}'" >> "$GITHUB_STEP_SUMMARY"
-              echo "$(echo "${NEW_JSON}" | head -c 2000)" >> "$GITHUB_STEP_SUMMARY"
-              exit 1
+            CREATE_STATUS=$(echo "${CREATE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            
+            if [[ "${CREATE_STATUS}" -eq 201 ]]; then
+              # Successfully created
+              NEW_NUM=$(echo "${CREATE_RESP}" | sed '$d' | jq -r '.number')
+              echo "Created milestone '${TITLE}' (#${NEW_NUM})" >> "$GITHUB_STEP_SUMMARY"
+              CREATED="${CREATED}${TITLE}:${NEW_NUM},"
+            elif [[ "${CREATE_STATUS}" -eq 422 ]]; then
+              # Already exists - extract number from error or fetch it
+              ERROR_MSG=$(echo "${CREATE_RESP}" | sed '$d' | jq -r '.message // ""')
+              if [[ "${ERROR_MSG}" == *"already exists"* ]]; then
+                # Fetch the existing milestone number (single request to open milestones)
+                EXISTING=$(curl -s --location \
+                  "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=open&per_page=100" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer ${RELEASE_TOKEN}" | \
+                  jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
+                
+                if [[ -n "${EXISTING}" && "${EXISTING}" != "null" ]]; then
+                  echo "Milestone exists '${TITLE}' (#${EXISTING}); reusing" >> "$GITHUB_STEP_SUMMARY"
+                  CREATED="${CREATED}${TITLE}:${EXISTING},"
+                fi
+              fi
+            else
+              echo "⚠️ Failed to create milestone '${TITLE}' (HTTP ${CREATE_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+              echo "$(echo "${CREATE_RESP}" | sed '$d' | head -c 500)" >> "$GITHUB_STEP_SUMMARY"
             fi
-
-            echo "Created milestone '${TITLE}' (#${NEW_NUM})" >> "$GITHUB_STEP_SUMMARY"
-            CREATED="${CREATED}${TITLE}:${NEW_NUM},"
           done
 
           echo "created_map=${CREATED}" >> "$GITHUB_OUTPUT"
