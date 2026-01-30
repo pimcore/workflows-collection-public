@@ -375,7 +375,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          TAG="${TAG}"
           KIND="${RELEASE_KIND}"
 
           IFS='.' read -r A B C D <<< "${TAG}"
@@ -822,7 +821,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          TAG="${TAG}"
           KIND="${RELEASE_KIND}"
 
           # Parse TAG parts
