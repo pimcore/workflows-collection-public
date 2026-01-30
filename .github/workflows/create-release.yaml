@@ -519,41 +519,41 @@ jobs:
           set -euo pipefail
           FROM_TITLE="${{ steps.plan.outputs.move_from_title }}"
           TO_TITLE="${{ steps.plan.outputs.move_to_title }}"
+          CREATED_MAP="${{ steps.ms_create.outputs.created_map }}"
 
-          resolve_ms () {
-            local TITLE="$1"
-            local PAGE=1
-            while true; do
-              local RESP
+          # Try to get TO_NUM from created_map first (just created in previous step)
+          TO_NUM=""
+          if [[ -n "${CREATED_MAP}" ]]; then
+            TO_NUM=$(awk -v t="${TO_TITLE}" -F'[:,]' '{for(i=1;i<=NF;i+=2) if($i==t){print $(i+1); exit}}' <<< "${CREATED_MAP}")
+          fi
+
+          # If not in created_map, search open milestones (should be there since just created)
+          if [[ -z "${TO_NUM}" ]]; then
+            RESP=$(curl -s --location \
+              "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=open&sort=created&direction=desc&per_page=100" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}")
+            TO_NUM=$(echo "${RESP}" | jq -r --arg t "${TO_TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
+          fi
+
+          # Find FROM_NUM (the milestone being released, should be open)
+          FROM_NUM="${{ steps.ms_find.outputs.close_ms_number }}"
+          if [[ -z "${FROM_NUM}" || "${FROM_NUM}" == "null" ]]; then
+            for STATE in open closed; do
               RESP=$(curl -s --location \
-                "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=all&per_page=100&page=${PAGE}" \
+                "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=${STATE}&sort=created&direction=desc&per_page=100" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 -H "Accept: application/vnd.github+json" \
-                -H "Authorization: Bearer ${RELEASE_TOKEN}") || return 1
-              local LEN
-              LEN=$(echo "${RESP}" | jq '. | length') || return 1
-              if [[ "${LEN}" -eq 0 ]]; then
-                echo ""
-                return 0
-              fi
-              local NUM
-              NUM=$(echo "${RESP}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1) || return 1
-              if [[ -n "${NUM}" && "${NUM}" != "null" ]]; then
-                echo "${NUM}"
-                return 0
-              fi
-              PAGE=$((PAGE+1))
-              if [[ "${PAGE}" -gt 20 ]]; then
-                echo ""
-                return 0
+                -H "Authorization: Bearer ${RELEASE_TOKEN}")
+              FROM_NUM=$(echo "${RESP}" | jq -r --arg t "${FROM_TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
+              if [[ -n "${FROM_NUM}" && "${FROM_NUM}" != "null" ]]; then
+                break
               fi
             done
-          }
+          fi
 
-          FROM_NUM="$(resolve_ms "${FROM_TITLE}")"
-          TO_NUM="$(resolve_ms "${TO_TITLE}")"
-
-          if [[ -z "${FROM_NUM}" || -z "${TO_NUM}" ]]; then
+          if [[ -z "${FROM_NUM}" || "${FROM_NUM}" == "null" || -z "${TO_NUM}" || "${TO_NUM}" == "null" ]]; then
             echo "⚠️ Cannot move issues: milestone numbers not found (from='${FROM_TITLE}', to='${TO_TITLE}')" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -605,28 +605,23 @@ jobs:
           set -euo pipefail
           PREFIX="${{ steps.plan.outputs.minor_move_prefix }}"
           TO_TITLE="${{ steps.plan.outputs.move_to_title }}"
+          CREATED_MAP="${{ steps.ms_create.outputs.created_map }}"
 
-          PAGE=1
+          # Try to get TO_NUM from created_map first (just created in previous step)
           TO_NUM=""
-          while true; do
+          if [[ -n "${CREATED_MAP}" ]]; then
+            TO_NUM=$(awk -v t="${TO_TITLE}" -F'[:,]' '{for(i=1;i<=NF;i+=2) if($i==t){print $(i+1); exit}}' <<< "${CREATED_MAP}")
+          fi
+
+          # If not in created_map, search open milestones (should be there since just created)
+          if [[ -z "${TO_NUM}" ]]; then
             RESP=$(curl -s --location \
-              "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=all&per_page=100&page=${PAGE}" \
+              "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=open&sort=created&direction=desc&per_page=100" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}")
-            LEN=$(echo "${RESP}" | jq '. | length')
-            if [[ "${LEN}" -eq 0 ]]; then
-              break
-            fi
             TO_NUM=$(echo "${RESP}" | jq -r --arg t "${TO_TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
-            if [[ -n "${TO_NUM}" && "${TO_NUM}" != "null" ]]; then
-              break
-            fi
-            PAGE=$((PAGE+1))
-            if [[ "${PAGE}" -gt 20 ]]; then
-              break
-            fi
-          done
+          fi
 
           if [[ -z "${TO_NUM}" || "${TO_NUM}" == "null" ]]; then
             echo "⚠️ Cannot move minor issues: target milestone '${TO_TITLE}' not found" >> "$GITHUB_STEP_SUMMARY"
@@ -648,13 +643,8 @@ jobs:
               break
             fi
 
-            while IFS= read -r MS_TITLE; do
-              [[ -z "${MS_TITLE}" ]] && continue
-              
-              MS_NUM=$(echo "${MS}" | jq -r --arg t "${MS_TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
-              if [[ -z "${MS_NUM}" || "${MS_NUM}" == "null" ]]; then
-                continue
-              fi
+            while IFS=$'\t' read -r MS_TITLE MS_NUM; do
+              [[ -z "${MS_TITLE}" || -z "${MS_NUM}" || "${MS_NUM}" == "null" ]] && continue
 
               ISSUE_PAGE=1
               while true; do
@@ -688,7 +678,7 @@ jobs:
                   break
                 fi
               done
-            done <<< "$(echo "${MS}" | jq -r --arg p "${PREFIX}" '.[] | select(.title | startswith($p)) | .title')"
+            done <<< "$(echo "${MS}" | jq -r --arg p "${PREFIX}" '.[] | select(.title | startswith($p)) | "\(.title)\t\(.number)"')"
 
             PAGE=$((PAGE+1))
             if [[ "${PAGE}" -gt 20 ]]; then
@@ -710,28 +700,23 @@ jobs:
           set -euo pipefail
           PREFIX="${{ steps.plan.outputs.major_move_prefix }}"
           TO_TITLE="${{ steps.plan.outputs.move_to_title }}"
+          CREATED_MAP="${{ steps.ms_create.outputs.created_map }}"
 
-          PAGE=1
+          # Try to get TO_NUM from created_map first (just created in previous step)
           TO_NUM=""
-          while true; do
+          if [[ -n "${CREATED_MAP}" ]]; then
+            TO_NUM=$(awk -v t="${TO_TITLE}" -F'[:,]' '{for(i=1;i<=NF;i+=2) if($i==t){print $(i+1); exit}}' <<< "${CREATED_MAP}")
+          fi
+
+          # If not in created_map, search open milestones (should be there since just created)
+          if [[ -z "${TO_NUM}" ]]; then
             RESP=$(curl -s --location \
-              "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=all&per_page=100&page=${PAGE}" \
+              "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=open&sort=created&direction=desc&per_page=100" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}")
-            LEN=$(echo "${RESP}" | jq '. | length')
-            if [[ "${LEN}" -eq 0 ]]; then
-              break
-            fi
             TO_NUM=$(echo "${RESP}" | jq -r --arg t "${TO_TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
-            if [[ -n "${TO_NUM}" && "${TO_NUM}" != "null" ]]; then
-              break
-            fi
-            PAGE=$((PAGE+1))
-            if [[ "${PAGE}" -gt 20 ]]; then
-              break
-            fi
-          done
+          fi
 
           if [[ -z "${TO_NUM}" || "${TO_NUM}" == "null" ]]; then
             echo "⚠️ Cannot move major issues: target milestone '${TO_TITLE}' not found" >> "$GITHUB_STEP_SUMMARY"
@@ -753,13 +738,8 @@ jobs:
               break
             fi
 
-            while IFS= read -r MS_TITLE; do
-              [[ -z "${MS_TITLE}" ]] && continue
-              
-              MS_NUM=$(echo "${MS}" | jq -r --arg t "${MS_TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
-              if [[ -z "${MS_NUM}" || "${MS_NUM}" == "null" ]]; then
-                continue
-              fi
+            while IFS=$'\t' read -r MS_TITLE MS_NUM; do
+              [[ -z "${MS_TITLE}" || -z "${MS_NUM}" || "${MS_NUM}" == "null" ]] && continue
 
               ISSUE_PAGE=1
               while true; do
@@ -793,7 +773,7 @@ jobs:
                   break
                 fi
               done
-            done <<< "$(echo "${MS}" | jq -r --arg p "${PREFIX}" '.[] | select(.title | startswith($p)) | .title')"
+            done <<< "$(echo "${MS}" | jq -r --arg p "${PREFIX}" '.[] | select(.title | startswith($p)) | "\(.title)\t\(.number)"')"
 
             PAGE=$((PAGE+1))
             if [[ "${PAGE}" -gt 20 ]]; then
