@@ -388,30 +388,30 @@ jobs:
           else
             # Major, minor, or bugfix release - proceed with milestone automation
             if [[ "${KIND}" == "major" ]]; then
-            NEXT_MAJOR="$((A+1)).0.0"
-            NEXT_PATCH="${A}.${B}.$((C+1))"
-            echo "create_titles=${NEXT_MAJOR},${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
-            if [[ "${A}" =~ ^[0-9]+$ && "${A}" -gt 0 ]]; then
-              PREV_MAJOR="$((A-1))."
-              echo "major_move_prefix=${PREV_MAJOR}" >> "$GITHUB_OUTPUT"
+              NEXT_MAJOR="$((A+1)).0.0"
+              NEXT_PATCH="${A}.${B}.$((C+1))"
+              echo "create_titles=${NEXT_MAJOR},${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+              if [[ "${A}" =~ ^[0-9]+$ && "${A}" -gt 0 ]]; then
+                PREV_MAJOR="$((A-1))."
+                echo "major_move_prefix=${PREV_MAJOR}" >> "$GITHUB_OUTPUT"
+                echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+              fi
+            elif [[ "${KIND}" == "minor" ]]; then
+              NEXT_MINOR="${A}.$((B+1)).0"
+              NEXT_PATCH="${A}.${B}.$((C+1))"
+              echo "create_titles=${NEXT_MINOR},${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+              echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+              if [[ "${B}" =~ ^[0-9]+$ && "${B}" -gt 0 ]]; then
+                PREV_MINOR="${A}.$((B-1))."
+                echo "minor_move_prefix=${PREV_MINOR}" >> "$GITHUB_OUTPUT"
+              fi
+            elif [[ "${KIND}" == "bugfix" ]]; then
+              NEXT_PATCH="${A}.${B}.$((C+1))"
+              NEXT_PATCH_2="${A}.${B}.$((C+2))"
+              echo "create_titles=${NEXT_PATCH},${NEXT_PATCH_2}" >> "$GITHUB_OUTPUT"
+              echo "move_from_title=${TAG}" >> "$GITHUB_OUTPUT"
               echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
             fi
-          elif [[ "${KIND}" == "minor" ]]; then
-            NEXT_MINOR="${A}.$((B+1)).0"
-            NEXT_PATCH="${A}.${B}.$((C+1))"
-            echo "create_titles=${NEXT_MINOR},${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
-            echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
-            if [[ "${B}" =~ ^[0-9]+$ && "${B}" -gt 0 ]]; then
-              PREV_MINOR="${A}.$((B-1))."
-              echo "minor_move_prefix=${PREV_MINOR}" >> "$GITHUB_OUTPUT"
-            fi
-          elif [[ "${KIND}" == "bugfix" ]]; then
-            NEXT_PATCH="${A}.${B}.$((C+1))"
-            NEXT_PATCH_2="${A}.${B}.$((C+2))"
-            echo "create_titles=${NEXT_PATCH},${NEXT_PATCH_2}" >> "$GITHUB_OUTPUT"
-            echo "move_from_title=${TAG}" >> "$GITHUB_OUTPUT"
-            echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
-          fi
           fi
 
       - name: Skip milestones for hotfix
