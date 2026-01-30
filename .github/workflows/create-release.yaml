@@ -428,39 +428,35 @@ jobs:
           set -euo pipefail
           TITLE="${{ steps.plan.outputs.close_title }}"
 
-          PAGE=1
-          MS_NUMBER=""
-          while true; do
-            RESP=$(curl -s --location \
-              "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=all&per_page=100&page=${PAGE}" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${RELEASE_TOKEN}")
+          # Try open milestones first (most likely), then closed if not found
+          for STATE in open closed; do
+            PAGE=1
+            MS_NUMBER=""
+            while [[ "${PAGE}" -le 3 ]]; do
+              RESP=$(curl -s --location \
+                "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=${STATE}&sort=created&direction=desc&per_page=100&page=${PAGE}" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-            LEN=$(echo "${RESP}" | jq '. | length')
-            if [[ "${LEN}" -eq 0 ]]; then
-              break
-            fi
+              LEN=$(echo "${RESP}" | jq '. | length')
+              if [[ "${LEN}" -eq 0 ]]; then
+                break
+              fi
 
-            MS_NUMBER=$(echo "${RESP}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
-            if [[ -n "${MS_NUMBER}" && "${MS_NUMBER}" != "null" ]]; then
-              break
-            fi
+              MS_NUMBER=$(echo "${RESP}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
+              if [[ -n "${MS_NUMBER}" && "${MS_NUMBER}" != "null" ]]; then
+                echo "close_ms_number=${MS_NUMBER}" >> "$GITHUB_OUTPUT"
+                echo "Found milestone '${TITLE}' as #${MS_NUMBER} (state=${STATE})" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
 
-            PAGE=$((PAGE+1))
-            if [[ "${PAGE}" -gt 20 ]]; then
-              break
-            fi
+              PAGE=$((PAGE+1))
+            done
           done
 
-          if [[ -z "${MS_NUMBER}" || "${MS_NUMBER}" == "null" ]]; then
-            echo "⚠️ Close milestone not found by title: ${TITLE} (will not close)" >> "$GITHUB_STEP_SUMMARY"
-            echo "close_ms_number=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "close_ms_number=${MS_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "Found milestone '${TITLE}' as #${MS_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+          echo "⚠️ Close milestone not found by title: ${TITLE} (searched 600 recent milestones; will not close)" >> "$GITHUB_STEP_SUMMARY"
+          echo "close_ms_number=" >> "$GITHUB_OUTPUT"
 
       - name: Create next milestones
         id: ms_create
