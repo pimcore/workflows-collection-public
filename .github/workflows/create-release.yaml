@@ -282,43 +282,38 @@ jobs:
             MAKE_LATEST_STR="false"
           fi
           
+          # Build common jq arguments
+          JQ_ARGS=(
+            --arg target_commitish "${BASE_BRANCH}"
+            --arg name "${RELEASE_NAME}"
+            --arg tag_name "${TAG_NAME}"
+            --arg make_latest "${MAKE_LATEST_STR}"
+            --argjson draft "${DRAFT}"
+            --argjson prerelease "${PRERELEASE}"
+          )
+          
+          # Add conditional arguments and build JSON
           if [[ -n "${FINAL_BODY}" ]]; then
-            REQ_BODY=$(jq -n \
-              --arg target_commitish "${BASE_BRANCH}" \
-              --arg name "${RELEASE_NAME}" \
-              --arg tag_name "${TAG_NAME}" \
-              --arg make_latest "${MAKE_LATEST_STR}" \
-              --argjson draft "${DRAFT}" \
-              --argjson prerelease "${PRERELEASE}" \
-              --arg body "${FINAL_BODY}" \
-              '{
-                target_commitish: $target_commitish,
-                name: $name,
-                draft: $draft,
-                make_latest: $make_latest,
-                prerelease: $prerelease,
-                tag_name: $tag_name,
-                generate_release_notes: false,
-                body: $body
-              }')
+            REQ_BODY=$(jq -n "${JQ_ARGS[@]}" --arg body "${FINAL_BODY}" '{
+              target_commitish: $target_commitish,
+              name: $name,
+              draft: $draft,
+              make_latest: $make_latest,
+              prerelease: $prerelease,
+              tag_name: $tag_name,
+              generate_release_notes: false,
+              body: $body
+            }')
           else
-            REQ_BODY=$(jq -n \
-              --arg target_commitish "${BASE_BRANCH}" \
-              --arg name "${RELEASE_NAME}" \
-              --arg tag_name "${TAG_NAME}" \
-              --arg make_latest "${MAKE_LATEST_STR}" \
-              --argjson draft "${DRAFT}" \
-              --argjson prerelease "${PRERELEASE}" \
-              --argjson generate_release_notes "${AUTO_CHANGELOG}" \
-              '{
-                target_commitish: $target_commitish,
-                name: $name,
-                draft: $draft,
-                make_latest: $make_latest,
-                prerelease: $prerelease,
-                tag_name: $tag_name,
-                generate_release_notes: $generate_release_notes
-              }')
+            REQ_BODY=$(jq -n "${JQ_ARGS[@]}" --argjson generate_release_notes "${AUTO_CHANGELOG}" '{
+              target_commitish: $target_commitish,
+              name: $name,
+              draft: $draft,
+              make_latest: $make_latest,
+              prerelease: $prerelease,
+              tag_name: $tag_name,
+              generate_release_notes: $generate_release_notes
+            }')
           fi
 
           CREATE_RELEASE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
