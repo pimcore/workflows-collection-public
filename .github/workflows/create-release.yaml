@@ -7,6 +7,10 @@ on:
         required: true
         type: string
         description: "Target repository in owner/repo format (e.g. pimcore/pimcore)"
+      base_branch:
+        required: true
+        type: string
+        description: "Base branch to take latest commit from (e.g. 12.x or 12.3)"
       to_tag:
         required: true
         type: string
@@ -28,6 +32,7 @@ on:
 
 env:
   REPOSITORY: ${{ inputs.repository }}
+  BASE_BRANCH: ${{ inputs.base_branch }}
   TO_TAG: ${{ inputs.to_tag }}
   PUBLISH_IMMEDIATELY: ${{ inputs.publish_immediately }}
   AUTO_CHANGELOG: ${{ inputs.autoChangelog }}
@@ -45,6 +50,7 @@ jobs:
       owner: ${{ steps.calc.outputs.owner }}
       repo: ${{ steps.calc.outputs.repo }}
       base_branch: ${{ steps.calc.outputs.base_branch }}
+      latest_sha: ${{ steps.calc.outputs.latest_sha }}
       tag_name: ${{ steps.calc.outputs.tag_name }}
       release_name: ${{ steps.calc.outputs.release_name }}
       release_kind: ${{ steps.calc.outputs.release_kind }}
@@ -88,17 +94,16 @@ jobs:
 
           OWNER="${REPOSITORY%%/*}"
           REPO="${REPOSITORY##*/}"
-          TAG_RAW="${TO_TAG}"
-          TAG="${TAG_RAW#v}"
-          TAG="${TAG#V}"
+          BASE="${BASE_BRANCH}"
+          TAG="${TO_TAG}"
 
-          if [[ -z "${TAG}" ]]; then
-            echo "to_tag must be non-empty" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -z "${BASE}" || -z "${TAG}" ]]; then
+            echo "base_branch and to_tag must be non-empty" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
           if ! [[ "${TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-            echo "Invalid to_tag format. Expected X.Y.Z or X.Y.Z.W (numeric, optional leading v), got: ${TAG_RAW}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Invalid to_tag format. Expected X.Y.Z or X.Y.Z.W (numeric), got: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -107,23 +112,6 @@ jobs:
           TAG_MINOR="$(echo "${TAG}" | cut -d'.' -f2)"
           TAG_PATCH="$(echo "${TAG}" | cut -d'.' -f3)"
           TAG_PARTS_COUNT="$(echo "${TAG}" | awk -F'.' '{print NF}')"
-
-          # Automatically determine base branch from tag
-          if [[ "${TAG_PARTS_COUNT}" -eq 4 ]]; then
-            # Hotfix: X.Y.Z.W -> use X.Y branch
-            BASE="${TAG_MAJOR}.${TAG_MINOR}"
-          elif [[ "${TAG_MINOR}" -eq 0 && "${TAG_PATCH}" -eq 0 ]]; then
-            # Major release: X.0.0 -> use X.x branch
-            BASE="${TAG_MAJOR}.x"
-          elif [[ "${TAG_PATCH}" -eq 0 ]]; then
-            # Minor release: X.Y.0 (Y>0) -> use X.x branch
-            BASE="${TAG_MAJOR}.x"
-          else
-            # Bugfix release: X.Y.Z (Z>0) -> use X.Y branch
-            BASE="${TAG_MAJOR}.${TAG_MINOR}"
-          fi
-
-          echo "Auto-detected base branch: ${BASE} (from tag ${TAG})" >> "$GITHUB_STEP_SUMMARY"
 
           TAG_NAME="v${TAG}"
           RELEASE_NAME="${TAG}"
@@ -136,9 +124,6 @@ jobs:
               echo "Invalid base_branch format. Expected numeric major version, got: ${BASE}" >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
-          elif ! [[ "${BASE}" =~ ^[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid base_branch format. Expected X.Y or X.x, got: ${BASE}" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
           fi
 
           BASE_MAJOR="$(echo "${BASE}" | cut -d'.' -f1)"
@@ -171,6 +156,10 @@ jobs:
             fi
           else
             BASE_MINOR="$(echo "${BASE}" | cut -d'.' -f2)"
+            if ! [[ "${BASE_MINOR}" =~ ^[0-9]+$ ]]; then
+              echo "Invalid base_branch format. Expected X.Y for maintenance branches, got: ${BASE}" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
             if [[ "${TAG_MAJOR}" != "${BASE_MAJOR}" || "${TAG_MINOR}" != "${BASE_MINOR}" ]]; then
               echo "Invalid tag for maintenance base. Expected ${BASE_MAJOR}.${BASE_MINOR}.* for base ${BASE}, got: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
               exit 1
@@ -187,9 +176,29 @@ jobs:
 
           PRERELEASE=false
 
+          SHA_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/commits/${BASE}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+          SHA_STATUS=$(echo "${SHA_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          if [[ "${SHA_STATUS}" -ne 200 ]]; then
+            echo "Failed to fetch latest commit from ${OWNER}/${REPO}@${BASE}. HTTP ${SHA_STATUS}" >> "$GITHUB_STEP_SUMMARY"
+            echo "$(echo "${SHA_RESP}" | head -c 2000)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          LATEST_SHA=$(echo "${SHA_RESP}" | sed '$d' | jq -r '.sha')
+          if [[ -z "${LATEST_SHA}" || "${LATEST_SHA}" == "null" ]]; then
+            echo "Failed to parse sha for ${OWNER}/${REPO}@${BASE}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
           echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
           echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
           echo "base_branch=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "latest_sha=${LATEST_SHA}" >> "$GITHUB_OUTPUT"
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
           echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
           echo "release_kind=${RELEASE_KIND}" >> "$GITHUB_OUTPUT"
@@ -202,6 +211,7 @@ jobs:
           {
             echo "Repository: ${OWNER}/${REPO}"
             echo "Base branch: ${BASE}"
+            echo "Latest SHA: ${LATEST_SHA}"
             echo "To tag: ${TAG}"
             echo "Tag name: ${TAG_NAME}"
             echo "Release kind: ${RELEASE_KIND}"
@@ -221,6 +231,7 @@ jobs:
       OWNER: ${{ needs.prepare.outputs.owner }}
       REPO: ${{ needs.prepare.outputs.repo }}
       BASE_BRANCH: ${{ needs.prepare.outputs.base_branch }}
+      LATEST_SHA: ${{ needs.prepare.outputs.latest_sha }}
       TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
       RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
       DRAFT: ${{ inputs.publish_immediately == false }}
@@ -263,7 +274,7 @@ jobs:
               -H "X-GitHub-Api-Version: 2022-11-28" \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}" \
-              -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${BASE_BRANCH}" '{tag_name:$tag, target_commitish:$target}')")
+              -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${LATEST_SHA}" '{tag_name:$tag, target_commitish:$target}')")
 
             GEN_STATUS=$(echo "${GEN_RESPONSE}" | awk -F: '/HTTP_STATUS:/ {print $2}')
 
@@ -282,38 +293,44 @@ jobs:
             MAKE_LATEST_STR="false"
           fi
           
-          # Build common jq arguments
-          JQ_ARGS=(
-            --arg target_commitish "${BASE_BRANCH}"
-            --arg name "${RELEASE_NAME}"
-            --arg tag_name "${TAG_NAME}"
-            --arg make_latest "${MAKE_LATEST_STR}"
-            --argjson draft "${DRAFT}"
-            --argjson prerelease "${PRERELEASE}"
-          )
-          
-          # Add conditional arguments and build JSON
+          # Build request body with proper JSON types
           if [[ -n "${FINAL_BODY}" ]]; then
-            REQ_BODY=$(jq -n "${JQ_ARGS[@]}" --arg body "${FINAL_BODY}" '{
-              target_commitish: $target_commitish,
-              name: $name,
-              draft: $draft,
-              make_latest: $make_latest,
-              prerelease: $prerelease,
-              tag_name: $tag_name,
-              generate_release_notes: false,
-              body: $body
-            }')
+            REQ_BODY=$(jq -n \
+              --arg target_commitish "${LATEST_SHA}" \
+              --arg name "${RELEASE_NAME}" \
+              --arg tag_name "${TAG_NAME}" \
+              --arg make_latest "${MAKE_LATEST_STR}" \
+              --argjson draft "${DRAFT}" \
+              --argjson prerelease "${PRERELEASE}" \
+              --arg body "${FINAL_BODY}" \
+              '{
+                target_commitish: $target_commitish,
+                name: $name,
+                draft: $draft,
+                make_latest: $make_latest,
+                prerelease: $prerelease,
+                tag_name: $tag_name,
+                generate_release_notes: false,
+                body: $body
+              }')
           else
-            REQ_BODY=$(jq -n "${JQ_ARGS[@]}" --argjson generate_release_notes "${AUTO_CHANGELOG}" '{
-              target_commitish: $target_commitish,
-              name: $name,
-              draft: $draft,
-              make_latest: $make_latest,
-              prerelease: $prerelease,
-              tag_name: $tag_name,
-              generate_release_notes: $generate_release_notes
-            }')
+            REQ_BODY=$(jq -n \
+              --arg target_commitish "${LATEST_SHA}" \
+              --arg name "${RELEASE_NAME}" \
+              --arg tag_name "${TAG_NAME}" \
+              --arg make_latest "${MAKE_LATEST_STR}" \
+              --argjson draft "${DRAFT}" \
+              --argjson prerelease "${PRERELEASE}" \
+              --argjson generate_release_notes "${AUTO_CHANGELOG}" \
+              '{
+                target_commitish: $target_commitish,
+                name: $name,
+                draft: $draft,
+                make_latest: $make_latest,
+                prerelease: $prerelease,
+                tag_name: $tag_name,
+                generate_release_notes: $generate_release_notes
+              }')
           fi
 
           CREATE_RELEASE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
