@@ -225,7 +225,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    needs: prepare
+    needs: [prepare, validate-milestone]
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       OWNER: ${{ needs.prepare.outputs.owner }}
@@ -355,99 +355,45 @@ jobs:
             echo "Release created and published: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-  select-release:
-    name: Select release outputs
-    runs-on: ubuntu-latest
-    needs: [create-release]
-    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
-    outputs:
-      owner: ${{ needs.create-release.outputs.owner }}
-      repo: ${{ needs.create-release.outputs.repo }}
-      release_kind: ${{ needs.create-release.outputs.release_kind }}
-      tag: ${{ needs.create-release.outputs.tag }}
-    steps:
-      - name: Pass through outputs
-        shell: bash
-        run: |
-          echo "Release outputs passed through from create-release job" >> "$GITHUB_STEP_SUMMARY"
-
-  milestone-automation:
-    name: Milestone automation
+  validate-milestone:
+    name: Validate milestone
     runs-on: ubuntu-latest
     permissions:
-      issues: write
+      issues: read
       contents: read
-    needs: [select-release]
-    if: ${{ !cancelled() && needs.select-release.result == 'success' }}
+    needs: prepare
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-      OWNER: ${{ needs.select-release.outputs.owner }}
-      REPO: ${{ needs.select-release.outputs.repo }}
-      RELEASE_KIND: ${{ needs.select-release.outputs.release_kind }}
-      TAG: ${{ needs.select-release.outputs.tag }}
+      OWNER: ${{ needs.prepare.outputs.owner }}
+      REPO: ${{ needs.prepare.outputs.repo }}
+      RELEASE_KIND: ${{ needs.prepare.outputs.release_kind }}
+      TAG: ${{ needs.prepare.outputs.release_name }}
+    outputs:
+      skip_validation: ${{ steps.validate.outputs.skip_validation }}
+      milestone_number: ${{ steps.validate.outputs.milestone_number }}
     steps:
-      - name: Decide milestone actions
-        id: plan
+      - name: Validate milestone exists
+        id: validate
         shell: bash
         run: |
           set -euo pipefail
 
           KIND="${RELEASE_KIND}"
 
-          IFS='.' read -r A B C D <<< "${TAG}"
-
-          echo "close_title=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "do_milestones=true" >> "$GITHUB_OUTPUT"
-
+          # Skip validation for hotfix releases (they don't use milestones)
           if [[ "${KIND}" == "hotfix" ]]; then
-            echo "do_milestones=false" >> "$GITHUB_OUTPUT"
+            echo "skip_validation=true" >> "$GITHUB_OUTPUT"
+            echo "Hotfix release detected; skipping milestone validation" >> "$GITHUB_STEP_SUMMARY"
             exit 0
-          else
-            # Major, minor, or bugfix release - proceed with milestone automation
-            if [[ "${KIND}" == "major" ]]; then
-              NEXT_MAJOR="$((A+1)).0.0"
-              NEXT_PATCH="${A}.${B}.$((C+1))"
-              echo "create_titles=${NEXT_MAJOR},${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
-              if [[ "${A}" =~ ^[0-9]+$ && "${A}" -gt 0 ]]; then
-                PREV_MAJOR="$((A-1))."
-                echo "major_move_prefix=${PREV_MAJOR}" >> "$GITHUB_OUTPUT"
-                echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
-              fi
-            elif [[ "${KIND}" == "minor" ]]; then
-              NEXT_MINOR="${A}.$((B+1)).0"
-              NEXT_PATCH="${A}.${B}.$((C+1))"
-              echo "create_titles=${NEXT_MINOR},${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
-              echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
-              if [[ "${B}" =~ ^[0-9]+$ && "${B}" -gt 0 ]]; then
-                PREV_MINOR="${A}.$((B-1))."
-                echo "minor_move_prefix=${PREV_MINOR}" >> "$GITHUB_OUTPUT"
-              fi
-            elif [[ "${KIND}" == "bugfix" ]]; then
-              NEXT_PATCH="${A}.${B}.$((C+1))"
-              NEXT_PATCH_2="${A}.${B}.$((C+2))"
-              echo "create_titles=${NEXT_PATCH},${NEXT_PATCH_2}" >> "$GITHUB_OUTPUT"
-              echo "move_from_title=${TAG}" >> "$GITHUB_OUTPUT"
-              echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
-            fi
           fi
 
-      - name: Skip milestones for hotfix
-        if: ${{ steps.plan.outputs.do_milestones == 'false' }}
-        run: |
-          echo "Hotfix release detected; no milestone automation performed." >> "$GITHUB_STEP_SUMMARY"
+          echo "skip_validation=false" >> "$GITHUB_OUTPUT"
+          TITLE="${TAG}"
 
-      - name: Find milestone to close
-        id: ms_find
-        if: ${{ steps.plan.outputs.do_milestones == 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          TITLE="${{ steps.plan.outputs.close_title }}"
-
-          # Try open milestones first (most likely), then closed if not found
+          # Search for milestone in open and closed states
+          FOUND=false
           for STATE in open closed; do
             PAGE=1
-            MS_NUMBER=""
             while [[ "${PAGE}" -le 3 ]]; do
               RESP=$(curl -s --location \
                 "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=${STATE}&sort=created&direction=desc&per_page=100&page=${PAGE}" \
@@ -462,21 +408,102 @@ jobs:
 
               MS_NUMBER=$(echo "${RESP}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
               if [[ -n "${MS_NUMBER}" && "${MS_NUMBER}" != "null" ]]; then
-                echo "close_ms_number=${MS_NUMBER}" >> "$GITHUB_OUTPUT"
-                echo "Found milestone '${TITLE}' as #${MS_NUMBER} (state=${STATE})" >> "$GITHUB_STEP_SUMMARY"
-                exit 0
+                echo "milestone_number=${MS_NUMBER}" >> "$GITHUB_OUTPUT"
+                echo "✅ Found milestone '${TITLE}' (#${MS_NUMBER}, state=${STATE})" >> "$GITHUB_STEP_SUMMARY"
+                FOUND=true
+                break 2
               fi
 
               PAGE=$((PAGE+1))
             done
           done
 
-          echo "⚠️ Close milestone not found by title: ${TITLE} (searched 600 recent milestones; will not close)" >> "$GITHUB_STEP_SUMMARY"
-          echo "close_ms_number=" >> "$GITHUB_OUTPUT"
+          if [[ "${FOUND}" == "false" ]]; then
+            echo "❌ Milestone '${TITLE}' does not exist in repository ${OWNER}/${REPO}" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Action required:**" >> "$GITHUB_STEP_SUMMARY"
+            echo "1. Create milestone '${TITLE}' in the repository" >> "$GITHUB_STEP_SUMMARY"
+            echo "2. Re-run this workflow" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Note: The release tag may have already been created. Check the repository releases." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+  milestone-automation:
+    name: Milestone automation
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    needs: [create-release, validate-milestone]
+    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
+    env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      OWNER: ${{ needs.create-release.outputs.owner }}
+      REPO: ${{ needs.create-release.outputs.repo }}
+      RELEASE_KIND: ${{ needs.create-release.outputs.release_kind }}
+      TAG: ${{ needs.create-release.outputs.tag }}
+      SKIP_VALIDATION: ${{ needs.validate-milestone.outputs.skip_validation }}
+      VALIDATED_MS_NUMBER: ${{ needs.validate-milestone.outputs.milestone_number }}
+    steps:
+      - name: Decide milestone actions
+        id: plan
+        if: ${{ env.SKIP_VALIDATION == 'false' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KIND="${RELEASE_KIND}"
+
+          IFS='.' read -r A B C D <<< "${TAG}"
+
+          # Major, minor, or bugfix release - proceed with milestone automation
+          if [[ "${KIND}" == "major" ]]; then
+            NEXT_MAJOR="$((A+1)).0.0"
+            NEXT_PATCH="${A}.${B}.$((C+1))"
+            echo "create_titles=${NEXT_MAJOR},${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+            if [[ "${A}" =~ ^[0-9]+$ && "${A}" -gt 0 ]]; then
+              PREV_MAJOR="$((A-1))."
+              echo "major_move_prefix=${PREV_MAJOR}" >> "$GITHUB_OUTPUT"
+              echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+            fi
+          elif [[ "${KIND}" == "minor" ]]; then
+            NEXT_MINOR="${A}.$((B+1)).0"
+            NEXT_PATCH="${A}.${B}.$((C+1))"
+            echo "create_titles=${NEXT_MINOR},${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+            echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+            if [[ "${B}" =~ ^[0-9]+$ && "${B}" -gt 0 ]]; then
+              PREV_MINOR="${A}.$((B-1))."
+              echo "minor_move_prefix=${PREV_MINOR}" >> "$GITHUB_OUTPUT"
+            fi
+          elif [[ "${KIND}" == "bugfix" ]]; then
+            NEXT_PATCH="${A}.${B}.$((C+1))"
+            NEXT_PATCH_2="${A}.${B}.$((C+2))"
+            echo "create_titles=${NEXT_PATCH},${NEXT_PATCH_2}" >> "$GITHUB_OUTPUT"
+            echo "move_from_title=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip milestones for hotfix
+        if: ${{ env.SKIP_VALIDATION == 'true' }}
+        run: |
+          echo "Hotfix release detected; no milestone automation performed." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Use validated milestone
+        id: ms_find
+        if: ${{ env.SKIP_VALIDATION == 'false' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MS_NUMBER="${VALIDATED_MS_NUMBER}"
+          TITLE="${TAG}"
+          
+          echo "close_ms_number=${MS_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "Using validated milestone '${TITLE}' (#${MS_NUMBER})" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create next milestones
         id: ms_create
-        if: ${{ steps.plan.outputs.do_milestones == 'true' && steps.plan.outputs.create_titles != '' }}
+        if: ${{ env.SKIP_VALIDATION == 'false' && steps.plan.outputs.create_titles != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -529,7 +556,7 @@ jobs:
           echo "created_map=${CREATED}" >> "$GITHUB_OUTPUT"
 
       - name: Move issues for bugfix (from old milestone to new milestone)
-        if: ${{ steps.plan.outputs.do_milestones == 'true' && steps.plan.outputs.move_from_title != '' && steps.plan.outputs.move_to_title != '' && env.RELEASE_KIND == 'bugfix' }}
+        if: ${{ env.SKIP_VALIDATION == 'false' && steps.plan.outputs.move_from_title != '' && steps.plan.outputs.move_to_title != '' && env.RELEASE_KIND == 'bugfix' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -615,7 +642,7 @@ jobs:
           fi
 
       - name: Move issues by prefix (major/minor)
-        if: ${{ steps.plan.outputs.do_milestones == 'true' && steps.plan.outputs.move_to_title != '' && ((env.RELEASE_KIND == 'minor' && steps.plan.outputs.minor_move_prefix != '') || (env.RELEASE_KIND == 'major' && steps.plan.outputs.major_move_prefix != '')) }}
+        if: ${{ env.SKIP_VALIDATION == 'false' && steps.plan.outputs.move_to_title != '' && ((env.RELEASE_KIND == 'minor' && steps.plan.outputs.minor_move_prefix != '') || (env.RELEASE_KIND == 'major' && steps.plan.outputs.major_move_prefix != '')) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -720,7 +747,7 @@ jobs:
           fi
 
       - name: Close current milestone (after issue moves)
-        if: ${{ steps.plan.outputs.do_milestones == 'true' && steps.ms_find.outputs.close_ms_number != '' }}
+        if: ${{ env.SKIP_VALIDATION == 'false' && steps.ms_find.outputs.close_ms_number != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -738,14 +765,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    needs: [select-release, milestone-automation]
-    if: ${{ !cancelled() && needs.select-release.result == 'success' && (needs.select-release.outputs.release_kind == 'major' || needs.select-release.outputs.release_kind == 'minor') }}
+    needs: [create-release, milestone-automation]
+    if: ${{ !cancelled() && needs.create-release.result == 'success' && (needs.create-release.outputs.release_kind == 'major' || needs.create-release.outputs.release_kind == 'minor') }}
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-      OWNER: ${{ needs.select-release.outputs.owner }}
-      REPO: ${{ needs.select-release.outputs.repo }}
-      RELEASE_KIND: ${{ needs.select-release.outputs.release_kind }}
-      TAG: ${{ needs.select-release.outputs.tag }}
+      OWNER: ${{ needs.create-release.outputs.owner }}
+      REPO: ${{ needs.create-release.outputs.repo }}
+      RELEASE_KIND: ${{ needs.create-release.outputs.release_kind }}
+      TAG: ${{ needs.create-release.outputs.tag }}
     steps:
       - name: Determine branch operations
         id: plan
@@ -828,7 +855,7 @@ jobs:
   summary:
     name: Release summary
     runs-on: ubuntu-latest
-    needs: [prepare, create-release, select-release, milestone-automation, branch-automation]
+    needs: [prepare, validate-milestone, create-release, milestone-automation, branch-automation]
     if: always()
     steps:
       - name: Generate summary
@@ -836,10 +863,10 @@ jobs:
           echo "## Release Workflow Complete" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           
-          if [[ "${{ needs.select-release.result }}" == "success" ]]; then
-            echo "**Repository**: ${{ needs.select-release.outputs.owner }}/${{ needs.select-release.outputs.repo }}" >> "$GITHUB_STEP_SUMMARY"
-            echo "**Tag**: v${{ needs.select-release.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
-            echo "**Release Type**: ${{ needs.select-release.outputs.release_kind }}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ needs.create-release.result }}" == "success" ]]; then
+            echo "**Repository**: ${{ needs.create-release.outputs.owner }}/${{ needs.create-release.outputs.repo }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Tag**: v${{ needs.create-release.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Release Type**: ${{ needs.create-release.outputs.release_kind }}" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "**Repository**: ${{ needs.prepare.outputs.owner }}/${{ needs.prepare.outputs.repo }}" >> "$GITHUB_STEP_SUMMARY"
             echo "**Tag**: v${{ needs.prepare.outputs.release_name }}" >> "$GITHUB_STEP_SUMMARY"
@@ -849,7 +876,9 @@ jobs:
           echo "**Draft**: ${{ inputs.publish_immediately == false }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           
-          if [[ "${{ needs.create-release.result }}" == "success" ]]; then
+          if [[ "${{ needs.validate-milestone.result }}" == "failure" ]]; then
+            echo "❌ Milestone validation failed - release not created" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "${{ needs.create-release.result }}" == "success" ]]; then
             echo "✅ Release created successfully" >> "$GITHUB_STEP_SUMMARY"
           elif [[ "${{ needs.create-release.result }}" == "skipped" ]]; then
             echo "⏭️ Release creation skipped" >> "$GITHUB_STEP_SUMMARY"
