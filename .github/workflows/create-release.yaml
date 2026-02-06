@@ -804,7 +804,7 @@ jobs:
               if [[ "${MS_MOVED}" -gt 0 ]]; then
                 echo "  Moved ${MS_MOVED} items from '${MS_TITLE}' (#${MS_NUM})" >> "$GITHUB_STEP_SUMMARY"
               fi
-            done <<< "$(echo "${MS}" | jq -r --arg p "${PREFIX}" '.[] | select(.title | startswith($p)) | "\(.title)\t\(.number)"')"
+            done <<< "$(echo "${MS}" | jq -r --arg p "${PREFIX}" '.[] | select((.title | startswith($p)) or .title == ($p | rtrimstr("."))) | "\(.title)\t\(.number)"')"
 
             PAGE=$((PAGE+1))
             if [[ "${PAGE}" -gt 20 ]]; then
