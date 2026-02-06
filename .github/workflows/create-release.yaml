@@ -475,15 +475,17 @@ jobs:
             NEXT_MAJOR="$((A+1)).0.0"
             NEXT_PATCH="${A}.${B}.$((C+1))"
             echo "create_titles=${NEXT_MAJOR},${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+            echo "move_from_title=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
             if [[ "${A}" =~ ^[0-9]+$ && "${A}" -gt 0 ]]; then
               PREV_MAJOR="$((A-1))."
               echo "major_move_prefix=${PREV_MAJOR}" >> "$GITHUB_OUTPUT"
-              echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
             fi
           elif [[ "${KIND}" == "minor" ]]; then
             NEXT_MINOR="${A}.$((B+1)).0"
             NEXT_PATCH="${A}.${B}.$((C+1))"
             echo "create_titles=${NEXT_MINOR},${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
+            echo "move_from_title=${TAG}" >> "$GITHUB_OUTPUT"
             echo "move_to_title=${NEXT_PATCH}" >> "$GITHUB_OUTPUT"
             if [[ "${B}" =~ ^[0-9]+$ && "${B}" -gt 0 ]]; then
               PREV_MINOR="${A}.$((B-1))."
@@ -568,8 +570,8 @@ jobs:
 
           echo "created_map=${CREATED}" >> "$GITHUB_OUTPUT"
 
-      - name: Move issues for bugfix (from old milestone to new milestone)
-        if: ${{ env.SKIP_VALIDATION == 'false' && steps.plan.outputs.move_from_title != '' && steps.plan.outputs.move_to_title != '' && env.RELEASE_KIND == 'bugfix' }}
+      - name: Move issues from current milestone to next patch
+        if: ${{ env.SKIP_VALIDATION == 'false' && steps.plan.outputs.move_from_title != '' && steps.plan.outputs.move_to_title != '' }}
         shell: bash
         run: |
           set -euo pipefail
