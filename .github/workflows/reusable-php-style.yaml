@@ -4,10 +4,16 @@ on:
   workflow_call:
     inputs:
       head_ref:
-        required: true
+        description: >
+          Explicit commit/branch/SHA to checkout.
+          If empty, the workflow will:
+          - use PR head SHA for pull_request_target
+          - otherwise use github.sha
+        required: false
         type: string
+        default: ""
       config_file:
-        default: ".php_cs.dist"
+        default: "auto"
         required: false
         type: string
     secrets:
@@ -17,16 +23,42 @@ on:
 jobs:
   php-cs-fixer:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.head_ref }}
+          ref: >-
+            ${{
+              inputs.head_ref != '' && inputs.head_ref ||
+              (github.event_name == 'pull_request_target'
+                && github.event.pull_request.head.sha
+                || github.sha)
+            }}
           token: ${{ secrets.PHP_CS_FIXER_GITHUB_TOKEN }}
+
+      - name: Detect php-cs-fixer config file
+        id: config
+        run: |
+          # If caller explicitly passed a config_file, use that
+          if [ "${{ inputs.config_file }}" != "auto" ]; then
+            echo "config=${{ inputs.config_file }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Auto-detect common filenames (new first, then legacy)
+          if [ -f ".php-cs-fixer.dist.php" ]; then
+            echo "config=.php-cs-fixer.dist.php" >> "$GITHUB_OUTPUT"
+          elif [ -f ".php_cs.dist" ]; then
+            echo "config=.php_cs.dist" >> "$GITHUB_OUTPUT"
+          else
+            # no config file found – run without --config
+            echo "config=auto" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: PHP-CS-Fixer
         uses: docker://oskarstark/php-cs-fixer-ga:2.19.0
         with:
-          args: --config=${{ inputs.config_file }} --allow-risky yes
+          args: ${{ steps.config.outputs.config != 'auto' && format('--config={0} --allow-risky yes', steps.config.outputs.config) || '--allow-risky yes' }}
 
       - uses: stefanzweifel/git-auto-commit-action@v4
         with:
