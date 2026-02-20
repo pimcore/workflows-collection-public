@@ -132,6 +132,53 @@
         }
       ]
     },
+    {
+      "php_version": "8.4,8.5",
+      "matrix": [
+        {
+          "php-version": "8.4",
+          "database": "mariadb:10.7",
+          "dependencies": "lowest",
+          "experimental": "false",
+          "require_admin_bundle" : "true",
+          "es_version": "8.4.3"
+        },
+        {
+          "php-version": "8.4",
+          "database": "mariadb:10.7",
+          "dependencies": "lowest",
+          "experimental": "false",
+          "require_admin_bundle" : "true",
+          "es_version": "8.4.3"
+        },
+        {
+          "php-version": "8.5",
+          "database": "mariadb:10.7",
+          "dependencies": "highest",
+          "experimental": "false",
+          "require_admin_bundle" : "true",
+          "es_version": "8.4.3"
+        },
+        {
+          "php-version": "8.5",
+          "database": "mariadb:10.7",
+          "dependencies": "highest",
+          "pimcore_version": "12.x-dev as 12.99.9",
+          "experimental": "true",
+          "require_admin_bundle" : "true",
+          "es_version": "8.4.3"
+        },
+        {
+          "php-version": "8.5",
+          "database": "mariadb:10.7",
+          "dependencies": "highest",
+          "pimcore_version": "12.x-dev as 12.99.9",
+          "experimental": "true",
+          "require_admin_bundle" : "true",
+          "es_version": "8.4.3"
+        }
+      ]
+    },
 
     {
       "php_version": "8.2,8.3,8.4",
