@@ -48,11 +48,6 @@ on:
         required: false
         type: boolean
         default: true
-      build-output-path:
-        description: "Path (from repo root) to built assets to commit"
-        required: false
-        type: string
-        default: "./src/Resources/public/"
 
 permissions:
   contents: read
@@ -196,5 +191,4 @@ jobs:
         if: ${{ inputs.commit-build-output }}
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          file_pattern: ${{ inputs.build-output-path }}
           commit_message: Automatic frontend build
