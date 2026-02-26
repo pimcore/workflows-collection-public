@@ -4,9 +4,16 @@ on:
   workflow_call:
     inputs:
       head_ref:
-        required: true
+        description: >
+          Explicit commit/branch/SHA to checkout.
+          If empty, the workflow will:
+          - use PR head SHA for pull_request_target
+          - otherwise use github.sha
+        required: false
         type: string
+        default: ""
       repository:
+        description: "Repository to run php-cs-fixer in (e.g. org/repo)"
         required: true
         type: string
       config_file:
@@ -25,14 +32,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.head_ref }}
+          ref: >-
+            ${{
+              inputs.head_ref != '' && inputs.head_ref ||
+              (github.event_name == 'pull_request_target'
+                && github.event.pull_request.head.sha
+                || github.sha)
+            }}
           repository: ${{ inputs.repository }}
           token: ${{ secrets.PHP_CS_FIXER_GITHUB_TOKEN }}
 
       - name: PHP-CS-Fixer
         uses: docker://oskarstark/php-cs-fixer-ga:latest
         with:
-          args: --config=${{ inputs.config_file }} --allow-risky yes
+          args: ${{ inputs.config_file != 'auto' && format('--config={0} --allow-risky yes', inputs.config_file) || '--allow-risky yes' }}
 
       - uses: stefanzweifel/git-auto-commit-action@v5
         with:

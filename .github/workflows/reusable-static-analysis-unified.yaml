@@ -1,0 +1,157 @@
+name: "Static analysis with PHPStan (configurable)"
+
+on:
+  workflow_call:
+    inputs:
+      # Matrix configuration: JSON string, used directly with fromJSON()
+      # Example:
+      # {"include":[
+      #   {"php-version":"8.2","dependencies":"highest","experimental":false},
+      #   {"php-version":"8.2","dependencies":"highest","experimental":true,"pimcore_version":"11.x-dev as 11.99.9"}
+      # ]}
+      phpstan_matrix:
+        description: "Matrix configuration as JSON"
+        required: false
+        type: string
+        default: >
+          {"include":[{"php-version":"8.2","dependencies":"highest","experimental":false}]}
+
+      private_repo:
+        description: "Enable private repository authentication"
+        required: false
+        type: string
+        default: "false"
+
+      checkout_ref:
+        description: "Git ref to checkout (auto-detects PR head if empty)"
+        required: false
+        type: string
+        default: ""
+      APP_ENV:
+        required: false
+        type: string
+        default: "test"
+      PIMCORE_TEST:
+        required: false
+        type: string
+        default: "true"
+      REQUIRE_ADMIN_BUNDLE:
+        required: false
+        type: string
+        default: "true"
+      COVERAGE:
+        required: false
+        type: string
+        default: "none"
+      COMPOSER_OPTIONS:
+        required: false
+        type: string
+      PRIVATE_PACKAGIST_CANONICAL:
+        required: false
+        type: string
+        default: "true"
+      INSTALL_PIMCORE:
+        required: false
+        type: string
+        default: "true"
+
+    secrets:
+      COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
+        required: false
+      SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER:
+        required: false
+      PIMCORE_CI_INSTANCE_IDENTIFIER:
+        required: false
+      PIMCORE_CI_ENCRYPTION_SECRET:
+        required: false
+      PIMCORE_CI_PRODUCT_KEY:
+        required: false
+
+jobs:
+  static-analysis-phpstan:
+    name: "Static Analysis with PHPStan"
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix: ${{ fromJSON(inputs.phpstan_matrix) }}
+
+    continue-on-error: ${{ matrix.experimental == true || matrix.experimental == 'true' }}
+
+    env:
+      PIMCORE_PROJECT_ROOT: ${{ github.workspace }}
+      APP_ENV: ${{ inputs.APP_ENV }}
+      PIMCORE_TEST: ${{ inputs.PIMCORE_TEST }}
+      PIMCORE_INSTANCE_IDENTIFIER: ${{ secrets.PIMCORE_CI_INSTANCE_IDENTIFIER }}
+      PIMCORE_ENCRYPTION_SECRET: ${{ secrets.PIMCORE_CI_ENCRYPTION_SECRET }}
+      PIMCORE_PRODUCT_KEY: ${{ secrets.PIMCORE_CI_PRODUCT_KEY }}
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+        with:
+          ref: >-
+            ${{
+              inputs.checkout_ref != '' && inputs.checkout_ref ||
+              (
+                (github.event_name == 'pull_request_target' || github.event_name == 'pull_request')
+                && github.event.pull_request.head.sha
+              )
+              || github.sha
+            }}
+
+
+      - name: "Install PHP"
+        uses: shivammathur/setup-php@v2
+        with:
+          coverage: ${{ inputs.COVERAGE }}
+          php-version: ${{ matrix.php-version }}
+
+      - name: "Install SSH Key"
+        if: ${{ inputs.private_repo }}
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
+          known_hosts: ".... we add this in the next step ;-)"
+
+      - name: "Add authentication for private pimcore packages"
+        if: ${{ inputs.private_repo }}
+        run: |
+          composer config repositories.private-packagist '{"type": "composer", "url": "https://repo.pimcore.com/github-actions/", "canonical": ${{ inputs.PRIVATE_PACKAGIST_CANONICAL }}}'
+          composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
+
+      - name: "Setup Pimcore environment"
+        if: ${{ inputs.INSTALL_PIMCORE == 'true' }}
+        env:
+          REQUIRE_ADMIN_BUNDLE: ${{ inputs.REQUIRE_ADMIN_BUNDLE }}
+        run: |
+          .github/ci/scripts/setup-pimcore-environment.sh
+
+      - name: "Update Pimcore version"
+        if: ${{ inputs.INSTALL_PIMCORE == 'true' }}
+        env:
+          PIMCORE_VERSION: ${{ matrix.pimcore_version }}
+          REQUIRE_ADMIN_BUNDLE: ${{ inputs.REQUIRE_ADMIN_BUNDLE }}
+        run: |
+          if [ ! -z "$PIMCORE_VERSION" ]; then
+            composer require --no-update pimcore/pimcore:"${PIMCORE_VERSION}"
+          fi
+
+      - name: "Install dependencies with Composer"
+        uses: ramsey/composer-install@v3
+        with:
+          dependency-versions: ${{ matrix.dependencies }}
+          composer-options: ${{ inputs.COMPOSER_OPTIONS }}
+
+      - name: "Run a static analysis with phpstan/phpstan"
+        run: vendor/bin/phpstan analyse --memory-limit=-1
+
+      - name: "Generate baseline file"
+        if: ${{ failure() }}
+        run: vendor/bin/phpstan analyse --memory-limit=-1 --generate-baseline
+
+      - name: "Upload baseline file"
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: phpstan-baseline-${{ matrix.php-version }}-${{ matrix.dependencies }}
+          path: phpstan-baseline.neon
