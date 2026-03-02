@@ -24,13 +24,13 @@ jobs:
 
     steps:
       - name: Checkout the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: '${{ inputs.platform-version }}'
 
       - name: Checkout osv configuration
         if: ${{ inputs.composer-check-only == false }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: pimcore/workflows-collection-public
           ref: main

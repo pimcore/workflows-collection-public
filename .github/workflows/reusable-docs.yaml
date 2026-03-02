@@ -43,7 +43,7 @@ jobs:
     
     steps:
       - name: "Checkout code"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: >-
             ${{
@@ -54,7 +54,7 @@ jobs:
             }}
 
       - name: "Checkout Docs Generator"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: "pimcore/docs-generator"
           ref: ${{ inputs.docs_generator_ref }}
