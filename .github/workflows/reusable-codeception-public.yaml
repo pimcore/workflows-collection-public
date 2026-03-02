@@ -165,7 +165,7 @@ jobs:
                   fi
                   
             - name: "Configure Composer audit block insecure to false for lowest dependencies"
-              if: ${{ matrix.dependencies }} == 'lowest'
+              if: ${{ inputs.dependencies == 'lowest' }}
               run: composer config audit.block-insecure false
               
             - name: "Install dependencies with Composer"
