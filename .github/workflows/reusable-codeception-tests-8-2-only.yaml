@@ -87,7 +87,7 @@ jobs:
           composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
       
       - name: "Configure Composer audit block insecure to false for lowest dependencies"
-        if: ${{ matrix.dependencies }} == 'lowest'
+        if: ${{ matrix.dependencies == 'lowest' }}
         run: composer config audit.block-insecure false
 
       - name: "Update Pimcore version"
