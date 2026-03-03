@@ -220,12 +220,72 @@ jobs:
             echo "Custom changelog provided: $([[ -n "${CHANGELOG}" ]] && echo yes || echo no)"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  validate-extjs:
+    name: Validate no ExtJS
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: prepare
+    env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      OWNER: ${{ needs.prepare.outputs.owner }}
+      REPO: ${{ needs.prepare.outputs.repo }}
+      LATEST_SHA: ${{ needs.prepare.outputs.latest_sha }}
+    steps:
+      - name: Check for ExtJS code
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking for ExtJS code in ${OWNER}/${REPO} at ${LATEST_SHA}..." >> "$GITHUB_STEP_SUMMARY"
+
+          TREE_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/git/trees/${LATEST_SHA}?recursive=1" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+          TREE_STATUS=$(echo "${TREE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          if [[ "${TREE_STATUS}" -ne 200 ]]; then
+            echo "❌ Failed to fetch file tree (HTTP ${TREE_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+            echo "$(echo "${TREE_RESP}" | sed '$d' | head -c 1000)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          TREE=$(echo "${TREE_RESP}" | sed '$d')
+          TRUNCATED=$(echo "${TREE}" | jq -r '.truncated')
+          if [[ "${TRUNCATED}" == "true" ]]; then
+            echo "⚠️ File tree was truncated due to repository size; ExtJS check may be incomplete." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # Search for ExtJS indicators in file paths:
+          # - directories or files named extjs / ext-js
+          # - canonical ExtJS bundles: ext-all.js, ext-all-debug.js, ext-all-rtl.js
+          # - Sencha Touch bundles: sencha-touch*.js
+          # - ExtJS npm packages under node_modules (@sencha/ext, extjs)
+          EXTJS_FILES=$(echo "${TREE}" | jq -r '.tree[] | select(.type == "blob" or .type == "tree") | .path' | \
+            grep -iE '(^|/)extjs(/|$)|\bext-all(-debug|-rtl)?(\.min)?\.js$|\bsencha-touch(-all|-debug)?\.js$|(^|/)node_modules/@sencha/ext(/|$)|(^|/)node_modules/extjs(/|$)' || true)
+
+          if [[ -n "${EXTJS_FILES}" ]]; then
+            echo "❌ ExtJS code detected in the repository. Release is blocked." >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**ExtJS files/directories found:**" >> "$GITHUB_STEP_SUMMARY"
+            echo '\`\`\`' >> "$GITHUB_STEP_SUMMARY"
+            echo "${EXTJS_FILES}" | head -50 >> "$GITHUB_STEP_SUMMARY"
+            echo '\`\`\`' >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Remove all ExtJS code from branch '${BASE_BRANCH}' before releasing." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "✅ No ExtJS code detected." >> "$GITHUB_STEP_SUMMARY"
+
   create-release:
     name: Create release
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    needs: [prepare, validate-milestone]
+    needs: [prepare, validate-milestone, validate-extjs]
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       OWNER: ${{ needs.prepare.outputs.owner }}
@@ -932,7 +992,7 @@ jobs:
   summary:
     name: Release summary
     runs-on: ubuntu-latest
-    needs: [prepare, validate-milestone, create-release, milestone-automation, branch-automation]
+    needs: [prepare, validate-milestone, validate-extjs, create-release, milestone-automation, branch-automation]
     if: always()
     steps:
       - name: Generate summary
@@ -953,7 +1013,9 @@ jobs:
           echo "**Draft**: ${{ inputs.publish_immediately == false }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           
-          if [[ "${{ needs.validate-milestone.result }}" == "failure" ]]; then
+          if [[ "${{ needs.validate-extjs.result }}" == "failure" ]]; then
+            echo "❌ ExtJS validation failed - release not created" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "${{ needs.validate-milestone.result }}" == "failure" ]]; then
             echo "❌ Milestone validation failed - release not created" >> "$GITHUB_STEP_SUMMARY"
           elif [[ "${{ needs.create-release.result }}" == "success" ]]; then
             echo "✅ Release created successfully" >> "$GITHUB_STEP_SUMMARY"
