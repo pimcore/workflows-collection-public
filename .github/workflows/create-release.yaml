@@ -447,7 +447,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
-      pull-requests: write
       contents: read
     needs: [create-release, validate-milestone]
     if: ${{ !cancelled() && needs.create-release.result == 'success' }}
