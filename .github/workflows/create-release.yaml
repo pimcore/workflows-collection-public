@@ -258,27 +258,58 @@ jobs:
             echo "⚠️ File tree was truncated due to repository size; ExtJS check may be incomplete." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          # Search for ExtJS indicators in file paths:
+          # --- Pass 1: path-based check ---
+          # Catches well-known ExtJS file/directory names:
           # - directories or files named extjs / ext-js
           # - canonical ExtJS bundles: ext-all.js, ext-all-debug.js, ext-all-rtl.js
           # - Sencha Touch bundles: sencha-touch*.js
           # - ExtJS npm packages under node_modules (@sencha/ext, extjs)
-          EXTJS_FILES=$(echo "${TREE}" | jq -r '.tree[] | select(.type == "blob" or .type == "tree") | .path' | \
+          PATH_HITS=$(echo "${TREE}" | jq -r '.tree[] | select(.type == "blob" or .type == "tree") | .path' | \
             grep -iE '(^|/)extjs(/|$)|\bext-all(-debug|-rtl)?(\.min)?\.js$|\bsencha-touch(-all|-debug)?\.js$|(^|/)node_modules/@sencha/ext(/|$)|(^|/)node_modules/extjs(/|$)' || true)
 
+          # --- Pass 2: Sencha copyright content search ---
+          # Catches actual Sencha/ExtJS library files regardless of their filename by
+          # searching for the Sencha Inc. copyright string present in all Ext JS bundles.
+          # Uses the GitHub code search API (rate-limited to 10 req/min for authenticated calls).
+          SEARCH_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+            "https://api.github.com/search/code?q=Sencha+Inc+repo:${OWNER}/${REPO}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+          SEARCH_STATUS=$(echo "${SEARCH_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          CONTENT_HITS=""
+          if [[ "${SEARCH_STATUS}" -eq 200 ]]; then
+            TOTAL=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.total_count')
+            if [[ "${TOTAL}" -gt 0 ]]; then
+              CONTENT_HITS=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.items[].path')
+            fi
+          else
+            echo "⚠️ Sencha copyright content search failed (HTTP ${SEARCH_STATUS}); relying on path-based check only." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # --- Aggregate results ---
+          EXTJS_FILES=""
+          EXTJS_SUMMARY=""
+          if [[ -n "${PATH_HITS}" ]]; then
+            EXTJS_FILES="yes"
+            EXTJS_SUMMARY="${EXTJS_SUMMARY}**Path matches (known ExtJS filenames/directories):**\n\`\`\`\n${PATH_HITS}\n\`\`\`\n"
+          fi
+          if [[ -n "${CONTENT_HITS}" ]]; then
+            EXTJS_FILES="yes"
+            EXTJS_SUMMARY="${EXTJS_SUMMARY}**Content matches (Sencha Inc. copyright found in):**\n\`\`\`\n${CONTENT_HITS}\n\`\`\`\n"
+          fi
+
           if [[ -n "${EXTJS_FILES}" ]]; then
-            echo "❌ ExtJS code detected in the repository. Release is blocked." >> "$GITHUB_STEP_SUMMARY"
+            echo "❌ ExtJS/Sencha library code detected in the repository. Release is blocked." >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "**ExtJS files/directories found:**" >> "$GITHUB_STEP_SUMMARY"
-            echo '\`\`\`' >> "$GITHUB_STEP_SUMMARY"
-            echo "${EXTJS_FILES}" | head -50 >> "$GITHUB_STEP_SUMMARY"
-            echo '\`\`\`' >> "$GITHUB_STEP_SUMMARY"
+            printf "%b" "${EXTJS_SUMMARY}" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Remove all ExtJS code from branch '${BASE_BRANCH}' before releasing." >> "$GITHUB_STEP_SUMMARY"
+            echo "Remove all ExtJS/Sencha library files from branch '${BASE_BRANCH}' before releasing." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
-          echo "✅ No ExtJS code detected." >> "$GITHUB_STEP_SUMMARY"
+          echo "✅ No ExtJS/Sencha library code detected." >> "$GITHUB_STEP_SUMMARY"
 
   create-release:
     name: Create release
