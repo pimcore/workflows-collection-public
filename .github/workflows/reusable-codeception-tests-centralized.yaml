@@ -234,20 +234,23 @@ jobs:
         run: |
           echo "Checking if Symfony6 freeze is needed for branch: $TARGET_BRANCH"
           
-          # Add Symfony freeze if TARGET_BRANCH doesn't end with ".x"
-          if [[ ! "$TARGET_BRANCH" =~ \.x$ ]]; then
-            echo "✅ Installing pimcore/symfony-freeze:^6.0.1 for branch: $TARGET_BRANCH"
+          # Skip Symfony freeze if TARGET_BRANCH ends with ".x" or starts with "2026"
+          if [[ "$TARGET_BRANCH" =~ \.x$ ]]; then
+            echo "Branch $TARGET_BRANCH ends with .x, skipping Symfony6 freeze"
+            echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
+          elif [[ "$TARGET_BRANCH" =~ ^20(2[6-9]|[3-9][0-9]) ]]; then
+            echo "Branch $TARGET_BRANCH starts with year 2026+, skipping Symfony6 freeze"
+            echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
+          else
+            echo "Installing pimcore/symfony-freeze:^6.0.1 for branch: $TARGET_BRANCH"
             
             if composer require --no-update pimcore/symfony-freeze:^6.0.1; then
               echo "Successfully added pimcore/symfony-freeze:^6.0"
               echo "SYMFONY_FREEZE_INSTALLED=true" >> $GITHUB_ENV
             else
-              echo "❌ Failed to add pimcore/symfony-freeze package"
+              echo "Failed to add pimcore/symfony-freeze package"
               exit 1
             fi
-          else
-            echo "ℹ️ Branch $TARGET_BRANCH ends with .x, skipping Symfony6 freeze"
-            echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
           fi
 
       - name: "Install dependencies with Composer"
