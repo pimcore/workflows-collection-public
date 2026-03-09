@@ -233,7 +233,7 @@ jobs:
           REQUIRE_ADMIN_BUNDLE: "${{ inputs.REQUIRE_ADMIN_BUNDLE }}"
         run: |
           if [ "$REQUIRE_ADMIN_BUNDLE" = "true" ]; then
-                composer require --no-update pimcore/admin-bundle:"dev-test-version26"
+                composer require --no-update pimcore/admin-ui-classic-bundle:"dev-test-version26"
           fi
 
       - name: "Check Symfony6 freeze requirement"
