@@ -14,7 +14,7 @@ on:
         required: false
         type: string
         default: >
-          {"include":[{"php-version":"8.2","dependencies":"highest","experimental":false}]}
+          {"include":[{"php-version":"8.3","dependencies":"highest","experimental":false},{"php-version":"8.4","dependencies":"highest","experimental":false},{"php-version":"8.5","dependencies":"highest","experimental":true}]}
 
       private_repo:
         description: "Enable private repository authentication"
@@ -71,6 +71,7 @@ jobs:
   static-analysis-phpstan:
     name: "Static Analysis with PHPStan"
     runs-on: ubuntu-latest
+    if: ${{ inputs.phpstan_matrix != '' && inputs.phpstan_matrix != '{"include":[]}' }}
 
     strategy:
       matrix: ${{ fromJSON(inputs.phpstan_matrix) }}
