@@ -83,7 +83,7 @@ jobs:
     if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
-    uses: pimcore/workflows-collection-public/.github/workflows/reusable-studio-frontend-build.yaml@reusable-workflows
+    uses: pimcore/workflows-collection-public/.github/workflows/reusable-studio-frontend-build.yaml@main
     with:
       working-directory: ${{ inputs.working-directory }}
       node-version: ${{ inputs.node-version }}
