@@ -100,7 +100,7 @@ jobs:
 
       - name: Upload SBOM as an artifact on failure
         if: ${{ failure() && steps.osvscanner.conclusion == 'failure' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: osv-${{ inputs.platform-version }}
           path: osv-results.txt

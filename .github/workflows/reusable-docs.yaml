@@ -62,9 +62,9 @@ jobs:
           token: ${{ secrets.DOCS_GENERATOR_ACCESS_TOKEN }}
 
       - name: "Install Node"
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 'lts/*'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: "Prepare Docs"
