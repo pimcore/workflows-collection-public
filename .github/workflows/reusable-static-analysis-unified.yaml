@@ -151,7 +151,7 @@ jobs:
 
       - name: "Upload baseline file"
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: phpstan-baseline-${{ matrix.php-version }}-${{ matrix.dependencies }}
           path: phpstan-baseline.neon
