@@ -3,7 +3,7 @@
   "target": "branch",
   "source_type": "Organization",
   "source": "pimcore",
-  "enforcement": "active",
+  "enforcement": "disabled",
   "conditions": {
     "ref_name": {
       "exclude": [],
