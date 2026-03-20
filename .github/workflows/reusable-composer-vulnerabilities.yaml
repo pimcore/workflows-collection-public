@@ -49,7 +49,7 @@ jobs:
 
             - name: Install SSH Key # this is necessary for Composer to be able to clone source from pimcore/ee-pimcore
               if: ${{ inputs.private-repo == true }}
-              uses: shimataro/ssh-key-action@v2
+              uses: shimataro/ssh-key-action@v2.8.0
               with:
                 key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
                 known_hosts: ".... we add this in the next step ;-)"
