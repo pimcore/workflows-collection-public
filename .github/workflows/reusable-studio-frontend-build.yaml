@@ -122,7 +122,7 @@ jobs:
 
       - name: Commit lint fixes
         if: ${{ inputs.commit-lint-output }}
-        uses: stefanzweifel/git-auto-commit-action@v6
+        uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: Apply eslint-fixer changes
 
@@ -194,7 +194,7 @@ jobs:
 
       - name: Commit build output
         if: ${{ inputs.commit-build-output }}
-        uses: stefanzweifel/git-auto-commit-action@v6
+        uses: stefanzweifel/git-auto-commit-action@v7
         with:
           file_pattern: ${{ inputs.build-output-path }}
           commit_message: Automatic frontend build

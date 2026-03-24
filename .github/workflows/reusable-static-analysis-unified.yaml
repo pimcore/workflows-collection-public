@@ -108,7 +108,7 @@ jobs:
 
       - name: "Install SSH Key"
         if: ${{ inputs.private_repo }}
-        uses: shimataro/ssh-key-action@v2
+        uses: shimataro/ssh-key-action@v2.8.0
         with:
           key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
           known_hosts: ".... we add this in the next step ;-)"
@@ -151,7 +151,7 @@ jobs:
 
       - name: "Upload baseline file"
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: phpstan-baseline-${{ matrix.php-version }}-${{ matrix.dependencies }}
           path: phpstan-baseline.neon
