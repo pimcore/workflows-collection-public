@@ -71,6 +71,10 @@ on:
         required: false
         type: string
         default: "redis://127.0.0.1:63379"
+      ENABLE_ELASTICSEARCH:
+        required: false
+        type: boolean
+        default: false         
 
     secrets:
       COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
@@ -108,6 +112,7 @@ jobs:
       PIMCORE_PRODUCT_KEY: ${{ secrets.PIMCORE_PRODUCT_KEY }}
       PIMCORE_TEST_REDIS_DSN: ${{inputs.REDIS_DSN}}
       PIMCORE_TEST_GOTENBERG_DNS: ${{inputs.GOTENBERG_DNS}}
+
     services:
       mariadb:
         image: "${{ inputs.DATABASE }}"
@@ -129,15 +134,11 @@ jobs:
           discovery.type: "single-node"
           DISABLE_SECURITY_PLUGIN: true
 
-      # elastic:
-      #   image: elasticsearch:${{ inputs.PIMCORE_ELASTIC_SEARCH_VERSION }}
-      #   ports:
-      #     - ${{ inputs.PIMCORE_ELASTIC_SEARCH_HOST }}:9200
-      #   env:
-      #     discovery.type: "single-node"
-      #     ES_JAVA_OPTS: "-Xms512m -Xmx512m"
-      #     xpack.security.enabled: "true"
-      #     xpack.security.authc.anonymous.roles: "superuser"
+      elastic:
+        image: ${{ inputs.ENABLE_ELASTICSEARCH && format('elasticsearch:{0}', inputs.PIMCORE_ELASTIC_SEARCH_VERSION) || 'nginx:alpine' }}
+        ports:
+          - ${{ inputs.ENABLE_ELASTICSEARCH && inputs.PIMCORE_ELASTIC_SEARCH_HOST || '0' }}:9200
+        env: ${{ inputs.ENABLE_ELASTICSEARCH && fromJSON('{"discovery.type":"single-node","ES_JAVA_OPTS":"-Xms512m -Xmx512m","xpack.security.enabled":"true","xpack.security.authc.anonymous.roles":"superuser"}') || fromJSON('{}') }}
 
       gotenberg:
         image: gotenberg/gotenberg:8
@@ -151,7 +152,9 @@ jobs:
 
     steps:
       - name: "Checkout code"
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v5"
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: "Get target branch information"
         id: branch-info
@@ -201,7 +204,7 @@ jobs:
 
       - name: Install SSH Key # this is necessary for Composer to be able to clone source from pimcore/ee-pimcore
         if: ${{ inputs.PRIVATE_REPO == 'true' }}
-        uses: shimataro/ssh-key-action@v2
+        uses: shimataro/ssh-key-action@v2.8.0
         with:
           key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
           known_hosts: ".... we add this in the next step ;-)"
@@ -213,7 +216,7 @@ jobs:
           composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
 
       - name: "Configure Composer audit block insecure to false for lowest dependencies"
-        if: ${{ matrix.dependencies }} == 'lowest'
+        if: ${{ matrix.dependencies == 'lowest' }}
         run: composer config audit.block-insecure false
 
       - name: "Update Pimcore version"
@@ -231,20 +234,23 @@ jobs:
         run: |
           echo "Checking if Symfony6 freeze is needed for branch: $TARGET_BRANCH"
           
-          # Add Symfony freeze if TARGET_BRANCH doesn't end with ".x"
-          if [[ ! "$TARGET_BRANCH" =~ \.x$ ]]; then
-            echo "✅ Installing pimcore/symfony-freeze:^6.0.1 for branch: $TARGET_BRANCH"
+          # Skip Symfony freeze if TARGET_BRANCH ends with ".x" or starts with "2026"
+          if [[ "$TARGET_BRANCH" =~ \.x$ ]]; then
+            echo "Branch $TARGET_BRANCH ends with .x, skipping Symfony6 freeze"
+            echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
+          elif [[ "$TARGET_BRANCH" =~ ^20(2[6-9]|[3-9][0-9]) ]]; then
+            echo "Branch $TARGET_BRANCH starts with year 2026+, skipping Symfony6 freeze"
+            echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
+          else
+            echo "Installing pimcore/symfony-freeze:^6.0.1 for branch: $TARGET_BRANCH"
             
             if composer require --no-update pimcore/symfony-freeze:^6.0.1; then
               echo "Successfully added pimcore/symfony-freeze:^6.0"
               echo "SYMFONY_FREEZE_INSTALLED=true" >> $GITHUB_ENV
             else
-              echo "❌ Failed to add pimcore/symfony-freeze package"
+              echo "Failed to add pimcore/symfony-freeze package"
               exit 1
             fi
-          else
-            echo "ℹ️ Branch $TARGET_BRANCH ends with .x, skipping Symfony6 freeze"
-            echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
           fi
 
       - name: "Install dependencies with Composer"

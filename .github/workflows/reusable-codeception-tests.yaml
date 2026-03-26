@@ -62,7 +62,7 @@ jobs:
           MYSQL_ALLOW_EMPTY_PASSWORD: yes
     steps:
       - name: "Checkout code"
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v5"
 
       - name: "Install PHP"
         uses: "shivammathur/setup-php@v2"
@@ -85,7 +85,7 @@ jobs:
           .github/ci/scripts/setup-pimcore-environment.sh
 
       - name: Install SSH Key # this is necessary for Composer to be able to clone source from pimcore/ee-pimcore
-        uses: shimataro/ssh-key-action@v2
+        uses: shimataro/ssh-key-action@v2.8.0
         with:
           key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
           known_hosts: ".... we add this in the next step ;-)"
@@ -96,7 +96,7 @@ jobs:
           composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
 
       - name: "Configure Composer audit block insecure to false for lowest dependencies"
-        if: ${{ matrix.dependencies }} == 'lowest'
+        if: ${{ matrix.dependencies == 'lowest' }}
         run: composer config audit.block-insecure false
 
       - name: "Update Pimcore version"

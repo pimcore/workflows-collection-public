@@ -39,12 +39,12 @@ jobs:
           IGNORE_LIST_KEY: ${{ inputs.ignore-list }}
         steps:
             - name: "Checkout depdendent workflow code"
-              uses: "actions/checkout@v4"
+              uses: "actions/checkout@v5"
               with:
                   ref: ${{ inputs.branch }}
 
             - name: "Checkout reusable workflow repository"
-              uses: "actions/checkout@v4"
+              uses: "actions/checkout@v5"
               with:
                   repository: "pimcore/workflows-collection-public"
                   path: ".workflows-collection-public"
@@ -58,7 +58,7 @@ jobs:
 
             - name: Install SSH Key # this is necessary for Composer to be able to clone source from pimcore/ee-pimcore
               if: ${{ inputs.private-repo == true }}
-              uses: shimataro/ssh-key-action@v2
+              uses: shimataro/ssh-key-action@v2.8.0
               with:
                 key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
                 known_hosts: ".... we add this in the next step ;-)"
@@ -91,13 +91,13 @@ jobs:
               run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
 
             - name: Cache Composer dependencies
-              uses: actions/cache@v4
+              uses: actions/cache@v5
               with:
                   path: ${{ steps.composer-cache.outputs.dir }}
                   key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
 
             - name: "Install dependencies with Composer"
-              uses: "ramsey/composer-install@v2"
+              uses: "ramsey/composer-install@v3"
               with:
                   dependency-versions: "highest"
                   composer-options: "--no-scripts"

@@ -124,13 +124,13 @@ jobs:
                 echo "repository: ${{ inputs.repository }}"
 
             - name: "Checkout code"
-              uses: "actions/checkout@v4"
+              uses: "actions/checkout@v5"
               with:
                 repository: ${{ inputs.repository }}
                 ref: ${{ inputs.BRANCH_NAME }}
                 fetch-depth: 0
 
-            - uses: "actions/setup-node@v4"
+            - uses: "actions/setup-node@v5"
               with:
                   node-version: 'lts/*'
 
@@ -165,11 +165,11 @@ jobs:
                   fi
                   
             - name: "Configure Composer audit block insecure to false for lowest dependencies"
-              if: ${{ matrix.dependencies }} == 'lowest'
+              if: ${{ inputs.dependencies == 'lowest' }}
               run: composer config audit.block-insecure false
               
             - name: "Install dependencies with Composer"
-              uses: "ramsey/composer-install@v2"
+              uses: "ramsey/composer-install@v3"
               with:
                   dependency-versions: "${{ inputs.dependencies }}"
                   composer-options: "${{ inputs.composer-options }}"

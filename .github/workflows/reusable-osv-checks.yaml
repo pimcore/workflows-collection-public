@@ -24,13 +24,13 @@ jobs:
 
     steps:
       - name: Checkout the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: '${{ inputs.platform-version }}'
 
       - name: Checkout osv configuration
         if: ${{ inputs.composer-check-only == false }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: pimcore/workflows-collection-public
           ref: main
@@ -53,7 +53,7 @@ jobs:
         run : sudo snap install osv-scanner
 
       - name: Install SSH Key # this is necessary for Composer to be able to clone source from pimcore/ee-pimcore
-        uses: shimataro/ssh-key-action@v2
+        uses: shimataro/ssh-key-action@v2.8.0
         with:
           key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
           known_hosts: ".... we add this in the next step ;-)"
@@ -100,7 +100,7 @@ jobs:
 
       - name: Upload SBOM as an artifact on failure
         if: ${{ failure() && steps.osvscanner.conclusion == 'failure' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: osv-${{ inputs.platform-version }}
           path: osv-results.txt
