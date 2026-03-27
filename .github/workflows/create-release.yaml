@@ -457,45 +457,45 @@ jobs:
           echo "skip_validation=false" >> "$GITHUB_OUTPUT"
           TITLE="${TAG}"
 
-          # Search for milestone in open and closed states
+          # Search all milestones (open + closed) in a single pass, paginate until
+          # empty with a hard cap of 10 pages (1000 milestones)
           FOUND=false
-          for STATE in open closed; do
-            PAGE=1
-            while [[ "${PAGE}" -le 3 ]]; do
-              MS_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
-                "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=${STATE}&sort=created&direction=desc&per_page=100&page=${PAGE}" \
-                -H "X-GitHub-Api-Version: 2022-11-28" \
-                -H "Accept: application/vnd.github+json" \
-                -H "Authorization: Bearer ${RELEASE_TOKEN}")
+          PAGE=1
+          while [[ "${PAGE}" -le 10 ]]; do
+            MS_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+              "https://api.github.com/repos/${OWNER}/${REPO}/milestones?state=all&sort=created&direction=desc&per_page=100&page=${PAGE}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-              MS_STATUS=$(echo "${MS_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
-              if [[ "${MS_STATUS}" -ne 200 ]]; then
-                echo "⚠️ Failed to fetch milestones (state=${STATE}, page=${PAGE}, HTTP ${MS_STATUS})" >> "$GITHUB_STEP_SUMMARY"
-                break
-              fi
+            MS_STATUS=$(echo "${MS_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            if [[ "${MS_STATUS}" -ne 200 ]]; then
+              echo "⚠️ Failed to fetch milestones (page=${PAGE}, HTTP ${MS_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
 
-              RESP=$(echo "${MS_RESP}" | sed '$d')
-              
-              if ! echo "${RESP}" | jq -e '. | type == "array"' > /dev/null 2>&1; then
-                echo "⚠️ Invalid API response (not a JSON array)" >> "$GITHUB_STEP_SUMMARY"
-                break
-              fi
+            RESP=$(echo "${MS_RESP}" | sed '$d')
+            
+            if ! echo "${RESP}" | jq -e '. | type == "array"' > /dev/null 2>&1; then
+              echo "⚠️ Invalid API response (not a JSON array)" >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
 
-              LEN=$(echo "${RESP}" | jq '. | length')
-              if [[ "${LEN}" -eq 0 ]]; then
-                break
-              fi
+            LEN=$(echo "${RESP}" | jq '. | length')
+            if [[ "${LEN}" -eq 0 ]]; then
+              break
+            fi
 
-              MS_NUMBER=$(echo "${RESP}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
-              if [[ -n "${MS_NUMBER}" && "${MS_NUMBER}" != "null" ]]; then
-                echo "milestone_number=${MS_NUMBER}" >> "$GITHUB_OUTPUT"
-                echo "✅ Found milestone '${TITLE}' (#${MS_NUMBER}, state=${STATE})" >> "$GITHUB_STEP_SUMMARY"
-                FOUND=true
-                break 2
-              fi
+            MS_NUMBER=$(echo "${RESP}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .number' | head -n 1)
+            if [[ -n "${MS_NUMBER}" && "${MS_NUMBER}" != "null" ]]; then
+              echo "milestone_number=${MS_NUMBER}" >> "$GITHUB_OUTPUT"
+              MS_STATE=$(echo "${RESP}" | jq -r --arg t "${TITLE}" '.[] | select(.title == $t) | .state' | head -n 1)
+              echo "✅ Found milestone '${TITLE}' (#${MS_NUMBER}, state=${MS_STATE})" >> "$GITHUB_STEP_SUMMARY"
+              FOUND=true
+              break
+            fi
 
-              PAGE=$((PAGE+1))
-            done
+            PAGE=$((PAGE+1))
           done
 
           if [[ "${FOUND}" == "false" ]]; then

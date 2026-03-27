@@ -321,6 +321,8 @@ jobs:
               CONTENT_HITS=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.items[].path' | \
                 grep -iE '\.(js|ts|mjs|jsx|tsx|css|scss|less|html|htm|xml|json|cfg|properties)$' || true)
             fi
+          else
+            echo "⚠️ Sencha copyright content search failed for ${OWNER}/${REPO} (HTTP ${SEARCH_STATUS}); relying on path-based check only." >> "$GITHUB_STEP_SUMMARY"
           fi
 
           if [[ -n "${PATH_HITS}" || -n "${CONTENT_HITS}" ]]; then
@@ -520,19 +522,26 @@ jobs:
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "### ${R_OWNER}/${R_REPO}" >> "$GITHUB_STEP_SUMMARY"
 
-            # Find and close the current milestone
+            # Find the current milestone (all states, paginate until found/empty, cap 10 pages)
             MS_NUMBER=""
-            for STATE in open closed; do
+            MS_PAGE=1
+            while [[ "${MS_PAGE}" -le 10 ]]; do
               MS_RESP=$(curl -s --location \
-                "https://api.github.com/repos/${R_OWNER}/${R_REPO}/milestones?state=${STATE}&per_page=100" \
+                "https://api.github.com/repos/${R_OWNER}/${R_REPO}/milestones?state=all&sort=created&direction=desc&per_page=100&page=${MS_PAGE}" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 -H "Accept: application/vnd.github+json" \
                 -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+              MS_LEN=$(echo "${MS_RESP}" | jq -r 'if type == "array" then length else 0 end')
+              [[ "${MS_LEN}" -eq 0 ]] && break
 
               MS_NUMBER=$(echo "${MS_RESP}" | jq -r --arg t "${TAG}" '.[]? | select(.title == $t) | .number' | head -n 1)
               if [[ -n "${MS_NUMBER}" && "${MS_NUMBER}" != "null" ]]; then
                 break
               fi
+              MS_NUMBER=""
+
+              MS_PAGE=$((MS_PAGE+1))
             done
 
             if [[ -z "${MS_NUMBER}" || "${MS_NUMBER}" == "null" ]]; then
