@@ -229,18 +229,23 @@ jobs:
           fi
 
           # --- Pass 1: path-based check ---
-          # Catches well-known ExtJS file/directory names:
-          # - directories or files named extjs / ext-js
-          # - canonical ExtJS bundles: ext-all.js, ext-all-debug.js, ext-all-rtl.js
-          # - Sencha Touch bundles: sencha-touch*.js
-          # - ExtJS npm packages under node_modules (@sencha/ext, extjs)
+          # Multi-layered detection matching comprehensive ExtJS scanner:
+          # 1. Known ExtJS/Sencha dist files (ext-all.js, ext-debug.js,
+          #    ext-foundation.js, ext-modern-all.js, sencha-touch-all.js, etc.)
+          # 2. Sencha CMD artifacts (.sencha/ directory, sencha.cfg)
+          # 3. ExtJS/Sencha directory names (extjs, ext-js, ext-6, ext-7,
+          #    senchatouch, sencha-touch)
+          # 4. ExtJS structural paths (/ext/src/, /ext/packages/, /ext/classic/,
+          #    /ext/modern/, /ext/overrides/, /senchaextjs/, sencha-generated)
+          # 5. npm/composer Sencha packages (node_modules/@sencha/, node_modules/extjs)
           PATH_HITS=$(echo "${TREE}" | jq -r '.tree[] | select(.type == "blob" or .type == "tree") | .path' | \
-            grep -iE '(^|/)extjs(/|$)|\bext-all(-debug|-rtl)?(\.min)?\.js$|\bsencha-touch(-all|-debug)?\.js$|(^|/)node_modules/@sencha/ext(/|$)|(^|/)node_modules/extjs(/|$)' || true)
+            grep -iE '(^|/)(\.sencha|extjs|ext-js|ext-[67]|senchatouch|sencha-touch)(/|$)|\b(ext-all(-debug|-rtl|-rtl-debug|-sandbox|-dev)?(\.min)?|ext(-debug|-foundation|-foundation-debug)?|ext-modern-all(-debug)?|sencha-touch(-all|-debug|-all-debug)?)\.js$|\bsencha\.cfg$|(^|/)node_modules/(@sencha/|extjs(/|$))|/ext/(src|packages|classic|modern|overrides)/|/(senchaextjs|sencha-generated)/' || true)
 
           # --- Pass 2: Sencha copyright content search ---
-          # Catches actual Sencha/ExtJS library files regardless of their filename by
-          # searching for the Sencha Inc. copyright string present in all Ext JS bundles.
-          # Uses the GitHub code search API (rate-limited to 10 req/min for authenticated calls).
+          # Catches actual Sencha/ExtJS library files regardless of their filename.
+          # Uses the GitHub code search API (rate-limited to 10 req/min).
+          # Results are filtered to code/config files only — documentation files
+          # (*.md, *.txt, *.rst, etc.) that merely reference Sencha are ignored.
           SEARCH_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
             "https://api.github.com/search/code?q=Sencha+Inc+repo:${OWNER}/${REPO}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -252,7 +257,9 @@ jobs:
           if [[ "${SEARCH_STATUS}" -eq 200 ]]; then
             TOTAL=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.total_count')
             if [[ "${TOTAL}" -gt 0 ]]; then
-              CONTENT_HITS=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.items[].path')
+              # Only flag code/config files — skip docs, readmes, license files, etc.
+              CONTENT_HITS=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.items[].path' | \
+                grep -iE '\.(js|ts|mjs|jsx|tsx|css|scss|less|html|htm|xml|json|cfg|properties)$' || true)
             fi
           else
             echo "⚠️ Sencha copyright content search failed (HTTP ${SEARCH_STATUS}); relying on path-based check only." >> "$GITHUB_STEP_SUMMARY"
