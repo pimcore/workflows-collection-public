@@ -302,9 +302,11 @@ jobs:
 
           TREE=$(echo "${TREE_RESP}" | sed '$d')
 
+          # Multi-layered path-based detection (see bugfix/hotfix workflow for full docs)
           PATH_HITS=$(echo "${TREE}" | jq -r '.tree[] | select(.type == "blob" or .type == "tree") | .path' | \
-            grep -iE '(^|/)extjs(/|$)|\bext-all(-debug|-rtl)?(\.min)?\.js$|\bsencha-touch(-all|-debug)?\.js$|(^|/)node_modules/@sencha/ext(/|$)|(^|/)node_modules/extjs(/|$)' || true)
+            grep -iE '(^|/)(\.sencha|extjs|ext-js|ext-[67]|senchatouch|sencha-touch)(/|$)|\b(ext-all(-debug|-rtl|-rtl-debug|-sandbox|-dev)?(\.min)?|ext(-debug|-foundation|-foundation-debug)?|ext-modern-all(-debug)?|sencha-touch(-all|-debug|-all-debug)?)\.js$|\bsencha\.cfg$|(^|/)node_modules/(@sencha/|extjs(/|$))|/ext/(src|packages|classic|modern|overrides)/|/(senchaextjs|sencha-generated)/' || true)
 
+          # Content search — only flag code/config files, not docs
           SEARCH_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
             "https://api.github.com/search/code?q=Sencha+Inc+repo:${OWNER}/${REPO}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -316,7 +318,8 @@ jobs:
           if [[ "${SEARCH_STATUS}" -eq 200 ]]; then
             TOTAL=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.total_count')
             if [[ "${TOTAL}" -gt 0 ]]; then
-              CONTENT_HITS=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.items[].path')
+              CONTENT_HITS=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.items[].path' | \
+                grep -iE '\.(js|ts|mjs|jsx|tsx|css|scss|less|html|htm|xml|json|cfg|properties)$' || true)
             fi
           fi
 
