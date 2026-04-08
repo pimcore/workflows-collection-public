@@ -102,6 +102,11 @@ jobs:
             exit 1
           fi
 
+          if ! [[ "${BASE}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid base_branch format. Expected X.Y (e.g. 12.3), got: ${BASE}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
           if ! [[ "${TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
             echo "Invalid to_tag format. Expected X.Y.Z or X.Y.Z.W (numeric), got: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
             exit 1
@@ -115,20 +120,8 @@ jobs:
           TAG_NAME="v${TAG}"
           RELEASE_NAME="${TAG}"
 
-          # Reject .x branches — major/minor releases use the dedicated workflow
-          if [[ "${BASE}" == *.x ]]; then
-            echo "❌ This workflow is for bugfix/hotfix releases only." >> "$GITHUB_STEP_SUMMARY"
-            echo "base_branch must be a maintenance branch in X.Y format (e.g. 12.3), not a development branch (${BASE})." >> "$GITHUB_STEP_SUMMARY"
-            echo "For major/minor releases use the **Create major/minor release** workflow." >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
           BASE_MAJOR="$(echo "${BASE}" | cut -d'.' -f1)"
           BASE_MINOR="$(echo "${BASE}" | cut -d'.' -f2)"
-          if ! [[ "${BASE_MINOR}" =~ ^[0-9]+$ ]]; then
-            echo "Invalid base_branch format. Expected X.Y for maintenance branches, got: ${BASE}" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
           if [[ "${TAG_MAJOR}" != "${BASE_MAJOR}" || "${TAG_MINOR}" != "${BASE_MINOR}" ]]; then
             echo "Invalid tag for maintenance base. Expected ${BASE_MAJOR}.${BASE_MINOR}.* for base ${BASE}, got: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
             exit 1
