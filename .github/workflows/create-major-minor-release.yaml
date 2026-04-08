@@ -400,44 +400,34 @@ jobs:
             MAKE_LATEST_STR="true"
           fi
 
+          # When a body is provided, attach it and disable auto-generated notes;
+          # otherwise let the API generate notes based on AUTO_CHANGELOG.
           if [[ -n "${FINAL_BODY}" ]]; then
-            REQ_BODY=$(jq -n \
-              --arg target_commitish "${LATEST_SHA}" \
-              --arg name "${RELEASE_NAME}" \
-              --arg tag_name "${TAG_NAME}" \
-              --arg make_latest "${MAKE_LATEST_STR}" \
-              --argjson draft "${DRAFT}" \
-              --argjson prerelease "${PRERELEASE}" \
-              --arg body "${FINAL_BODY}" \
-              '{
-                target_commitish: $target_commitish,
-                name: $name,
-                draft: $draft,
-                make_latest: $make_latest,
-                prerelease: $prerelease,
-                tag_name: $tag_name,
-                generate_release_notes: false,
-                body: $body
-              }')
+            GEN_NOTES_FLAG=false
+            BODY_ARG=("--arg" "body" "${FINAL_BODY}")
           else
-            REQ_BODY=$(jq -n \
-              --arg target_commitish "${LATEST_SHA}" \
-              --arg name "${RELEASE_NAME}" \
-              --arg tag_name "${TAG_NAME}" \
-              --arg make_latest "${MAKE_LATEST_STR}" \
-              --argjson draft "${DRAFT}" \
-              --argjson prerelease "${PRERELEASE}" \
-              --argjson generate_release_notes "${AUTO_CHANGELOG}" \
-              '{
-                target_commitish: $target_commitish,
-                name: $name,
-                draft: $draft,
-                make_latest: $make_latest,
-                prerelease: $prerelease,
-                tag_name: $tag_name,
-                generate_release_notes: $generate_release_notes
-              }')
+            GEN_NOTES_FLAG="${AUTO_CHANGELOG}"
+            BODY_ARG=()
           fi
+
+          REQ_BODY=$(jq -n \
+            --arg target_commitish "${LATEST_SHA}" \
+            --arg name "${RELEASE_NAME}" \
+            --arg tag_name "${TAG_NAME}" \
+            --arg make_latest "${MAKE_LATEST_STR}" \
+            --argjson draft "${DRAFT}" \
+            --argjson prerelease "${PRERELEASE}" \
+            --argjson generate_release_notes "${GEN_NOTES_FLAG}" \
+            "${BODY_ARG[@]}" \
+            '{
+              target_commitish: $target_commitish,
+              name: $name,
+              draft: $draft,
+              make_latest: $make_latest,
+              prerelease: $prerelease,
+              tag_name: $tag_name,
+              generate_release_notes: $generate_release_notes
+            } + if $ARGS.named | has("body") then {body: $ARGS.named.body} else {} end')
 
           CREATE_RELEASE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
             "https://api.github.com/repos/${OWNER}/${REPO}/releases" \
