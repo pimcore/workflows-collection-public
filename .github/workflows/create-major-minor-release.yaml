@@ -95,8 +95,8 @@ jobs:
             exit 1
           fi
 
-          BASE="${BASE_BRANCH}"
-          TAG="${TO_TAG}"
+          BASE="${BASE_BRANCH#v}"
+          TAG="${TO_TAG#v}"
 
           if [[ -z "${BASE}" || -z "${TAG}" ]]; then
             echo "base_branch and to_tag must be non-empty" >> "$GITHUB_STEP_SUMMARY"
