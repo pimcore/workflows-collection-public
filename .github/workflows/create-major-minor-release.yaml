@@ -242,6 +242,18 @@ jobs:
           done <<< "${TARGETS_TEXT}"
 
           TARGETS_JSON="${TARGETS_ARRAY}"
+
+          # Annotate EE bundles (ee-*) with their CE counterpart's coordinates
+          TARGETS_JSON=$(jq -c '
+            [ .[] as $t |
+              if ($t.repo | startswith("ee-")) then
+                ($t.repo | ltrimstr("ee-")) as $ce_repo |
+                (map(select(.owner == $t.owner and .repo == $ce_repo)) | first // null) as $ce |
+                if $ce then $t + {ce_owner: $ce.owner, ce_repo: $ce.repo, ce_sha: $ce.latest_sha}
+                else $t end
+              else $t end
+            ]' <<< "${TARGETS_JSON}")
+
           TARGETS_COUNT=$(jq -r 'length' <<< "${TARGETS_JSON}")
 
           if [[ "${TARGETS_COUNT}" -eq 0 ]]; then
@@ -349,6 +361,9 @@ jobs:
       OWNER: ${{ matrix.target.owner }}
       REPO: ${{ matrix.target.repo }}
       LATEST_SHA: ${{ matrix.target.latest_sha }}
+      CE_OWNER: ${{ matrix.target.ce_owner }}
+      CE_REPO: ${{ matrix.target.ce_repo }}
+      CE_SHA: ${{ matrix.target.ce_sha }}
       TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
       RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
       DRAFT: ${{ inputs.publish_immediately == false }}
@@ -378,7 +393,59 @@ jobs:
 
           FINAL_BODY="${CHANGELOG}"
 
-          if [[ "${AUTO_CHANGELOG}" == "true" && -n "${CHANGELOG}" ]]; then
+          # For EE bundles with a CE counterpart, build merged release notes
+          if [[ -n "${CE_REPO}" ]]; then
+            CE_NOTES=""
+            EE_NOTES=""
+
+            # Generate CE release notes
+            CE_GEN=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
+              "https://api.github.com/repos/${CE_OWNER}/${CE_REPO}/releases/generate-notes" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+              -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${CE_SHA}" '{tag_name:$tag, target_commitish:$target}')")
+            CE_STATUS=$(echo "${CE_GEN}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            if [[ "${CE_STATUS}" -eq 200 ]]; then
+              CE_NOTES=$(echo "${CE_GEN}" | sed '$d' | jq -r '.body // ""')
+            else
+              echo "⚠️ generate-notes failed for CE repo ${CE_OWNER}/${CE_REPO} (HTTP ${CE_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+            fi
+
+            # Generate EE release notes and filter out sync bot noise
+            EE_GEN=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
+              "https://api.github.com/repos/${OWNER}/${REPO}/releases/generate-notes" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+              -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${LATEST_SHA}" '{tag_name:$tag, target_commitish:$target}')")
+            EE_STATUS=$(echo "${EE_GEN}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            if [[ "${EE_STATUS}" -eq 200 ]]; then
+              RAW_EE=$(echo "${EE_GEN}" | sed '$d' | jq -r '.body // ""')
+              # Strip sync-bot PRs and auto-generated full-changelog lines
+              EE_NOTES=$(echo "${RAW_EE}" | grep -Ev '@pimcore-deployments|Automated PR by|\*\*Full Changelog\*\*:' || true)
+              # Trim leading/trailing blank lines
+              EE_NOTES=$(echo "${EE_NOTES}" | sed -e '/./,$!d' -e :a -e '/^\s*$/{ $d; N; ba; }')
+            else
+              echo "⚠️ generate-notes failed for EE repo ${OWNER}/${REPO} (HTTP ${EE_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+            fi
+
+            # Merge CE + filtered EE notes
+            MERGED=""
+            if [[ -n "${CE_NOTES}" ]]; then
+              MERGED="${CE_NOTES}"
+            fi
+            if [[ -n "${EE_NOTES}" ]]; then
+              [[ -n "${MERGED}" ]] && MERGED="${MERGED}"$'\n\n'
+              MERGED="${MERGED}### EE-specific changes"$'\n'"${EE_NOTES}"
+            fi
+            if [[ -n "${CHANGELOG}" ]]; then
+              [[ -n "${MERGED}" ]] && MERGED="${MERGED}"$'\n\n---\n\n'
+              MERGED="${MERGED}${CHANGELOG}"
+            fi
+            FINAL_BODY="${MERGED}"
+
+          elif [[ "${AUTO_CHANGELOG}" == "true" && -n "${CHANGELOG}" ]]; then
             GEN_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
               "https://api.github.com/repos/${OWNER}/${REPO}/releases/generate-notes" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
