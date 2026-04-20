@@ -231,8 +231,16 @@ jobs:
       - name: "Check Symfony6 freeze requirement"
         env:
           TARGET_BRANCH: "${{ steps.branch-info.outputs.target_branch }}"
+          PIMCORE_VERSION: "${{ inputs.PIMCORE_VERSION }}"
         run: |
-          echo "Checking if Symfony6 freeze is needed for branch: $TARGET_BRANCH"
+          echo "Checking if Symfony6 freeze is needed for branch: $TARGET_BRANCH (PIMCORE_VERSION: $PIMCORE_VERSION)"
+          
+          # Check pimcore version from composer.json if no PIMCORE_VERSION input
+          COMPOSER_PIMCORE=""
+          if [ -f composer.json ]; then
+            COMPOSER_PIMCORE=$(php -r "\$j=json_decode(file_get_contents('composer.json'),true); echo \$j['require']['pimcore/pimcore'] ?? '';" 2>/dev/null || true)
+            echo "Pimcore constraint from composer.json: $COMPOSER_PIMCORE"
+          fi
           
           # Skip Symfony freeze if TARGET_BRANCH ends with ".x" or starts with "2026"
           if [[ "$TARGET_BRANCH" =~ \.x$ ]]; then
@@ -240,6 +248,12 @@ jobs:
             echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
           elif [[ "$TARGET_BRANCH" =~ ^20(2[6-9]|[3-9][0-9]) ]]; then
             echo "Branch $TARGET_BRANCH starts with year 2026+, skipping Symfony6 freeze"
+            echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
+          elif [[ "$PIMCORE_VERSION" =~ ^20(2[6-9]|[3-9][0-9]) ]]; then
+            echo "PIMCORE_VERSION $PIMCORE_VERSION targets year 2026+, skipping Symfony6 freeze"
+            echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
+          elif [[ "$COMPOSER_PIMCORE" =~ 20(2[6-9]|[3-9][0-9]) ]]; then
+            echo "composer.json pimcore constraint '$COMPOSER_PIMCORE' targets year 2026+, skipping Symfony6 freeze"
             echo "SYMFONY_FREEZE_INSTALLED=false" >> $GITHUB_ENV
           else
             echo "Installing pimcore/symfony-freeze:^6.0.1 for branch: $TARGET_BRANCH"
