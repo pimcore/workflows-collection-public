@@ -241,6 +241,7 @@ jobs:
             COMPOSER_PIMCORE=$(php -r "\$j=json_decode(file_get_contents('composer.json'),true); echo \$j['require']['pimcore/pimcore'] ?? '';" 2>/dev/null || true)
             echo "Pimcore constraint from composer.json: $COMPOSER_PIMCORE"
           fi
+          echo "COMPOSER_PIMCORE=$COMPOSER_PIMCORE" >> $GITHUB_ENV
           
           # Skip Symfony freeze if TARGET_BRANCH ends with ".x" or starts with "2026"
           if [[ "$TARGET_BRANCH" =~ \.x$ ]]; then
@@ -265,6 +266,17 @@ jobs:
               echo "Failed to add pimcore/symfony-freeze package"
               exit 1
             fi
+          fi
+
+      - name: "Ignore phpunit 10.2.7 security advisory for Pimcore 11.4"
+        run: |
+          # Strip leading ^ or ~ so ^11.4, ~11.4, 11.4.* all match
+          VERSION="${COMPOSER_PIMCORE#[\^~]}"
+          if [[ "$VERSION" =~ ^11\.4 ]]; then
+            echo "Pimcore 11.4 detected ($COMPOSER_PIMCORE), ignoring phpunit advisory"
+            composer config --json --merge audit.ignore '{"PKSA-z3gr-8qht-p93v":"phpunit 10.2.7 pinned by pimcore 11.4"}'
+          else
+            echo "Pimcore version '$COMPOSER_PIMCORE' does not require advisory ignore, skipping"
           fi
 
       - name: "Install dependencies with Composer"
