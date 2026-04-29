@@ -15,11 +15,11 @@ on:
         required: true
         type: string
         description: "Release version without leading v (e.g. 12.3.1 for bugfix or 12.3.1.1 for hotfix)"
-      publish_immediately:
+      draft:
         required: true
         default: false
         type: boolean
-        description: "Release directly (not recommended) by default releases are created as drafts"
+        description: "Create as draft release instead of publishing directly"
       autoChangelog:
         description: "Auto generated release notes"
         required: true
@@ -34,7 +34,7 @@ env:
   REPOSITORY: ${{ inputs.repository }}
   BASE_BRANCH: ${{ inputs.base_branch }}
   TO_TAG: ${{ inputs.to_tag }}
-  PUBLISH_IMMEDIATELY: ${{ inputs.publish_immediately }}
+  DRAFT: ${{ inputs.draft }}
   AUTO_CHANGELOG: ${{ inputs.autoChangelog }}
   CHANGELOG: ${{ inputs.changeLog }}
 
@@ -178,7 +178,7 @@ jobs:
             echo "To tag: ${TAG}"
             echo "Tag name: ${TAG_NAME}"
             echo "Release kind: ${RELEASE_KIND}"
-            echo "Publish immediately: ${PUBLISH_IMMEDIATELY}"
+            echo "Draft: ${DRAFT}"
             echo "Auto changelog: ${AUTO_CHANGELOG}"
             echo "Custom changelog provided: $([[ -n "${CHANGELOG}" ]] && echo yes || echo no)"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -295,8 +295,8 @@ jobs:
       LATEST_SHA: ${{ needs.prepare.outputs.latest_sha }}
       TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
       RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
-      DRAFT: ${{ inputs.publish_immediately == false }}
-      MAKE_LATEST: ${{ inputs.publish_immediately == true }}
+      DRAFT: ${{ inputs.draft }}
+      MAKE_LATEST: ${{ inputs.draft == false }}
       PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
       AUTO_CHANGELOG: ${{ needs.prepare.outputs.auto_changelog_norm }}
     outputs:
@@ -739,7 +739,7 @@ jobs:
             echo "**Release Type**: ${{ needs.prepare.outputs.release_kind }}" >> "$GITHUB_STEP_SUMMARY"
           fi
           
-          echo "**Draft**: ${{ inputs.publish_immediately == false }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Draft**: ${{ inputs.draft }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           
           if [[ "${{ needs.validate-extjs.result }}" == "failure" ]]; then

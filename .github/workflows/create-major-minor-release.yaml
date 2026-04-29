@@ -11,11 +11,11 @@ on:
         required: true
         type: string
         description: "Release version without leading v (e.g. 12.4.0 for minor, 13.0.0 for major)"
-      publish_immediately:
+      draft:
         required: true
         default: false
         type: boolean
-        description: "Release directly (not recommended) by default releases are created as drafts"
+        description: "Create as draft release instead of publishing directly"
       autoChangelog:
         description: "Auto generated release notes"
         required: true
@@ -33,7 +33,7 @@ on:
 env:
   BASE_BRANCH: ${{ inputs.base_branch }}
   TO_TAG: ${{ inputs.to_tag }}
-  PUBLISH_IMMEDIATELY: ${{ inputs.publish_immediately }}
+  DRAFT: ${{ inputs.draft }}
   AUTO_CHANGELOG: ${{ inputs.autoChangelog }}
   CHANGELOG: ${{ inputs.changeLog }}
 
@@ -343,8 +343,8 @@ jobs:
       CE_SHA: ${{ matrix.target.ce_sha }}
       TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
       RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
-      DRAFT: ${{ inputs.publish_immediately == false }}
-      MAKE_LATEST: ${{ inputs.publish_immediately == true }}
+      DRAFT: ${{ inputs.draft }}
+      MAKE_LATEST: ${{ inputs.draft == false }}
       PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
       AUTO_CHANGELOG: ${{ needs.prepare.outputs.auto_changelog_norm }}
     steps:
@@ -817,7 +817,7 @@ jobs:
           echo "**Release Type**: ${{ needs.prepare.outputs.release_kind }}" >> "$GITHUB_STEP_SUMMARY"
           echo "**Target repos**: ${{ needs.prepare.outputs.targets_count }}" >> "$GITHUB_STEP_SUMMARY"
           echo "**Source**: ${{ needs.prepare.outputs.source }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Draft**: ${{ inputs.publish_immediately == false }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Draft**: ${{ inputs.draft }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           if [[ "${{ needs.validate-extjs.result }}" == "failure" ]]; then
