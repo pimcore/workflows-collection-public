@@ -6,7 +6,7 @@ on:
       repository:
         required: true
         type: string
-        description: "Target repository in owner/repo format (e.g. pimcore/pimcore)"
+        description: "Target repository name (e.g. data-hub)"
       base_branch:
         required: true
         type: string
@@ -87,13 +87,13 @@ jobs:
             echo "⚠️ Unexpected response from GitHub API when validating token (HTTP ${TEST_RESP})" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          if ! [[ "${REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-            echo "Invalid repository format. Expected owner/repo, got: ${REPOSITORY}" >> "$GITHUB_STEP_SUMMARY"
+          if ! [[ "${REPOSITORY}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+            echo "Invalid repository name: ${REPOSITORY}" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
-          OWNER="${REPOSITORY%%/*}"
-          REPO="${REPOSITORY##*/}"
+          OWNER="pimcore"
+          REPO="${REPOSITORY}"
           BASE="${BASE_BRANCH#v}"
           TAG="${TO_TAG#v}"
 

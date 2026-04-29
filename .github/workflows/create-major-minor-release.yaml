@@ -26,13 +26,13 @@ on:
         required: false
         type: string
       repositories_override:
-        description: "Optional override for repo list (comma-separated owner/repo). Leave empty to auto-discover from platform-version composer.json"
+        description: "Optional override for repo list (comma-separated repo names, e.g. data-hub,studio-ui-bundle). Leave empty to auto-discover from platform-version composer.json"
         required: false
         type: string
       platform_version_repository:
-        description: "Repository containing composer.json with bundle list"
+        description: "Repository name containing composer.json with bundle list"
         required: false
-        default: "pimcore/platform-version"
+        default: "platform-version"
         type: string
       platform_version_ref:
         description: "Branch/ref to read composer.json from. Leave empty to use base_branch"
@@ -170,27 +170,27 @@ jobs:
               PV_REF="${BASE_BRANCH}"
             fi
 
-            if ! [[ "${PV_REPO}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-              echo "❌ Invalid platform_version_repository format: ${PV_REPO}" >> "$GITHUB_STEP_SUMMARY"
+            if ! [[ "${PV_REPO}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+              echo "❌ Invalid platform_version_repository name: ${PV_REPO}" >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
 
             COMP_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
-              "https://api.github.com/repos/${PV_REPO}/contents/composer.json?ref=${PV_REF}" \
+              "https://api.github.com/repos/pimcore/${PV_REPO}/contents/composer.json?ref=${PV_REF}" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
             COMP_STATUS=$(echo "${COMP_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
             if [[ "${COMP_STATUS}" -ne 200 ]]; then
-              echo "❌ Failed to fetch composer.json from ${PV_REPO}@${PV_REF} (HTTP ${COMP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+              echo "❌ Failed to fetch composer.json from pimcore/${PV_REPO}@${PV_REF} (HTTP ${COMP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
               echo "$(echo "${COMP_RESP}" | sed '$d' | head -c 1000)" >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
 
             CONTENT_B64=$(echo "${COMP_RESP}" | sed '$d' | jq -r '.content // ""' | tr -d '\n')
             if [[ -z "${CONTENT_B64}" ]]; then
-              echo "❌ composer.json content not found in ${PV_REPO}@${PV_REF}" >> "$GITHUB_STEP_SUMMARY"
+              echo "❌ composer.json content not found in pimcore/${PV_REPO}@${PV_REF}" >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
 
@@ -199,22 +199,24 @@ jobs:
               [(.require // {} | keys[]?), (."require-dev" // {} | keys[]?)]
               | .[]
               | select(startswith($p))
-              | select(test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
+              | ltrimstr($p)
+              | select(test("^[A-Za-z0-9_.-]+$"))
             ' | awk '!seen[$0]++')
           fi
 
           # Validate entries and resolve latest SHA per repo
           TARGETS_ARRAY="[]"
           SKIPPED=""
-          while IFS= read -r FULL_NAME; do
-            [[ -z "${FULL_NAME}" ]] && continue
-            if ! [[ "${FULL_NAME}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-              echo "❌ Invalid repository format in list: ${FULL_NAME}" >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r REPO_NAME; do
+            [[ -z "${REPO_NAME}" ]] && continue
+            if ! [[ "${REPO_NAME}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+              echo "❌ Invalid repository name: ${REPO_NAME}" >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
 
-            R_OWNER="${FULL_NAME%%/*}"
-            R_REPO="${FULL_NAME##*/}"
+            R_OWNER="pimcore"
+            R_REPO="${REPO_NAME}"
+            FULL_NAME="${R_OWNER}/${R_REPO}"
 
             SHA_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
               "https://api.github.com/repos/${R_OWNER}/${R_REPO}/commits/${BASE_BRANCH}" \
