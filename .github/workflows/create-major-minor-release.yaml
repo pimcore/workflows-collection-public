@@ -29,20 +29,6 @@ on:
         description: "Optional override for repo list (comma-separated repo names, e.g. data-hub,studio-ui-bundle). Leave empty to auto-discover from platform-version composer.json"
         required: false
         type: string
-      platform_version_repository:
-        description: "Repository name containing composer.json with bundle list"
-        required: false
-        default: "platform-version"
-        type: string
-      platform_version_ref:
-        description: "Branch/ref to read composer.json from. Leave empty to use base_branch"
-        required: false
-        type: string
-      bundle_vendor_prefix:
-        description: "Vendor prefix for filtering composer.json dependencies"
-        required: false
-        default: "pimcore/"
-        type: string
 
 env:
   BASE_BRANCH: ${{ inputs.base_branch }}
@@ -60,9 +46,6 @@ jobs:
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       REPOSITORIES_OVERRIDE: ${{ inputs.repositories_override }}
-      PLATFORM_VERSION_REPOSITORY: ${{ inputs.platform_version_repository }}
-      PLATFORM_VERSION_REF: ${{ inputs.platform_version_ref }}
-      BUNDLE_VENDOR_PREFIX: ${{ inputs.bundle_vendor_prefix }}
     outputs:
       release_kind: ${{ steps.calc.outputs.release_kind }}
       tag_name: ${{ steps.calc.outputs.tag_name }}
@@ -164,16 +147,8 @@ jobs:
             TARGETS_TEXT=$(echo "${REPOSITORIES_OVERRIDE}" | tr ', ' '\n' | sed '/^$/d' | awk '!seen[$0]++')
           else
             SOURCE="platform-version-composer"
-            PV_REPO="${PLATFORM_VERSION_REPOSITORY}"
-            PV_REF="${PLATFORM_VERSION_REF}"
-            if [[ -z "${PV_REF}" ]]; then
-              PV_REF="${BASE_BRANCH}"
-            fi
-
-            if ! [[ "${PV_REPO}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
-              echo "❌ Invalid platform_version_repository name: ${PV_REPO}" >> "$GITHUB_STEP_SUMMARY"
-              exit 1
-            fi
+            PV_REPO="platform-version"
+            PV_REF="${BASE_BRANCH}"
 
             COMP_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
               "https://api.github.com/repos/pimcore/${PV_REPO}/contents/composer.json?ref=${PV_REF}" \
@@ -195,11 +170,11 @@ jobs:
             fi
 
             COMP_JSON=$(echo "${CONTENT_B64}" | base64 -d)
-            TARGETS_TEXT=$(echo "${COMP_JSON}" | jq -r --arg p "${BUNDLE_VENDOR_PREFIX}" '
+            TARGETS_TEXT=$(echo "${COMP_JSON}" | jq -r '
               [(.require // {} | keys[]?), (."require-dev" // {} | keys[]?)]
               | .[]
-              | select(startswith($p))
-              | ltrimstr($p)
+              | select(startswith("pimcore/"))
+              | ltrimstr("pimcore/")
               | select(test("^[A-Za-z0-9_.-]+$"))
             ' | awk '!seen[$0]++')
           fi
