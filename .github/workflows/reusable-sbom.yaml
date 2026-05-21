@@ -240,17 +240,18 @@ jobs:
       - name: Merge SBOMs
         id: merge
         run: |
-          args=()
+          files=()
           for f in sbom/sbom-*.json; do
-            [ -f "$f" ] && args+=(--input-file "$f")
+            [ -f "$f" ] && files+=("$f")
           done
 
-          if [ ${#args[@]} -eq 0 ]; then
+          if [ ${#files[@]} -eq 0 ]; then
             echo "::error::No SBOM fragments were generated." >&2
             exit 1
           fi
 
-          cyclonedx merge "${args[@]}" \
+          cyclonedx merge \
+            --input-files "${files[@]}" \
             --output-file sbom/sbom.json \
             --output-format json
 
