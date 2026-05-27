@@ -82,9 +82,9 @@
         {
           "php-version": "8.2",
           "database": "mariadb:10.7",
-          "dependencies": "lowest",
+          "dependencies": "highest",
           "experimental": "false",
-          "require_admin_bundle" : "false",
+          "require_admin_bundle" : "true",
           "es_version": "8.4.3",
           "gotenberg_dns": "http://127.0.0.1:31234",
           "redis_dns": "redis://127.0.0.1:63379"
