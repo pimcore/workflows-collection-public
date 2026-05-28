@@ -76,7 +76,7 @@ jobs:
       - name: Read and modify composer.json
         id: update_composer
         run: |
-          EXCLUDES="${{ inputs.exclude-packages }}"
+          EXCLUDES="$(echo "${{ inputs.exclude-packages }}" | tr ',' ' ' | tr -s ' ')"
           original_content=$(cat composer.json)
           for conflict in $(echo "$original_content" | jq -r '.conflict | to_entries[] | @base64'); do
             _jq() {
