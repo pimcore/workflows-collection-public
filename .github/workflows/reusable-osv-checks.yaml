@@ -67,6 +67,16 @@ jobs:
         run: |
           composer config minimum-stability dev
           composer config prefer-stable true
+          # Disable Composer's audit-based pool filter so that package
+          # versions with open security advisories are not silently removed
+          # from the solver pool. OSV-Scanner (run later in this workflow)
+          # remains the source of truth for vulnerability reporting; allowing
+          # Composer to still resolve them is required so the SBOM reflects
+          # the actual installable set. Without this, a single advisory with
+          # a wide "affectedVersions" range (e.g. <=12.3.x catching 11.5.x)
+          # makes dependency resolution fail before the SBOM can be built.
+          composer config audit.abandoned ignore
+          composer config audit.block-insecure false
 
       - name: Read and modify composer.json
         id: update_composer
