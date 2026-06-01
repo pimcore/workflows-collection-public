@@ -107,14 +107,14 @@ jobs:
           php-version: ${{ matrix.php-version }}
 
       - name: "Install SSH Key"
-        if: ${{ inputs.private_repo }}
+        if: ${{ inputs.private_repo == 'true' }}
         uses: shimataro/ssh-key-action@v2.8.0
         with:
           key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
           known_hosts: ".... we add this in the next step ;-)"
 
       - name: "Add authentication for private pimcore packages"
-        if: ${{ inputs.private_repo }}
+        if: ${{ inputs.private_repo == 'true' }}
         run: |
           composer config repositories.private-packagist '{"type": "composer", "url": "https://repo.pimcore.com/github-actions/", "canonical": ${{ inputs.PRIVATE_PACKAGIST_CANONICAL }}}'
           composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
