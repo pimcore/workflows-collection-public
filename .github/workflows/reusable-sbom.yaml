@@ -182,12 +182,14 @@ jobs:
             echo "::group::$dir"
             (
               cd "$dir"
-              npm install --omit=dev --ignore-scripts --legacy-peer-deps --no-audit --no-fund && \
               cyclonedx-npm \
                 --output-format JSON \
                 --output-file "$out" \
                 --spec-version 1.6 \
-                --ignore-npm-errors
+                --ignore-npm-errors \
+                --omit dev \
+                --omit optional \
+                --package-lock-only
             )
             status=$?
             echo "::endgroup::"
