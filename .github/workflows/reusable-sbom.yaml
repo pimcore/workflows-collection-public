@@ -190,7 +190,8 @@ jobs:
                 --ignore-npm-errors \
                 --omit dev \
                 --omit optional \
-                --package-lock-only
+                --package-lock-only \
+                --flatten-components
             )
             status=$?
             echo "::endgroup::"
