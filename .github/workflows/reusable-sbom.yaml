@@ -182,6 +182,7 @@ jobs:
             echo "::group::$dir"
             (
               cd "$dir"
+              npm install --ignore-scripts --legacy-peer-deps --no-audit --no-fund && \
               cyclonedx-npm \
                 --output-format JSON \
                 --output-file "$out" \
