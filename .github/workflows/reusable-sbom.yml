@@ -108,7 +108,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.npm
-          key: ${{ runner.os }}-npm-${{ hashFiles('**/package.json') }}
+          key: ${{ runner.os }}-npm-${{ hashFiles('composer.lock', 'composer.json', 'package-lock.json') }}
           restore-keys: ${{ runner.os }}-npm-
 
       - name: Install SSH Key # required for Composer to clone source from pimcore/ee-pimcore
@@ -182,12 +182,16 @@ jobs:
             echo "::group::$dir"
             (
               cd "$dir"
-              npm install --ignore-scripts --legacy-peer-deps --no-audit --no-fund && \
+              npm install --package-lock-only --ignore-scripts --legacy-peer-deps --no-audit --no-fund && \
               cyclonedx-npm \
                 --output-format JSON \
                 --output-file "$out" \
                 --spec-version 1.6 \
-                --ignore-npm-errors
+                --ignore-npm-errors \
+                --omit dev \
+                --omit optional \
+                --package-lock-only \
+                --flatten-components
             )
             status=$?
             echo "::endgroup::"
@@ -240,17 +244,18 @@ jobs:
       - name: Merge SBOMs
         id: merge
         run: |
-          args=()
+          files=()
           for f in sbom/sbom-*.json; do
-            [ -f "$f" ] && args+=(--input-file "$f")
+            [ -f "$f" ] && files+=("$f")
           done
 
-          if [ ${#args[@]} -eq 0 ]; then
+          if [ ${#files[@]} -eq 0 ]; then
             echo "::error::No SBOM fragments were generated." >&2
             exit 1
           fi
 
-          cyclonedx merge "${args[@]}" \
+          cyclonedx merge \
+            --input-files "${files[@]}" \
             --output-file sbom/sbom.json \
             --output-format json
 
