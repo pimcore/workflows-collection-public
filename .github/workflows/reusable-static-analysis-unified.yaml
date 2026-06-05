@@ -17,10 +17,16 @@ on:
           {"include":[{"php-version":"8.2","dependencies":"highest","experimental":false}]}
 
       private_repo:
-        description: "Enable private repository authentication"
+        description: "Enable SSH key for private GitHub repository access"
         required: false
         type: string
         default: "false"
+
+      use_private_packagist:
+        description: "Configure auth for repo.pimcore.com private packagist"
+        required: false
+        type: string
+        default: "true"
 
       checkout_ref:
         description: "Git ref to checkout (auto-detects PR head if empty)"
@@ -114,7 +120,7 @@ jobs:
           known_hosts: ".... we add this in the next step ;-)"
 
       - name: "Add authentication for private pimcore packages"
-        if: ${{ inputs.private_repo == 'true' }}
+        if: ${{ inputs.use_private_packagist == 'true' }}
         run: |
           composer config repositories.private-packagist '{"type": "composer", "url": "https://repo.pimcore.com/github-actions/", "canonical": ${{ inputs.PRIVATE_PACKAGIST_CANONICAL }}}'
           composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
