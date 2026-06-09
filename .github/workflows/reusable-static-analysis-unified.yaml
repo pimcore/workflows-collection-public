@@ -17,7 +17,7 @@ on:
           {"include":[{"php-version":"8.2","dependencies":"highest","experimental":false}]}
 
       private_repo:
-        description: "Enable SSH key for private GitHub repository access"
+        description: "Install SSH key to clone private GitHub repos during Composer install (independent of whether the calling repo itself is public or private)"
         required: false
         type: string
         default: "false"
@@ -118,6 +118,12 @@ jobs:
         with:
           key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
           known_hosts: ".... we add this in the next step ;-)"
+
+      - name: "Add GitHub to known_hosts and redirect HTTPS to SSH"
+        if: ${{ inputs.private_repo == 'true' }}
+        run: |
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          git config --global url."git@github.com:".insteadOf "https://github.com/"
 
       - name: "Add authentication for private pimcore packages"
         if: ${{ inputs.use_private_packagist == 'true' }}
