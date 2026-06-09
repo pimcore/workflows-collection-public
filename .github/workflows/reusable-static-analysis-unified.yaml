@@ -120,7 +120,7 @@ jobs:
           known_hosts: ".... we add this in the next step ;-)"
 
       - name: "Add authentication for private pimcore packages"
-        if: ${{ inputs.use_private_packagist == 'true' }}
+        if: ${{ inputs.private_repo == 'true' }}
         run: |
           composer config repositories.private-packagist '{"type": "composer", "url": "https://repo.pimcore.com/github-actions/", "canonical": ${{ inputs.PRIVATE_PACKAGIST_CANONICAL }}}'
           composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
