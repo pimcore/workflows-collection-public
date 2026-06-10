@@ -89,7 +89,7 @@ jobs:
             package_name=$(_jq '.key')
             composer require "$package_name:*" --no-update
           done
-
+          
       - name: Allow SBOM Plugin
         if: ${{ inputs.composer-check-only == false }}
         run: composer config --no-plugins allow-plugins.cyclonedx/cyclonedx-php-composer true
@@ -97,6 +97,9 @@ jobs:
       - name: Install SBOM Plugin
         if: ${{ inputs.composer-check-only == false }}
         run: composer require cyclonedx/cyclonedx-php-composer
+
+      - name: Show resolved dependencies
+        run: composer show --locked || composer show
 
       - name: CREATE SBOM
         if: ${{ inputs.composer-check-only == false }}
