@@ -98,6 +98,9 @@ jobs:
         if: ${{ inputs.composer-check-only == false }}
         run: composer require cyclonedx/cyclonedx-php-composer
 
+      - name: Show resolved dependencies
+        run: composer show --locked || composer show
+
       - name: CREATE SBOM
         if: ${{ inputs.composer-check-only == false }}
         run: composer CycloneDX:make-sbom --output-file=sbom.json --output-format=json
