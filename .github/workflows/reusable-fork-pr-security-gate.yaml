@@ -124,7 +124,25 @@ jobs:
           # Strip empty lines from the pattern list
           printf '%s\n' "$HIGH_RISK_PATTERNS" | grep -v '^[[:space:]]*$' > /tmp/patterns.txt
 
-          if MATCHES=$(grep -E -f /tmp/patterns.txt /tmp/filenames.txt); then
+          # Capture grep's exit code explicitly: 0 = match, 1 = no match,
+          # anything else (e.g. invalid pattern) must fail closed instead of
+          # being silently treated as "no matches".
+          set +e
+          MATCHES=$(grep -E -f /tmp/patterns.txt /tmp/filenames.txt)
+          GREP_STATUS=$?
+          set -e
+
+          if [ "$GREP_STATUS" -ge 2 ]; then
+            echo "Pattern matching failed (grep exit code $GREP_STATUS, invalid pattern?) - failing closed."
+            {
+              echo "## :no_entry: Security gate failed - high-risk pattern list could not be evaluated"
+              echo ""
+              echo "Check the \`high_risk_patterns\` input for invalid regular expressions."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if [ "$GREP_STATUS" -eq 0 ]; then
             {
               echo "## :no_entry: Security gate failed - high-risk paths changed"
               echo ""
@@ -185,12 +203,22 @@ jobs:
       - name: "Prepare AI scan prompts"
         if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
         env:
-          # Repository hosting this reusable workflow and its prompt files
-          PROMPTS_REPO: "pimcore/workflows-collection-public"
-          # Pin the prompt to the exact commit of the reusable workflow being
-          # executed, so workflow and prompt can never drift apart.
-          PROMPTS_REF: ${{ github.job_workflow_sha || 'main' }}
+          # job.workflow_repository / job.workflow_sha identify the repository
+          # and exact commit of THIS reusable workflow file (not the caller),
+          # so workflow and prompt can never drift apart.
+          PROMPTS_REPO: ${{ job.workflow_repository }}
+          PROMPTS_REF: ${{ job.workflow_sha }}
         run: |
+          if [ -z "$PROMPTS_REPO" ] || [ -z "$PROMPTS_REF" ]; then
+            echo "Could not determine the reusable workflow repository/commit - failing closed."
+            {
+              echo "## :no_entry: Security gate failed - scan prompt location could not be resolved"
+              echo ""
+              echo "The gate fails closed. Re-run the job, or have a maintainer review the PR and apply the \`$SAFE_LABEL\` label."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
           # Fetched via the API on purpose: this job must stay checkout-free.
           gh api "repos/$PROMPTS_REPO/contents/prompts/fork-pr-security-gate.system.md?ref=$PROMPTS_REF" \
             -H "Accept: application/vnd.github.raw" > /tmp/system-prompt.txt
@@ -253,12 +281,13 @@ jobs:
               echo ""
               echo "A maintainer must review the PR manually and apply the \`$SAFE_LABEL\` label if it is a false positive."
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "AI scan verdict: fail"
-            echo "$REASONS"
+            # The reasons are attacker-influenced model output: keep them out
+            # of stdout (workflow-command/log injection); see the step summary.
+            echo "AI scan verdict: fail (see step summary for details)"
             exit 1
           else
-            echo "AI scan returned an unparseable verdict - failing closed."
-            echo "Raw content: $CONTENT"
+            # Raw content is attacker-influenced: never echo it to the logs.
+            echo "AI scan returned an unparseable verdict (response length: ${#CONTENT} chars) - failing closed."
             {
               echo "## :no_entry: Security gate failed - AI scan returned an unparseable verdict"
               echo ""
