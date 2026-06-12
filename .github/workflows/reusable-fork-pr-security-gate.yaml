@@ -84,13 +84,16 @@ jobs:
           fi
 
       - name: "Revoke stale safe-to-test label on new commits"
-        if: ${{ steps.classify.outputs.gate_required == 'true' && github.event.action == 'synchronize' }}
+        # pull_request_target only: on plain pull_request events from forks the
+        # GITHUB_TOKEN is read-only and the label DELETE would always fail.
+        if: ${{ steps.classify.outputs.gate_required == 'true' && github.event_name == 'pull_request_target' && github.event.action == 'synchronize' }}
         run: |
           # New commits invalidate any earlier maintainer approval: the label
           # must only ever cover code a maintainer has actually looked at.
           if gh api "repos/$REPO/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -Fxq "$SAFE_LABEL"; then
             echo "New commits pushed - revoking stale '$SAFE_LABEL' label."
-            gh api --method DELETE "repos/$REPO/issues/$PR_NUMBER/labels/$SAFE_LABEL"
+            ENCODED_LABEL=$(jq -rn --arg l "$SAFE_LABEL" '$l|@uri')
+            gh api --method DELETE "repos/$REPO/issues/$PR_NUMBER/labels/$ENCODED_LABEL"
             echo ":warning: New commits were pushed, the \`$SAFE_LABEL\` label was revoked. Re-review and re-apply it if the PR should bypass the gate." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "No '$SAFE_LABEL' label present, nothing to revoke."
@@ -162,13 +165,16 @@ jobs:
             exit 1
           fi
 
-          jq -r '.[] | "=== \(.filename) (\(.status)) ===\n\(.patch // "")\n"' /tmp/files.json > /tmp/diff.txt
+          # Emit unified-diff-style headers so the content matches what the
+          # system prompt tells the model to expect.
+          jq -r '.[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n--- a/\(.previous_filename // .filename)\n+++ b/\(.filename)\n\(.patch // "")\n"' /tmp/files.json > /tmp/diff.txt
 
-          SIZE_KB=$(( $(stat -c%s /tmp/diff.txt) / 1024 ))
-          echo "Diff size: ${SIZE_KB} KB (limit: ${MAX_DIFF_KB} KB)"
-          if [ "$SIZE_KB" -gt "$MAX_DIFF_KB" ]; then
+          SIZE_BYTES=$(stat -c%s /tmp/diff.txt)
+          MAX_DIFF_BYTES=$(( MAX_DIFF_KB * 1024 ))
+          echo "Diff size: ${SIZE_BYTES} bytes (limit: ${MAX_DIFF_BYTES} bytes / ${MAX_DIFF_KB} KB)"
+          if [ "$SIZE_BYTES" -gt "$MAX_DIFF_BYTES" ]; then
             {
-              echo "## :no_entry: Security gate failed - diff too large to scan (${SIZE_KB} KB > ${MAX_DIFF_KB} KB)"
+              echo "## :no_entry: Security gate failed - diff too large to scan (${SIZE_BYTES} bytes > ${MAX_DIFF_KB} KB)"
               echo ""
               echo "A maintainer must review the PR manually and apply the \`$SAFE_LABEL\` label."
             } >> "$GITHUB_STEP_SUMMARY"
