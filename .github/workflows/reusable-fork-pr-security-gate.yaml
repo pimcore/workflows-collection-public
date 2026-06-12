@@ -1,0 +1,277 @@
+name: "Fork PR Security Gate"
+
+on:
+  workflow_call:
+    inputs:
+      safe_to_test_label:
+        description: "Label maintainers add to bypass the gate after manually reviewing a high-risk PR"
+        required: false
+        type: string
+        default: "safe-to-test"
+      model:
+        description: "GitHub Models model id used for the AI scan"
+        required: false
+        type: string
+        default: "openai/gpt-4.1"
+      max_diff_kb:
+        description: "Maximum diff size in KB the AI scan accepts; larger PRs fail closed to the label flow"
+        required: false
+        type: number
+        default: 100
+      high_risk_patterns:
+        description: "Newline-separated grep -E patterns; changed paths matching any pattern fail the gate deterministically"
+        required: false
+        type: string
+        default: |
+          ^\.github/
+          (^|/)composer\.(json|lock)$
+          phpstan.*\.(neon|dist)
+          codeception.*\.(yml|yaml|dist)
+          (^|/)codeception/.*\.(yml|yaml|dist)
+          \.sh$
+          (^|/)package(-lock)?\.json$
+          (^|/)\.env
+    outputs:
+      verdict:
+        description: "trusted | label-override | pass (job failure means the gate rejected the PR)"
+        value: ${{ jobs.gate.outputs.verdict }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # explicit bash enables pipefail in addition to errexit
+    shell: bash
+
+jobs:
+  gate:
+    name: "Fork PR security gate"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # revoke stale safe-to-test labels on new pushes
+      models: read         # GitHub Models inference with GITHUB_TOKEN
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      EVENT_NAME: ${{ github.event_name }}
+      EVENT_ACTION: ${{ github.event.action }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      SAFE_LABEL: ${{ inputs.safe_to_test_label }}
+      MAX_DIFF_KB: ${{ inputs.max_diff_kb }}
+      HIGH_RISK_PATTERNS: ${{ inputs.high_risk_patterns }}
+
+    steps:
+      # NOTE: no actions/checkout anywhere in this job - the PR is analyzed
+      # exclusively as API data and must never be executed here.
+
+      - name: "Classify PR trust"
+        id: classify
+        run: |
+          if [ "$EVENT_NAME" != "pull_request_target" ] && [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "Not a pull request event ($EVENT_NAME) - trusted context."
+            echo "gate_required=false" >> "$GITHUB_OUTPUT"
+          elif [ "$HEAD_REPO" = "$REPO" ]; then
+            echo "Same-repository PR - trusted context."
+            echo "gate_required=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Fork PR from $HEAD_REPO - gate required."
+            echo "gate_required=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "Revoke stale safe-to-test label on new commits"
+        if: ${{ steps.classify.outputs.gate_required == 'true' && github.event.action == 'synchronize' }}
+        run: |
+          # New commits invalidate any earlier maintainer approval: the label
+          # must only ever cover code a maintainer has actually looked at.
+          if gh api "repos/$REPO/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -Fxq "$SAFE_LABEL"; then
+            echo "New commits pushed - revoking stale '$SAFE_LABEL' label."
+            gh api --method DELETE "repos/$REPO/issues/$PR_NUMBER/labels/$SAFE_LABEL"
+            echo ":warning: New commits were pushed, the \`$SAFE_LABEL\` label was revoked. Re-review and re-apply it if the PR should bypass the gate." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No '$SAFE_LABEL' label present, nothing to revoke."
+          fi
+
+      - name: "Check maintainer override label"
+        id: label
+        if: ${{ steps.classify.outputs.gate_required == 'true' }}
+        run: |
+          if gh api "repos/$REPO/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -Fxq "$SAFE_LABEL"; then
+            echo "Maintainer override: '$SAFE_LABEL' label present - skipping scan."
+            echo "label_present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "label_present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "Fetch changed files (API only)"
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        run: |
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" > /tmp/files.json
+          jq -r '.[].filename' /tmp/files.json > /tmp/filenames.txt
+          echo "Changed files:"
+          cat /tmp/filenames.txt
+
+      - name: "Deterministic high-risk path check"
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        run: |
+          # Strip empty lines from the pattern list
+          printf '%s\n' "$HIGH_RISK_PATTERNS" | grep -v '^[[:space:]]*$' > /tmp/patterns.txt
+
+          if MATCHES=$(grep -E -f /tmp/patterns.txt /tmp/filenames.txt); then
+            {
+              echo "## :no_entry: Security gate failed - high-risk paths changed"
+              echo ""
+              echo "This fork PR modifies files that are never auto-approved:"
+              echo ""
+              echo '```'
+              echo "$MATCHES"
+              echo '```'
+              echo ""
+              echo "A maintainer must review these changes manually and apply the \`$SAFE_LABEL\` label to run the secret-bearing tests."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "High-risk paths changed - failing closed:"
+            echo "$MATCHES"
+            exit 1
+          fi
+          echo "No high-risk paths changed."
+
+      - name: "Assemble diff from API data"
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        run: |
+          # Fail closed when any file has no patch available (binary or too
+          # large for the API) - content we cannot read is content we cannot
+          # clear.
+          UNSCANNABLE=$(jq -r '.[] | select(.patch == null) | .filename' /tmp/files.json)
+          if [ -n "$UNSCANNABLE" ]; then
+            {
+              echo "## :no_entry: Security gate failed - unscannable changes"
+              echo ""
+              echo "These files have no readable diff (binary or oversized):"
+              echo ""
+              echo '```'
+              echo "$UNSCANNABLE"
+              echo '```'
+              echo ""
+              echo "A maintainer must review the PR manually and apply the \`$SAFE_LABEL\` label."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "Unscannable files present - failing closed."
+            exit 1
+          fi
+
+          jq -r '.[] | "=== \(.filename) (\(.status)) ===\n\(.patch // "")\n"' /tmp/files.json > /tmp/diff.txt
+
+          SIZE_KB=$(( $(stat -c%s /tmp/diff.txt) / 1024 ))
+          echo "Diff size: ${SIZE_KB} KB (limit: ${MAX_DIFF_KB} KB)"
+          if [ "$SIZE_KB" -gt "$MAX_DIFF_KB" ]; then
+            {
+              echo "## :no_entry: Security gate failed - diff too large to scan (${SIZE_KB} KB > ${MAX_DIFF_KB} KB)"
+              echo ""
+              echo "A maintainer must review the PR manually and apply the \`$SAFE_LABEL\` label."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "Diff exceeds scan limit - failing closed."
+            exit 1
+          fi
+
+      - name: "Prepare AI scan prompts"
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        env:
+          # Repository hosting this reusable workflow and its prompt files
+          PROMPTS_REPO: "pimcore/workflows-collection-public"
+          # Pin the prompt to the exact commit of the reusable workflow being
+          # executed, so workflow and prompt can never drift apart.
+          PROMPTS_REF: ${{ github.job_workflow_sha || 'main' }}
+        run: |
+          # Fetched via the API on purpose: this job must stay checkout-free.
+          gh api "repos/$PROMPTS_REPO/contents/prompts/fork-pr-security-gate.system.md?ref=$PROMPTS_REF" \
+            -H "Accept: application/vnd.github.raw" > /tmp/system-prompt.txt
+
+          if [ ! -s /tmp/system-prompt.txt ]; then
+            echo "System prompt could not be loaded - failing closed."
+            {
+              echo "## :no_entry: Security gate failed - scan prompt unavailable"
+              echo ""
+              echo "The gate fails closed. Re-run the job, or have a maintainer review the PR and apply the \`$SAFE_LABEL\` label."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          {
+            echo "<diff>"
+            cat /tmp/diff.txt
+            echo "</diff>"
+          } > /tmp/user-prompt.txt
+
+      - name: "AI scan (GitHub Models)"
+        id: ai
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        uses: actions/ai-inference@a7805884c80886efc241e94a5351df715968a0ad # v2.1.1
+        with:
+          model: ${{ inputs.model }}
+          system-prompt-file: /tmp/system-prompt.txt
+          prompt-file: /tmp/user-prompt.txt
+          max-completion-tokens: 1000
+
+      - name: "AI scan unavailable - fail closed"
+        if: ${{ failure() && steps.ai.outcome == 'failure' }}
+        run: |
+          {
+            echo "## :no_entry: Security gate failed - AI scan unavailable"
+            echo ""
+            echo "The gate fails closed. Re-run the job, or have a maintainer review the PR and apply the \`$SAFE_LABEL\` label."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Evaluate AI verdict"
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        env:
+          # The model response is derived from attacker-controlled diff content:
+          # always handle it as a file/env value, never inline it with ${{ }}.
+          RESPONSE_FILE: ${{ steps.ai.outputs.response-file }}
+        run: |
+          CONTENT=$(cat "$RESPONSE_FILE" 2>/dev/null || true)
+          # Defensively strip markdown fences before parsing
+          VERDICT=$(printf '%s' "$CONTENT" | sed 's/```json//g; s/```//g' | jq -r '.verdict // empty' 2>/dev/null || true)
+
+          if [ "$VERDICT" = "pass" ]; then
+            echo "AI scan verdict: pass"
+            echo "## :white_check_mark: Security gate passed - AI scan found no CI-abuse patterns" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$VERDICT" = "fail" ]; then
+            REASONS=$(printf '%s' "$CONTENT" | sed 's/```json//g; s/```//g' | jq -r '.reasons[]? // empty' 2>/dev/null || true)
+            {
+              echo "## :no_entry: Security gate failed - AI scan flagged this PR"
+              echo ""
+              echo "$REASONS" | sed 's/^/- /'
+              echo ""
+              echo "A maintainer must review the PR manually and apply the \`$SAFE_LABEL\` label if it is a false positive."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "AI scan verdict: fail"
+            echo "$REASONS"
+            exit 1
+          else
+            echo "AI scan returned an unparseable verdict - failing closed."
+            echo "Raw content: $CONTENT"
+            {
+              echo "## :no_entry: Security gate failed - AI scan returned an unparseable verdict"
+              echo ""
+              echo "The gate fails closed. Re-run the job, or have a maintainer review the PR and apply the \`$SAFE_LABEL\` label."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: "Verdict"
+        id: verdict
+        run: |
+          if [ "${{ steps.classify.outputs.gate_required }}" != "true" ]; then
+            echo "verdict=trusted" >> "$GITHUB_OUTPUT"
+            echo "Verdict: trusted (no gate required)"
+          elif [ "${{ steps.label.outputs.label_present }}" = "true" ]; then
+            echo "verdict=label-override" >> "$GITHUB_OUTPUT"
+            echo "Verdict: label-override (maintainer-approved via '$SAFE_LABEL')"
+            echo "## :white_check_mark: Security gate passed - maintainer override via \`$SAFE_LABEL\` label" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "verdict=pass" >> "$GITHUB_OUTPUT"
+            echo "Verdict: pass (hard rules + AI scan clean)"
+          fi
