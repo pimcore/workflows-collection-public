@@ -246,7 +246,8 @@ jobs:
 
           {
             echo "<diff>"
-            cat /tmp/diff.txt
+            # Prevent delimiter injection in attacker-controlled diff content
+            sed -e 's#</diff>#</diff-redacted>#g' -e 's#<diff>#<diff-redacted>#g' /tmp/diff.txt
             echo "</diff>"
           } > /tmp/user-prompt.txt
 
