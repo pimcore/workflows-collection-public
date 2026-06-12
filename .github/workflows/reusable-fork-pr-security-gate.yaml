@@ -115,8 +115,18 @@ jobs:
         run: |
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" > /tmp/files.json
           jq -r '.[].filename' /tmp/files.json > /tmp/filenames.txt
-          echo "Changed files:"
-          cat /tmp/filenames.txt
+          # Filenames are attacker-controlled: keep them out of stdout
+          # (workflow-command/log injection) and list them in the step summary
+          # instead, with backticks stripped so they cannot escape the fence.
+          echo "Changed files: $(wc -l < /tmp/filenames.txt)"
+          {
+            echo "<details><summary>Changed files</summary>"
+            echo ""
+            echo '```'
+            tr -d '`' < /tmp/filenames.txt
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: "Deterministic high-risk path check"
         if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
@@ -149,13 +159,14 @@ jobs:
               echo "This fork PR modifies files that are never auto-approved:"
               echo ""
               echo '```'
-              echo "$MATCHES"
+              printf '%s\n' "$MATCHES" | tr -d '`'
               echo '```'
               echo ""
               echo "A maintainer must review these changes manually and apply the \`$SAFE_LABEL\` label to run the secret-bearing tests."
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "High-risk paths changed - failing closed:"
-            echo "$MATCHES"
+            # Matched paths are attacker-controlled: keep them out of stdout
+            # (workflow-command/log injection); see the step summary.
+            echo "High-risk paths changed - failing closed (see step summary)."
             exit 1
           fi
           echo "No high-risk paths changed."
@@ -174,7 +185,7 @@ jobs:
               echo "These files have no readable diff (binary or oversized):"
               echo ""
               echo '```'
-              echo "$UNSCANNABLE"
+              printf '%s\n' "$UNSCANNABLE" | tr -d '`'
               echo '```'
               echo ""
               echo "A maintainer must review the PR manually and apply the \`$SAFE_LABEL\` label."
