@@ -126,7 +126,11 @@ jobs:
       - name: "Fetch changed files (API only)"
         if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
         run: |
-          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" > /tmp/files.json
+          # --paginate emits one JSON array per page; applying --jq '.[]'
+          # streams the elements of every page, then jq -s merges them into a
+          # single valid array regardless of how many pages there were.
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" --jq '.[]' \
+            | jq -s '.' > /tmp/files.json
           jq -r '.[].filename' /tmp/files.json > /tmp/filenames.txt
           # Filenames are attacker-controlled: keep them out of stdout
           # (workflow-command/log injection) and list them in the step summary
@@ -267,6 +271,9 @@ jobs:
       - name: "AI scan (GitHub Models)"
         id: ai
         if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        # Do not abort the job on failure: the next step inspects the outcome
+        # and emits a controlled fail-closed result instead.
+        continue-on-error: true
         uses: actions/ai-inference@a7805884c80886efc241e94a5351df715968a0ad # v2.1.1
         with:
           model: ${{ inputs.model }}
@@ -274,22 +281,26 @@ jobs:
           prompt-file: /tmp/user-prompt.txt
           max-completion-tokens: 1000
 
-      - name: "AI scan unavailable - fail closed"
-        if: ${{ failure() && steps.ai.outcome == 'failure' }}
-        run: |
-          {
-            echo "## :no_entry: Security gate failed - AI scan unavailable"
-            echo ""
-            echo "The gate fails closed. Re-run the job, or have a maintainer review the PR and apply the \`$SAFE_LABEL\` label."
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: "Evaluate AI verdict"
         if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
         env:
+          AI_OUTCOME: ${{ steps.ai.outcome }}
           # The model response is derived from attacker-controlled diff content:
           # always handle it as a file/env value, never inline it with ${{ }}.
           RESPONSE_FILE: ${{ steps.ai.outputs.response-file }}
         run: |
+          # Fail closed explicitly if the scan step did not succeed, rather
+          # than relying on failure() propagation.
+          if [ "$AI_OUTCOME" != "success" ]; then
+            echo "AI scan did not succeed (outcome: $AI_OUTCOME) - failing closed."
+            {
+              echo "## :no_entry: Security gate failed - AI scan unavailable"
+              echo ""
+              echo "The gate fails closed. Re-run the job, or have a maintainer review the PR and apply the \`$SAFE_LABEL\` label."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
           CONTENT=$(cat "$RESPONSE_FILE" 2>/dev/null || true)
           # Defensively strip markdown fences before parsing
           VERDICT=$(printf '%s' "$CONTENT" | sed 's/```json//g; s/```//g' | jq -r '.verdict // empty' 2>/dev/null || true)
