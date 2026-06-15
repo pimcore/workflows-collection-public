@@ -9,15 +9,15 @@ on:
         type: string
         default: "safe-to-test"
       model:
-        description: "GitHub Models model id used for the AI scan"
+        description: "GitHub Models model id used for the AI scan. A small model is the default to conserve the metered request/token budget; override for higher-stakes repos."
         required: false
         type: string
-        default: "openai/gpt-4.1"
+        default: "openai/gpt-4o-mini"
       max_diff_kb:
-        description: "Maximum diff size in KB the AI scan accepts; larger PRs fail closed to the label flow"
+        description: "Maximum size in KB of the (code-only, context-stripped) scan diff. Kept within typical model input limits; larger PRs fail closed to the label flow."
         required: false
         type: number
-        default: 100
+        default: 24
       high_risk_patterns:
         description: "Newline-separated grep -E patterns; changed paths matching any pattern fail the gate deterministically"
         required: false
@@ -38,6 +38,13 @@ on:
 
 permissions:
   contents: read
+
+# Cancel an in-flight gate run when the PR gets new commits, so a burst of
+# pushes costs at most one AI scan instead of one per push. Keyed per PR
+# (falls back to ref for non-PR events).
+concurrency:
+  group: fork-pr-security-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -188,18 +195,35 @@ jobs:
           fi
           echo "No high-risk paths changed."
 
-      - name: "Assemble diff from API data"
+      - name: "Assemble scan diff from API data"
+        id: assemble
         if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        env:
+          # Files whose contents can execute in CI. Anything else (docs,
+          # translations, images, fixtures) that survived the high-risk path
+          # rules carries negligible execution risk and is not worth a metered
+          # AI call.
+          CODE_FILE_REGEX: '\.(php|phtml|phar|inc|sh|bash|zsh|js|cjs|mjs|ts|twig|ya?ml|neon|xml|dist|sql|py|rb|pl|ps1|bat)$|(^|/)(Dockerfile|Makefile|composer\.json)$'
         run: |
-          # Fail closed when any file has no patch available (binary or too
+          # Lever: only code-bearing files need the AI scan. If a PR changes no
+          # executable files, pass without spending a request/token budget.
+          grep -E "$CODE_FILE_REGEX" /tmp/filenames.txt > /tmp/code-files.txt || true
+          if [ ! -s /tmp/code-files.txt ]; then
+            echo "No code-bearing files changed - skipping AI scan (no execution risk)."
+            echo "## :white_check_mark: Security gate passed - no executable files changed (AI scan skipped)" >> "$GITHUB_STEP_SUMMARY"
+            echo "scan_needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Fail closed when a CODE file has no readable patch (binary or too
           # large for the API) - content we cannot read is content we cannot
-          # clear.
-          UNSCANNABLE=$(jq -r '.[] | select(.patch == null) | .filename' /tmp/files.json)
+          # clear. Non-code unreadable files are irrelevant and ignored.
+          UNSCANNABLE=$(jq -r --arg re "$CODE_FILE_REGEX" '.[] | select(.filename | test($re)) | select(.patch == null) | .filename' /tmp/files.json)
           if [ -n "$UNSCANNABLE" ]; then
             {
-              echo "## :no_entry: Security gate failed - unscannable changes"
+              echo "## :no_entry: Security gate failed - unscannable code changes"
               echo ""
-              echo "These files have no readable diff (binary or oversized):"
+              echo "These code files have no readable diff (binary or oversized):"
               echo ""
               echo '```'
               printf '%s\n' "$UNSCANNABLE" | tr -d '`'
@@ -207,17 +231,24 @@ jobs:
               echo ""
               echo "A maintainer must review the PR manually and apply the \`$SAFE_LABEL\` label."
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "Unscannable files present - failing closed."
+            echo "Unscannable code files present - failing closed."
             exit 1
           fi
 
-          # Emit unified-diff-style headers so the content matches what the
-          # system prompt tells the model to expect.
-          jq -r '.[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n--- a/\(.previous_filename // .filename)\n+++ b/\(.filename)\n\(.patch // "")\n"' /tmp/files.json > /tmp/diff.txt
+          # Assemble a code-only diff with a unified-diff-style header per file.
+          jq -r --arg re "$CODE_FILE_REGEX" '
+            .[] | select(.filename | test($re))
+            | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch // "")\n"
+          ' /tmp/files.json > /tmp/diff.full.txt
+
+          # Lever: send only file headers, hunk locations (@@) and ADDED lines
+          # to the model - the code that will actually execute. Dropping context
+          # and removed lines cuts tokens substantially with little signal loss.
+          grep -E '^(diff --git |@@|\+)' /tmp/diff.full.txt > /tmp/diff.txt || true
 
           SIZE_BYTES=$(stat -c%s /tmp/diff.txt)
           MAX_DIFF_BYTES=$(( MAX_DIFF_KB * 1024 ))
-          echo "Diff size: ${SIZE_BYTES} bytes (limit: ${MAX_DIFF_BYTES} bytes / ${MAX_DIFF_KB} KB)"
+          echo "Scan diff size: ${SIZE_BYTES} bytes (limit: ${MAX_DIFF_BYTES} bytes / ${MAX_DIFF_KB} KB)"
           if [ "$SIZE_BYTES" -gt "$MAX_DIFF_BYTES" ]; then
             {
               echo "## :no_entry: Security gate failed - diff too large to scan (${SIZE_BYTES} bytes > ${MAX_DIFF_KB} KB)"
@@ -227,9 +258,10 @@ jobs:
             echo "Diff exceeds scan limit - failing closed."
             exit 1
           fi
+          echo "scan_needed=true" >> "$GITHUB_OUTPUT"
 
       - name: "Prepare AI scan prompts"
-        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' && steps.assemble.outputs.scan_needed == 'true' }}
         env:
           # job.workflow_repository / job.workflow_sha identify the repository
           # and exact commit of THIS reusable workflow file (not the caller),
@@ -270,7 +302,7 @@ jobs:
 
       - name: "AI scan (GitHub Models)"
         id: ai
-        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' && steps.assemble.outputs.scan_needed == 'true' }}
         # Do not abort the job on failure: the next step inspects the outcome
         # and emits a controlled fail-closed result instead.
         continue-on-error: true
@@ -282,7 +314,7 @@ jobs:
           max-completion-tokens: 1000
 
       - name: "Evaluate AI verdict"
-        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' && steps.assemble.outputs.scan_needed == 'true' }}
         env:
           AI_OUTCOME: ${{ steps.ai.outcome }}
           # The model response is derived from attacker-controlled diff content:
@@ -349,6 +381,9 @@ jobs:
             echo "verdict=label-override" >> "$GITHUB_OUTPUT"
             echo "Verdict: label-override (maintainer-approved via '$SAFE_LABEL')"
             echo "## :white_check_mark: Security gate passed - maintainer override via \`$SAFE_LABEL\` label" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ steps.assemble.outputs.scan_needed }}" != "true" ]; then
+            echo "verdict=pass" >> "$GITHUB_OUTPUT"
+            echo "Verdict: pass (hard rules clean; no executable files changed, AI scan skipped)"
           else
             echo "verdict=pass" >> "$GITHUB_OUTPUT"
             echo "Verdict: pass (hard rules + AI scan clean)"
