@@ -302,7 +302,14 @@ jobs:
             {
               echo "## :no_entry: Security gate failed - AI scan flagged this PR"
               echo ""
-              echo "$REASONS" | sed 's/^/- /'
+              echo "Reasons reported by the scan (untrusted model output, shown verbatim):"
+              echo ""
+              # Render inside a code fence with backticks stripped so this
+              # attacker-influenced text cannot inject markdown (links, images,
+              # formatting) into the summary.
+              echo '```'
+              printf '%s\n' "$REASONS" | tr -d '`'
+              echo '```'
               echo ""
               echo "A maintainer must review the PR manually and apply the \`$SAFE_LABEL\` label if it is a false positive."
             } >> "$GITHUB_STEP_SUMMARY"
