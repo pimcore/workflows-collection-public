@@ -16,6 +16,8 @@ Decide whether executing this code in a CI job that holds sensitive CI credentia
 
 Judge by EFFECT, not destination: the real question is "could this move secrets/env/files off the runner, or run attacker-controlled commands?" A familiar host, library, or service name is not evidence of safety. A legitimate HTTP call in normal application code (not reading env/secrets, not in CI/test/build orchestration) is not by itself a reason to fail.
 
+Judge ONLY what the diff actually does, never what it could be changed to do later. Every new commit on the pull request is re-scanned, so a future malicious edit will be caught when it lands - do NOT fail a change on speculation such as "this static request could be modified to include secret data" or "this could be abused if changed". If the code as written sends no env/secret/credential/file data and fetches nothing that is executed, that is a pass for that line.
+
 Return verdict "pass" only when every change is clearly an ordinary application, test, or documentation change. When uncertain, return "fail".
 
 Respond with exactly one JSON object and nothing else, no markdown fences:
