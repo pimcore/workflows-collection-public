@@ -215,8 +215,10 @@ jobs:
           composer config repositories.private-packagist '{"type": "composer", "url": "https://repo.pimcore.com/github-actions/", "canonical": ${{ inputs.PRIVATE_PACKAGIST_CANONICAL }}}'
           composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
 
-      - name: "Configure Composer audit block insecure to false for lowest dependencies"
-        if: ${{ inputs.DEPENDENCIES == 'lowest' }}
+      - name: "Configure Composer audit block insecure to false"
+        # CI must be able to install the pinned dependency versions even when they are affected by
+        # published advisories — supported LTS lines (e.g. Pimcore 11.x) carry open advisories
+        # across their whole version range, so this applies to highest and lowest alike.
         run: composer config audit.block-insecure false
 
       - name: "Update Pimcore version"
