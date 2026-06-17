@@ -9,7 +9,7 @@ on:
         type: string
         default: "safe-to-test"
       model:
-        description: "GitHub Models model id used for the AI scan. A small model is the default to conserve the metered request/token budget; override for higher-stakes repos."
+        description: "GitHub Models model id used for the AI scan. A small model is the default"
         required: false
         type: string
         default: "openai/gpt-4o-mini"
