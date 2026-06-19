@@ -17,7 +17,7 @@ on:
         description: "Maximum size in KB of the (code-only, context-stripped) scan diff. Kept within typical model input limits; larger PRs fail closed to the label flow."
         required: false
         type: number
-        default: 24
+        default: 48
       high_risk_patterns:
         description: "Newline-separated grep -E patterns; changed paths matching any pattern fail the gate deterministically"
         required: false
