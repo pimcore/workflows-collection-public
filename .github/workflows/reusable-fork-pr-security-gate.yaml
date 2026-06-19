@@ -378,15 +378,19 @@ jobs:
 
       - name: "Verdict"
         id: verdict
+        env:
+          GATE_REQUIRED: ${{ steps.classify.outputs.gate_required }}
+          LABEL_PRESENT: ${{ steps.label.outputs.label_present }}
+          SCAN_NEEDED: ${{ steps.assemble.outputs.scan_needed }}
         run: |
-          if [ "${{ steps.classify.outputs.gate_required }}" != "true" ]; then
+          if [ "$GATE_REQUIRED" != "true" ]; then
             echo "verdict=trusted" >> "$GITHUB_OUTPUT"
             echo "Verdict: trusted (no gate required)"
-          elif [ "${{ steps.label.outputs.label_present }}" = "true" ]; then
+          elif [ "$LABEL_PRESENT" = "true" ]; then
             echo "verdict=label-override" >> "$GITHUB_OUTPUT"
             echo "Verdict: label-override (maintainer-approved via '$SAFE_LABEL')"
             echo "## :white_check_mark: Security gate passed - maintainer override via \`$SAFE_LABEL\` label" >> "$GITHUB_STEP_SUMMARY"
-          elif [ "${{ steps.assemble.outputs.scan_needed }}" != "true" ]; then
+          elif [ "$SCAN_NEEDED" != "true" ]; then
             echo "verdict=pass" >> "$GITHUB_OUTPUT"
             echo "Verdict: pass (hard rules clean; no executable files changed, AI scan skipped)"
           else
