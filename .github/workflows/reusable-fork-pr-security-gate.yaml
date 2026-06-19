@@ -69,10 +69,14 @@ jobs:
       SAFE_LABEL: ${{ inputs.safe_to_test_label }}
       MAX_DIFF_KB: ${{ inputs.max_diff_kb }}
       HIGH_RISK_PATTERNS: ${{ inputs.high_risk_patterns }}
+      WORK_DIR: /tmp/gate-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       # NOTE: no actions/checkout anywhere in this job - the PR is analyzed
       # exclusively as API data and must never be executed here.
+
+      - name: "Set up isolated workspace"
+        run: mkdir -p "$WORK_DIR"
 
       - name: "Classify PR trust"
         id: classify
@@ -137,17 +141,17 @@ jobs:
           # streams the elements of every page, then jq -s merges them into a
           # single valid array regardless of how many pages there were.
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" --jq '.[]' \
-            | jq -s '.' > /tmp/files.json
-          jq -r '.[].filename' /tmp/files.json > /tmp/filenames.txt
+            | jq -s '.' > $WORK_DIR/files.json
+          jq -r '.[].filename' $WORK_DIR/files.json > $WORK_DIR/filenames.txt
           # Filenames are attacker-controlled: keep them out of stdout
           # (workflow-command/log injection) and list them in the step summary
           # instead, with backticks stripped so they cannot escape the fence.
-          echo "Changed files: $(wc -l < /tmp/filenames.txt)"
+          echo "Changed files: $(wc -l < $WORK_DIR/filenames.txt)"
           {
             echo "<details><summary>Changed files</summary>"
             echo ""
             echo '```'
-            tr -d '`' < /tmp/filenames.txt
+            tr -d '`' < $WORK_DIR/filenames.txt
             echo '```'
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -156,13 +160,13 @@ jobs:
         if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
         run: |
           # Strip empty lines from the pattern list
-          printf '%s\n' "$HIGH_RISK_PATTERNS" | grep -v '^[[:space:]]*$' > /tmp/patterns.txt
+          printf '%s\n' "$HIGH_RISK_PATTERNS" | grep -v '^[[:space:]]*$' > $WORK_DIR/patterns.txt
 
           # Capture grep's exit code explicitly: 0 = match, 1 = no match,
           # anything else (e.g. invalid pattern) must fail closed instead of
           # being silently treated as "no matches".
           set +e
-          MATCHES=$(grep -E -f /tmp/patterns.txt /tmp/filenames.txt)
+          MATCHES=$(grep -E -f $WORK_DIR/patterns.txt $WORK_DIR/filenames.txt)
           GREP_STATUS=$?
           set -e
 
@@ -207,8 +211,8 @@ jobs:
         run: |
           # Lever: only code-bearing files need the AI scan. If a PR changes no
           # executable files, pass without spending a request/token budget.
-          grep -E "$CODE_FILE_REGEX" /tmp/filenames.txt > /tmp/code-files.txt || true
-          if [ ! -s /tmp/code-files.txt ]; then
+          grep -E "$CODE_FILE_REGEX" $WORK_DIR/filenames.txt > $WORK_DIR/code-files.txt || true
+          if [ ! -s $WORK_DIR/code-files.txt ]; then
             echo "No code-bearing files changed - skipping AI scan (no execution risk)."
             echo "## :white_check_mark: Security gate passed - no executable files changed (AI scan skipped)" >> "$GITHUB_STEP_SUMMARY"
             echo "scan_needed=false" >> "$GITHUB_OUTPUT"
@@ -218,7 +222,7 @@ jobs:
           # Fail closed when a CODE file has no readable patch (binary or too
           # large for the API) - content we cannot read is content we cannot
           # clear. Non-code unreadable files are irrelevant and ignored.
-          UNSCANNABLE=$(jq -r --arg re "$CODE_FILE_REGEX" '.[] | select(.filename | test($re)) | select(.patch == null) | .filename' /tmp/files.json)
+          UNSCANNABLE=$(jq -r --arg re "$CODE_FILE_REGEX" '.[] | select(.filename | test($re)) | select(.patch == null) | .filename' $WORK_DIR/files.json)
           if [ -n "$UNSCANNABLE" ]; then
             {
               echo "## :no_entry: Security gate failed - unscannable code changes"
@@ -239,14 +243,14 @@ jobs:
           jq -r --arg re "$CODE_FILE_REGEX" '
             .[] | select(.filename | test($re))
             | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch // "")\n"
-          ' /tmp/files.json > /tmp/diff.full.txt
+          ' $WORK_DIR/files.json > $WORK_DIR/diff.full.txt
 
           # Lever: send only file headers, hunk locations (@@) and ADDED lines
           # to the model - the code that will actually execute. Dropping context
           # and removed lines cuts tokens substantially with little signal loss.
-          grep -E '^(diff --git |@@|\+)' /tmp/diff.full.txt > /tmp/diff.txt || true
+          grep -E '^(diff --git |@@|\+)' $WORK_DIR/diff.full.txt > $WORK_DIR/diff.txt || true
 
-          SIZE_BYTES=$(stat -c%s /tmp/diff.txt)
+          SIZE_BYTES=$(stat -c%s $WORK_DIR/diff.txt)
           MAX_DIFF_BYTES=$(( MAX_DIFF_KB * 1024 ))
           echo "Scan diff size: ${SIZE_BYTES} bytes (limit: ${MAX_DIFF_BYTES} bytes / ${MAX_DIFF_KB} KB)"
           if [ "$SIZE_BYTES" -gt "$MAX_DIFF_BYTES" ]; then
@@ -281,9 +285,9 @@ jobs:
 
           # Fetched via the API on purpose: this job must stay checkout-free.
           gh api "repos/$PROMPTS_REPO/contents/prompts/fork-pr-security-gate.system.md?ref=$PROMPTS_REF" \
-            -H "Accept: application/vnd.github.raw" > /tmp/system-prompt.txt
+            -H "Accept: application/vnd.github.raw" > $WORK_DIR/system-prompt.txt
 
-          if [ ! -s /tmp/system-prompt.txt ]; then
+          if [ ! -s $WORK_DIR/system-prompt.txt ]; then
             echo "System prompt could not be loaded - failing closed."
             {
               echo "## :no_entry: Security gate failed - scan prompt unavailable"
@@ -296,9 +300,9 @@ jobs:
           {
             echo "<diff>"
             # Prevent delimiter injection in attacker-controlled diff content
-            sed -e 's#</diff>#</diff-redacted>#g' -e 's#<diff>#<diff-redacted>#g' /tmp/diff.txt
+            sed -e 's#</diff>#</diff-redacted>#g' -e 's#<diff>#<diff-redacted>#g' $WORK_DIR/diff.txt
             echo "</diff>"
-          } > /tmp/user-prompt.txt
+          } > $WORK_DIR/user-prompt.txt
 
       - name: "AI scan (GitHub Models)"
         id: ai
@@ -309,8 +313,8 @@ jobs:
         uses: actions/ai-inference@a7805884c80886efc241e94a5351df715968a0ad # v2.1.1
         with:
           model: ${{ inputs.model }}
-          system-prompt-file: /tmp/system-prompt.txt
-          prompt-file: /tmp/user-prompt.txt
+          system-prompt-file: ${{ env.WORK_DIR }}/system-prompt.txt
+          prompt-file: ${{ env.WORK_DIR }}/user-prompt.txt
           max-completion-tokens: 1000
 
       - name: "Evaluate AI verdict"
