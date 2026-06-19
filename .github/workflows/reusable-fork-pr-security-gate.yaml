@@ -397,3 +397,10 @@ jobs:
             echo "verdict=pass" >> "$GITHUB_OUTPUT"
             echo "Verdict: pass (hard rules + AI scan clean)"
           fi
+
+      - name: "Comment gate result on PR"
+        if: ${{ failure() && steps.classify.outputs.gate_required == 'true' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body ":no_entry: **Security gate failed** — see the [job summary]($RUN_URL) for details. A maintainer must review and apply the \`$SAFE_LABEL\` label to proceed."
