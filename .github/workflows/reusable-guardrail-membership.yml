@@ -1,0 +1,103 @@
+name: "Reusable Guardrail: Dev-Team membership"
+
+# Fast-path guardrail. If the PR author is a member of the "Dev-Team" group the
+# PR is accepted and exempt from the linked-issue requirement (the orchestrator
+# uses the `is_member` output to skip the issue-link stage). Non-members are NOT
+# blocked here, so this workflow never converts a PR to draft and always succeeds.
+#
+# Called by parent-pr-guardrails.yml in the caller's pull_request_target context.
+
+on:
+  workflow_call:
+    secrets:
+      MEMBERSHIP_GUARD_TOKEN:
+        required: true
+    outputs:
+      is_member:
+        description: "true when the PR author is an active Dev-Team member"
+        value: ${{ jobs.membership.outputs.is_member }}
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  membership:
+    name: "Guardrail: Dev-Team membership"
+    runs-on: ubuntu-latest
+    outputs:
+      is_member: ${{ steps.check.outputs.is_member }}
+    steps:
+      # Checks out this (trusted, public) collection repo to load lib.js
+      # (never the PR head). Public repo → no token needed for checkout.
+      - uses: actions/checkout@v4
+        with:
+          repository: pimcore/workflows-collection-public
+          ref: feature/pr-guardrails
+          path: _central
+
+      - id: check
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.MEMBERSHIP_GUARD_TOKEN }}
+          script: |
+            const lib = require(`${process.env.GITHUB_WORKSPACE}/_central/scripts/guardrails/lib.js`);
+            const marker = 'guardrail:membership';
+
+            // Resolve the PR(s) for this event. On pull_request_target there is
+            // exactly one; on check_suite resolve from the payload / commit.
+            async function resolvePrs() {
+              if (context.payload.pull_request) return [context.payload.pull_request];
+              if (context.eventName === 'check_suite') {
+                const cs = context.payload.check_suite;
+                let prs = cs.pull_requests || [];
+                if (prs.length === 0) {
+                  const { data } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                    ...context.repo, commit_sha: cs.head_sha,
+                  });
+                  prs = data;
+                }
+                // check_suite PR entries lack `user`; fetch the full PR for the author.
+                const full = [];
+                for (const p of prs) {
+                  const { data } = await github.rest.pulls.get({ ...context.repo, pull_number: p.number });
+                  full.push(data);
+                }
+                return full;
+              }
+              return [];
+            }
+
+            const prs = await resolvePrs();
+            if (prs.length === 0) {
+              core.info('No pull request for this event; treating as non-member.');
+              core.setOutput('is_member', 'false');
+              return;
+            }
+
+            // is_member is 'true' only if EVERY associated PR author is a member
+            // (so if any non-member PR is in scope, the other guardrails still run).
+            let allMembers = true;
+            for (const pr of prs) {
+              const author = pr.user.login;
+              const member = await lib.isDevTeamMember({ github, username: author });
+              if (!member) allMembers = false;
+              core.info(`${author} (PR #${pr.number}): member=${member}`);
+
+              // Comment only on the direct PR event (avoids noise on check_suite).
+              if (context.eventName === 'pull_request_target') {
+                if (member) {
+                  await lib.upsertComment({
+                    github, context, issueNumber: pr.number, marker,
+                    body: `✅ **Dev-Team membership guardrail passed** — @${author} is a member of \`${lib.ORG}/${lib.TEAM_SLUG}\`. This PR is exempt from all other guardrails.`,
+                  });
+                } else {
+                  await lib.upsertComment({
+                    github, context, issueNumber: pr.number, marker,
+                    body: `ℹ️ @${author} is **not** a member of \`${lib.ORG}/${lib.TEAM_SLUG}\`, so the remaining guardrails apply: link a valid issue in \`${lib.ISSUE_REPO_OWNER}/${lib.ISSUE_REPO_NAME}\` and pass CI.`,
+                  });
+                }
+              }
+            }
+            core.setOutput('is_member', allMembers ? 'true' : 'false');

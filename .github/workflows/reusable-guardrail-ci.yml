@@ -1,0 +1,155 @@
+name: "Reusable Guardrail: CI & merge readiness"
+
+# Enforcing guardrail. Requires that the PR is mergeable (no conflicts with the
+# base branch) AND that all CI checks/statuses on the head commit succeed. While
+# checks or the mergeability computation are still in progress the guardrail stays
+# neutral (it does not draft). On a definitive failure the PR is converted to
+# draft with an explanatory comment. The guardrail ignores its own "Guardrail:"
+# checks to avoid self-deadlock. Runs on PR events and on check_suite completion.
+#
+# Called by parent-pr-guardrails.yml in the caller's event context.
+
+on:
+  workflow_call:
+    secrets:
+      CI_GUARD_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  checks: read
+  statuses: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  ci:
+    name: "Guardrail: CI & merge readiness"
+    runs-on: ubuntu-latest
+    steps:
+      # Checks out this (trusted, public) collection repo to load lib.js
+      # (never the PR head). Public repo → no token needed for checkout.
+      - uses: actions/checkout@v4
+        with:
+          repository: pimcore/workflows-collection-public
+          ref: feature/pr-guardrails
+          path: _central
+
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.CI_GUARD_TOKEN }}
+          script: |
+            const lib = require(`${process.env.GITHUB_WORKSPACE}/_central/scripts/guardrails/lib.js`);
+            const marker = 'guardrail:ci-status';
+            const SELF_PREFIX = 'Guardrail:'; // ignore our own guardrail checks
+
+            // Resolve the set of PRs to evaluate for this event.
+            async function resolvePrNumbers() {
+              if (context.payload.pull_request) return [context.payload.pull_request.number];
+              if (context.eventName === 'check_suite') {
+                const cs = context.payload.check_suite;
+                let prs = cs.pull_requests || [];
+                if (prs.length === 0) {
+                  const { data } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                    ...context.repo,
+                    commit_sha: cs.head_sha,
+                  });
+                  prs = data;
+                }
+                return prs.map((p) => p.number);
+              }
+              return [];
+            }
+
+            const evaluate = async (prNumber) => {
+              // Fetch PR, polling until `mergeable` is computed.
+              const pr = await lib.getMergeablePullRequest({ github, ...context.repo, prNumber });
+              if (pr.state !== 'open') {
+                core.info(`PR #${prNumber} is ${pr.state}; skipping.`);
+                return null;
+              }
+              if (pr.draft) {
+                core.info(`PR #${prNumber} is a draft; skipping (work in progress).`);
+                return null;
+              }
+              const headSha = pr.head.sha;
+
+              const failures = [];
+              const pendingReasons = [];
+
+              // 1) Mergeability / conflicts.
+              if (pr.mergeable === false) {
+                if (pr.mergeable_state === 'dirty') {
+                  failures.push(`PR has **merge conflicts** with \`${pr.base.ref}\` — rebase or merge \`${pr.base.ref}\` and resolve the conflicts.`);
+                } else {
+                  failures.push(`PR is not mergeable (state: \`${pr.mergeable_state}\`).`);
+                }
+              } else if (pr.mergeable === null) {
+                pendingReasons.push('mergeability is still being computed by GitHub');
+              }
+
+              // 2) CI check runs (excluding our own guardrail checks).
+              const checks = await github.paginate(github.rest.checks.listForRef, {
+                ...context.repo, ref: headSha, per_page: 100,
+              });
+              const others = checks.filter((c) => !c.name.startsWith(SELF_PREFIX));
+              const pendingChecks = others.filter((c) => c.status !== 'completed');
+              const failedChecks = others.filter(
+                (c) => c.status === 'completed' && !['success', 'neutral', 'skipped'].includes(c.conclusion),
+              );
+
+              // 3) Legacy commit statuses.
+              const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
+                ...context.repo, ref: headSha,
+              });
+              const failedStatuses = combined.statuses.filter((s) => s.state === 'failure' || s.state === 'error');
+              const pendingStatuses = combined.statuses.filter((s) => s.state === 'pending');
+
+              failedChecks.forEach((c) => failures.push(`CI check not successful: \`${c.name}\` (${c.conclusion}).`));
+              failedStatuses.forEach((s) => failures.push(`CI status not successful: \`${s.context}\` (${s.state}).`));
+              pendingChecks.forEach((c) => pendingReasons.push(`check \`${c.name}\` still running`));
+              pendingStatuses.forEach((s) => pendingReasons.push(`status \`${s.context}\` still pending`));
+
+              if (failures.length > 0) {
+                if (!pr.draft) {
+                  await lib.convertToDraft({ github, pullRequestNodeId: pr.node_id });
+                }
+                await lib.upsertComment({
+                  github, context, issueNumber: prNumber, marker,
+                  body: [
+                    `🚫 **CI & merge-readiness guardrail failed — this PR has been converted to draft.**`,
+                    ``,
+                    `Problems on \`${headSha.slice(0, 7)}\`:`,
+                    failures.map((f) => `- ${f}`).join('\n'),
+                    ``,
+                    lib.REVALIDATE_HINT,
+                  ].join('\n'),
+                });
+                return { prNumber, result: 'failed', failures };
+              }
+
+              if (pendingReasons.length > 0) {
+                core.info(`PR #${prNumber}: not yet decisive (${pendingReasons.join('; ')}); staying neutral.`);
+                return { prNumber, result: 'pending', pendingReasons };
+              }
+
+              await lib.upsertComment({
+                github, context, issueNumber: prNumber, marker,
+                body: `✅ **CI & merge-readiness guardrail passed** — no conflicts and all CI checks succeeded on \`${headSha.slice(0, 7)}\`.`,
+              });
+              return { prNumber, result: 'passed' };
+            };
+
+            const prNumbers = await resolvePrNumbers();
+            if (prNumbers.length === 0) {
+              core.info('No pull request associated with this event; nothing to do.');
+              return;
+            }
+
+            const results = [];
+            for (const n of prNumbers) {
+              results.push(await evaluate(n));
+            }
+            if (results.some((r) => r && r.result === 'failed')) {
+              core.setFailed('CI & merge-readiness guardrail failed for at least one PR.');
+            }

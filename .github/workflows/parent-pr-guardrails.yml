@@ -1,0 +1,54 @@
+name: "PR Guardrails pipeline"
+
+# Orchestrator for the PR guardrail pipeline. Consumer repos call this via a
+# thin, generic trigger workflow with `secrets: inherit` (so adding a guardrail
+# or token never requires editing the consumer repos). The github context here
+# is inherited from the caller's pull_request_target / check_suite event.
+#
+# Pipeline:
+#   membership  (PR events) ─► outputs.is_member
+#   issue-link  (PR events, only when NOT a Dev-Team member)   needs: membership
+#   ci          (PR + check_suite events, always)
+#
+# Each stage that fails converts the PR to draft and comments. Stages run
+# independently and report individually (a failure does not cancel later stages).
+
+on:
+  workflow_call:
+    secrets:
+      MEMBERSHIP_GUARD_TOKEN:
+        required: true
+      ISSUE_LINK_GUARD_TOKEN:
+        required: true
+      CI_GUARD_TOKEN:
+        required: true
+
+jobs:
+  # Runs first on every event. If the PR author is a Dev-Team member, is_member
+  # becomes 'true' and ALL other guardrails are skipped (members are fully
+  # exempt). Skipped only on draft PRs from a pull_request_target event.
+  membership:
+    if: ${{ github.event_name == 'check_suite' || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false) }}
+    uses: ./.github/workflows/reusable-guardrail-membership.yml
+    secrets:
+      MEMBERSHIP_GUARD_TOKEN: ${{ secrets.MEMBERSHIP_GUARD_TOKEN }}
+
+  issue-link:
+    needs: [membership]
+    # Non-draft PR events only, and only when the author is NOT a Dev-Team
+    # member. If membership was skipped/errored, is_member is empty -> issue-link
+    # runs (fail-safe: enforce rather than exempt).
+    if: ${{ always() && github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && needs.membership.outputs.is_member != 'true' }}
+    uses: ./.github/workflows/reusable-guardrail-issue-link.yml
+    secrets:
+      ISSUE_LINK_GUARD_TOKEN: ${{ secrets.ISSUE_LINK_GUARD_TOKEN }}
+
+  ci:
+    needs: [membership]
+    # Runs on PR events and on check_suite completion, but never for members
+    # (is_member == 'true'). Empty is_member (membership skipped/errored) ->
+    # CI runs (fail-safe).
+    if: ${{ always() && needs.membership.outputs.is_member != 'true' }}
+    uses: ./.github/workflows/reusable-guardrail-ci.yml
+    secrets:
+      CI_GUARD_TOKEN: ${{ secrets.CI_GUARD_TOKEN }}
