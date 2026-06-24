@@ -85,32 +85,6 @@ guardrails apply again the next time the PR is made ready. Only a member's
 draft-conversion clears it — the guardrails' own drafting (by the bot token)
 does not.
 
-## Tokens & required settings
-
-Org-level secrets shared to consumer repos, reached via `secrets: inherit`:
-`MEMBERSHIP_GUARD_TOKEN`, `ISSUE_LINK_GUARD_TOKEN`, `CI_GUARD_TOKEN`. The
-orchestrator passes only the one relevant token to each guardrail.
-
-Use a **GitHub App installation token** (recommended) or a **classic PAT**. The
-granular names below are GitHub App permissions; a fine-grained PAT cannot be
-used for `CI_GUARD_TOKEN` because it has no *Checks* permission.
-
-| Token | GitHub App permissions (by target repo / org) | Classic PAT scopes | Used for |
-|-------|-----------------------------------------------|--------------------|----------|
-| `MEMBERSHIP_GUARD_TOKEN` | consumer repo → Pull requests: **R&W**, Issues: **Write** (for the override label); `pimcore` org → Members: **Read** | `repo` (or `public_repo`) + `read:org` | Team-membership lookup; read PR(s); add the `guardrails:override` label on member override. Never drafts, never comments. |
-| `ISSUE_LINK_GUARD_TOKEN` | consumer repo → Pull requests: **R&W**; `pimcore/platform-version` → Issues: **Read** | `repo` (+ read on `platform-version` if private) | Validate linked issues exist; convert PR to draft; comment. No org permission. |
-| `CI_GUARD_TOKEN` | consumer repo → Pull requests: **R&W**, Checks: **Read**, Commit statuses: **Read**, Contents: **Read** | `repo` | Read PR + mergeability; list checks & statuses; convert PR to draft; comment. No org permission. |
-
-Notes:
-- `Checks` is a GitHub App permission only — it is **not** available to
-  fine-grained PATs (those have `Commit statuses` but no `Checks`). For
-  `CI_GUARD_TOKEN` use a GitHub App token or a classic PAT (`repo`).
-- For a PR, both commenting and draft conversion fall under `Pull requests:
-  write` (`Issues: write` is a safe superset if your token distinguishes).
-- This collection is **public**, so the guardrails check it out anonymously to
-  load `lib.js` — the tokens need **no** access to it, and no cross-repo *Access*
-  setting is required (public reusable workflows are callable by any repo).
-
 ## Adding a new guardrail
 
 1. Add `reusable-guardrail-<x>.yml` here (`workflow_call`, one token secret).
