@@ -41,7 +41,10 @@ jobs:
           script: |
             const lib = require(`${process.env.GITHUB_WORKSPACE}/_central/scripts/guardrails/lib.js`);
             const marker = 'guardrail:ci-status';
-            const SELF_PREFIX = 'Guardrail:'; // ignore our own guardrail checks
+            // Ignore our own guardrail checks. Their check-run names look like
+            // "guardrails / issue-link / Guardrail: Issue link", so match the
+            // "guardrail" token anywhere in the name (not just as a prefix).
+            const isGuardrailCheck = (name) => /guardrail/i.test(name);
 
             // Resolve the set of PRs to evaluate for this event.
             async function resolvePrNumbers() {
@@ -88,11 +91,19 @@ jobs:
                 pendingReasons.push('mergeability is still being computed by GitHub');
               }
 
-              // 2) CI check runs (excluding our own guardrail checks).
-              const checks = await github.paginate(github.rest.checks.listForRef, {
+              // 2) CI check runs. A SHA accumulates a check run per (re-)run, so
+              // keep only the LATEST run per check name (highest id) — otherwise a
+              // stale failure that was later re-run green would still count. Then
+              // drop our own guardrail checks.
+              const allChecks = await github.paginate(github.rest.checks.listForRef, {
                 ...context.repo, ref: headSha, per_page: 100,
               });
-              const others = checks.filter((c) => !c.name.startsWith(SELF_PREFIX));
+              const latestByName = new Map();
+              for (const c of allChecks) {
+                const prev = latestByName.get(c.name);
+                if (!prev || c.id > prev.id) latestByName.set(c.name, c);
+              }
+              const others = [...latestByName.values()].filter((c) => !isGuardrailCheck(c.name));
               const pendingChecks = others.filter((c) => c.status !== 'completed');
               const failedChecks = others.filter(
                 (c) => c.status === 'completed' && !['success', 'neutral', 'skipped'].includes(c.conclusion),

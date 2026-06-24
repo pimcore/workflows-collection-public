@@ -54,7 +54,10 @@ is exempt) no comment is created, and any prior failure comment is removed.
   `pimcore/platform-version` via a closing keyword (every closing-keyword
   reference must be valid) **and** pass CI.
 - **ci** requires the PR to be mergeable (no conflicts) and all checks/statuses
-  green. It ignores its own `Guardrail:`-prefixed checks to avoid self-deadlock.
+  green. It ignores any guardrail checks (name contains `guardrail`) to avoid
+  self-deadlock and to not count a sibling guardrail's failure as a CI failure,
+  and considers only the latest run per check name so a stale failure that was
+  re-run green no longer counts.
 - Supported keywords: `close, closes, closed, fix, fixes, fixed, resolve,
   resolves, resolved`.
 
