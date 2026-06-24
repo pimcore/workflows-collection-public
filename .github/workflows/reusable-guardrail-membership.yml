@@ -97,7 +97,11 @@ jobs:
                   && await lib.isDevTeamMember({ github, username: actor })) {
                 bypass = true;
                 await lib.addLabel({ github, context, issueNumber: pr.number, label: OVERRIDE_LABEL });
-                core.info(`Override: @${actor} (Dev-Team) marked PR #${pr.number} ready — guardrails bypassed.`);
+                // Override clears any guardrail failure comments left by earlier runs.
+                for (const m of ['guardrail:issue-link', 'guardrail:ci-status']) {
+                  await lib.deleteMarkerComment({ github, context, issueNumber: pr.number, marker: m });
+                }
+                core.info(`Override: @${actor} (Dev-Team) marked PR #${pr.number} ready — guardrails bypassed, failure comments cleared.`);
               }
 
               core.info(`PR #${pr.number}: bypass=${bypass}`);

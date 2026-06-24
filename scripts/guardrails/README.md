@@ -74,9 +74,10 @@ is removed.
 
 If a **Dev-Team member** clicks **Ready for review** on a PR — even one opened by
 a non-member that the guardrails keep drafting — the membership stage treats it
-as an override: it adds the `guardrails:override` label and emits `bypass=true`,
-so issue-link and CI are skipped and the PR stays ready. The label persists, so
-later `check_suite` runs and pushes keep bypassing instead of re-drafting.
+as an override: it adds the `guardrails:override` label, **removes any guardrail
+failure comments**, and emits `bypass=true`, so issue-link and CI are skipped and
+the PR stays ready. The label persists, so later `check_suite` runs and pushes
+keep bypassing instead of re-drafting.
 
 ## Tokens & required settings
 
