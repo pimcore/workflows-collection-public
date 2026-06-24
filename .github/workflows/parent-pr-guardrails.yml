@@ -6,9 +6,9 @@ name: "PR Guardrails pipeline"
 # is inherited from the caller's pull_request_target / check_suite event.
 #
 # Pipeline:
-#   membership  (PR events) ─► outputs.is_member
-#   issue-link  (PR events, only when NOT a Dev-Team member)   needs: membership
-#   ci          (PR + check_suite events, always)
+#   membership  (all events) ─► outputs.bypass
+#   issue-link  (PR events, only when not bypassed)   needs: membership
+#   ci          (PR + check_suite events, only when not bypassed)   needs: membership
 #
 # Each stage that fails converts the PR to draft and comments. Stages run
 # independently and report individually (a failure does not cancel later stages).
@@ -24,9 +24,10 @@ on:
         required: true
 
 jobs:
-  # Runs first on every event. If the PR author is a Dev-Team member, is_member
-  # becomes 'true' and ALL other guardrails are skipped (members are fully
-  # exempt). Skipped only on draft PRs from a pull_request_target event.
+  # Runs first on every event and emits `bypass`. bypass=true (so ALL other
+  # guardrails are skipped) when the author is a Dev-Team member, the PR carries
+  # the override label, or a Dev-Team member pressed "Ready for review".
+  # Skipped only on draft PRs from a pull_request_target event.
   membership:
     if: ${{ github.event_name == 'check_suite' || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false) }}
     uses: ./.github/workflows/reusable-guardrail-membership.yml
@@ -35,20 +36,18 @@ jobs:
 
   issue-link:
     needs: [membership]
-    # Non-draft PR events only, and only when the author is NOT a Dev-Team
-    # member. If membership was skipped/errored, is_member is empty -> issue-link
-    # runs (fail-safe: enforce rather than exempt).
-    if: ${{ always() && github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && needs.membership.outputs.is_member != 'true' }}
+    # Non-draft PR events only, and only when not bypassed. If membership was
+    # skipped/errored, bypass is empty -> issue-link runs (fail-safe: enforce).
+    if: ${{ always() && github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && needs.membership.outputs.bypass != 'true' }}
     uses: ./.github/workflows/reusable-guardrail-issue-link.yml
     secrets:
       ISSUE_LINK_GUARD_TOKEN: ${{ secrets.ISSUE_LINK_GUARD_TOKEN }}
 
   ci:
     needs: [membership]
-    # Runs on PR events and on check_suite completion, but never for members
-    # (is_member == 'true'). Empty is_member (membership skipped/errored) ->
-    # CI runs (fail-safe).
-    if: ${{ always() && needs.membership.outputs.is_member != 'true' }}
+    # Runs on PR events and on check_suite completion, but never when bypassed.
+    # Empty bypass (membership skipped/errored) -> CI runs (fail-safe).
+    if: ${{ always() && needs.membership.outputs.bypass != 'true' }}
     uses: ./.github/workflows/reusable-guardrail-ci.yml
     secrets:
       CI_GUARD_TOKEN: ${{ secrets.CI_GUARD_TOKEN }}

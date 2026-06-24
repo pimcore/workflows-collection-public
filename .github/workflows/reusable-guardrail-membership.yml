@@ -1,11 +1,14 @@
 name: "Reusable Guardrail: Dev-Team membership"
 
-# Fast-path guardrail. If the PR author is a member of the "Dev-Team" group the
-# PR is accepted and exempt from the linked-issue requirement (the orchestrator
-# uses the `is_member` output to skip the issue-link stage). Non-members are NOT
-# blocked here, so this workflow never converts a PR to draft and always succeeds.
+# Fast-path / bypass guardrail. Emits `bypass=true` (so the orchestrator skips
+# the issue-link and CI guardrails) when ANY of:
+#   - the PR author is a Dev-Team member, or
+#   - the PR carries the override label, or
+#   - a Dev-Team member pressed "Ready for review" on the PR (manual override) —
+#     in which case the override label is added so later runs keep bypassing.
+# This workflow never converts a PR to draft and always succeeds.
 #
-# Called by parent-pr-guardrails.yml in the caller's pull_request_target context.
+# Called by parent-pr-guardrails.yml in the caller's event context.
 
 on:
   workflow_call:
@@ -13,20 +16,21 @@ on:
       MEMBERSHIP_GUARD_TOKEN:
         required: true
     outputs:
-      is_member:
-        description: "true when the PR author is an active Dev-Team member"
-        value: ${{ jobs.membership.outputs.is_member }}
+      bypass:
+        description: "true when guardrails should be skipped (member author, override label, or member override)"
+        value: ${{ jobs.membership.outputs.bypass }}
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
+  issues: write
 
 jobs:
   membership:
     name: "Guardrail: Dev-Team membership"
     runs-on: ubuntu-latest
     outputs:
-      is_member: ${{ steps.check.outputs.is_member }}
+      bypass: ${{ steps.check.outputs.bypass }}
     steps:
       # Checks out this (trusted, public) collection repo to load lib.js
       # (never the PR head). Public repo → no token needed for checkout.
@@ -42,6 +46,7 @@ jobs:
           github-token: ${{ secrets.MEMBERSHIP_GUARD_TOKEN }}
           script: |
             const lib = require(`${process.env.GITHUB_WORKSPACE}/_central/scripts/guardrails/lib.js`);
+            const OVERRIDE_LABEL = 'guardrails:override';
 
             // Resolve the PR(s) for this event. On pull_request_target there is
             // exactly one; on check_suite resolve from the payload / commit.
@@ -56,7 +61,7 @@ jobs:
                   });
                   prs = data;
                 }
-                // check_suite PR entries lack `user`; fetch the full PR for the author.
+                // check_suite PR entries are minimal; fetch the full PR.
                 const full = [];
                 for (const p of prs) {
                   const { data } = await github.rest.pulls.get({ ...context.repo, pull_number: p.number });
@@ -69,20 +74,33 @@ jobs:
 
             const prs = await resolvePrs();
             if (prs.length === 0) {
-              core.info('No pull request for this event; treating as non-member.');
-              core.setOutput('is_member', 'false');
+              core.info('No pull request for this event; not bypassing.');
+              core.setOutput('bypass', 'false');
               return;
             }
 
-            // is_member is 'true' only if EVERY associated PR author is a member
-            // (so if any non-member PR is in scope, the other guardrails still run).
-            // Membership posts no comment (only failed guardrails comment); it
-            // just resolves whether every PR author is a member.
-            let allMembers = true;
+            // Manual override: a Dev-Team member pressing "Ready for review" on a
+            // PR. The override is persisted as a label so later events (e.g.
+            // check_suite) keep bypassing instead of re-drafting.
+            const isReadyForReview = context.eventName === 'pull_request_target'
+              && context.payload.action === 'ready_for_review';
+            const actor = context.payload.sender && context.payload.sender.login;
+
+            // bypass=true only if EVERY associated PR qualifies (so any still-gated
+            // PR keeps the other guardrails running). Membership posts no comment.
+            let allBypass = true;
             for (const pr of prs) {
-              const author = pr.user.login;
-              const member = await lib.isDevTeamMember({ github, username: author });
-              if (!member) allMembers = false;
-              core.info(`${author} (PR #${pr.number}): member=${member}`);
+              const hasLabel = (pr.labels || []).some((l) => l.name === OVERRIDE_LABEL);
+              let bypass = hasLabel || await lib.isDevTeamMember({ github, username: pr.user.login });
+
+              if (!bypass && isReadyForReview && actor
+                  && await lib.isDevTeamMember({ github, username: actor })) {
+                bypass = true;
+                await lib.addLabel({ github, context, issueNumber: pr.number, label: OVERRIDE_LABEL });
+                core.info(`Override: @${actor} (Dev-Team) marked PR #${pr.number} ready — guardrails bypassed.`);
+              }
+
+              core.info(`PR #${pr.number}: bypass=${bypass}`);
+              if (!bypass) allBypass = false;
             }
-            core.setOutput('is_member', allMembers ? 'true' : 'false');
+            core.setOutput('bypass', allBypass ? 'true' : 'false');

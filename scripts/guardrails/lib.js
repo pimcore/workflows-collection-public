@@ -174,6 +174,26 @@ async function deleteMarkerComment({ github, context, issueNumber, marker }) {
   }
 }
 
+/** Add a label to a PR/issue, creating the label in the repo if it is missing. */
+async function addLabel({ github, context, issueNumber, label }) {
+  const { owner, repo } = context.repo;
+  const issue_number = issueNumber || context.payload.pull_request.number;
+  try {
+    await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [label] });
+  } catch (err) {
+    if (err.status === 404 || err.status === 422) {
+      try {
+        await github.rest.issues.createLabel({ owner, repo, name: label, color: '0e8a16' });
+      } catch (_) {
+        /* label may have been created concurrently — ignore */
+      }
+      await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [label] });
+    } else {
+      throw err;
+    }
+  }
+}
+
 /** Short footer telling the author how to re-run the guardrails after fixing. */
 const REVALIDATE_HINT = 'When fixed, press **Ready for review** to re-run the checks.';
 
@@ -191,4 +211,5 @@ module.exports = {
   convertToDraft,
   upsertComment,
   deleteMarkerComment,
+  addLabel,
 };

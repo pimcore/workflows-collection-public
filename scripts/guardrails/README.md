@@ -8,7 +8,7 @@ or token change happens once here instead of across every consumer repo.
 
 ```
 .github/workflows/parent-pr-guardrails.yml      orchestrator (workflow_call, no inputs)
-.github/workflows/reusable-guardrail-membership.yml   Dev-Team membership → outputs is_member
+.github/workflows/reusable-guardrail-membership.yml   Dev-Team membership / override → outputs bypass
 .github/workflows/reusable-guardrail-issue-link.yml   non-members must link a valid issue
 .github/workflows/reusable-guardrail-ci.yml           mergeable + all CI checks green
 scripts/guardrails/lib.js                       shared helpers (loaded by each guardrail)
@@ -44,15 +44,16 @@ is exempt) no comment is created, and any prior failure comment is removed.
 
 | Stage | Runs when | On failure |
 |-------|-----------|------------|
-| membership | all events (resolves author on PR + `check_suite`) | never drafts, never comments; emits `is_member` |
-| issue-link | non-draft PR events **and** author is not a Dev-Team member | draft + comment (reason + docs link) |
-| ci | all events (PR + `check_suite`) **and** author is not a Dev-Team member | draft + comment (reason) |
+| membership | all events (resolves author on PR + `check_suite`) | never drafts, never comments; emits `bypass` |
+| issue-link | non-draft PR events **and** not bypassed | draft + comment (reason + docs link) |
+| ci | all events (PR + `check_suite`) **and** not bypassed | draft + comment (reason) |
 
-- **Members are fully exempt**: if the PR author is a Dev-Team member,
-  `is_member=true` and the orchestrator **skips every other guardrail** (both
-  issue-link and CI). Non-members must link a valid issue in
-  `pimcore/platform-version` via a closing keyword (every closing-keyword
-  reference must be valid) **and** pass CI.
+- **Bypass**: the membership stage emits `bypass=true` (orchestrator skips both
+  issue-link and CI) when the PR author is a Dev-Team member, the PR carries the
+  `guardrails:override` label, or a Dev-Team member overrode it (see below).
+  Otherwise non-members must link a valid issue in `pimcore/platform-version`
+  via a closing keyword (every closing-keyword reference must be valid) **and**
+  pass CI.
 - **ci** requires the PR to be mergeable (no conflicts) and all checks/statuses
   green. It ignores any guardrail checks (name contains `guardrail`) to avoid
   self-deadlock and to not count a sibling guardrail's failure as a CI failure,
@@ -69,6 +70,14 @@ author fixes the issue and clicks **Ready for review**; the `ready_for_review`
 event re-fires the pipeline. When the guardrail then passes, its failure comment
 is removed.
 
+## Override (Dev-Team)
+
+If a **Dev-Team member** clicks **Ready for review** on a PR — even one opened by
+a non-member that the guardrails keep drafting — the membership stage treats it
+as an override: it adds the `guardrails:override` label and emits `bypass=true`,
+so issue-link and CI are skipped and the PR stays ready. The label persists, so
+later `check_suite` runs and pushes keep bypassing instead of re-drafting.
+
 ## Tokens & required settings
 
 Org-level secrets shared to consumer repos, reached via `secrets: inherit`:
@@ -81,7 +90,7 @@ used for `CI_GUARD_TOKEN` because it has no *Checks* permission.
 
 | Token | GitHub App permissions (by target repo / org) | Classic PAT scopes | Used for |
 |-------|-----------------------------------------------|--------------------|----------|
-| `MEMBERSHIP_GUARD_TOKEN` | consumer repo → Pull requests: **Read**; `pimcore` org → Members: **Read** | `repo` (or `public_repo`) + `read:org` | Team-membership lookup; read PR(s) (incl. resolving from `check_suite`). Never drafts, never comments. |
+| `MEMBERSHIP_GUARD_TOKEN` | consumer repo → Pull requests: **R&W**, Issues: **Write** (for the override label); `pimcore` org → Members: **Read** | `repo` (or `public_repo`) + `read:org` | Team-membership lookup; read PR(s); add the `guardrails:override` label on member override. Never drafts, never comments. |
 | `ISSUE_LINK_GUARD_TOKEN` | consumer repo → Pull requests: **R&W**; `pimcore/platform-version` → Issues: **Read** | `repo` (+ read on `platform-version` if private) | Validate linked issues exist; convert PR to draft; comment. No org permission. |
 | `CI_GUARD_TOKEN` | consumer repo → Pull requests: **R&W**, Checks: **Read**, Commit statuses: **Read**, Contents: **Read** | `repo` | Read PR + mergeability; list checks & statuses; convert PR to draft; comment. No org permission. |
 
