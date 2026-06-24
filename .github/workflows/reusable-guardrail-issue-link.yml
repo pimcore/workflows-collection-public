@@ -24,14 +24,13 @@ jobs:
     name: "Guardrail: Issue link"
     runs-on: ubuntu-latest
     steps:
-      # Load lib.js from the collection. Pinned to the testing branch for now; at
-      # go-live switch this (and the consumer `uses:` ref) to a STABLE ref that
-      # exists after merge — `main` or a version tag — since this branch is
-      # deleted on merge. Public repo, trusted ref (never the PR head) → no token.
+      # Load lib.js from this collection on `main` (stable ref). Changing logic is
+      # just edit + push to main — no ref change needed here. Public repo, trusted
+      # ref (never the PR head) → no token needed for checkout.
       - uses: actions/checkout@v4
         with:
           repository: pimcore/workflows-collection-public
-          ref: feature/pr-guardrails
+          ref: main
           path: _central
 
       - uses: actions/github-script@v7
