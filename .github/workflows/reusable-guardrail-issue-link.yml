@@ -88,6 +88,8 @@ jobs:
               body: [
                 `🚫 **Issue-link guardrail failed — this PR has been converted to draft.**`,
                 ``,
+                `Every PR must reference a tracking issue in \`${lib.ISSUE_REPO_OWNER}/${lib.ISSUE_REPO_NAME}\` so the change stays traceable.`,
+                ``,
                 problemList,
                 ``,
                 `Add the link with a keyword in the **PR description** (not in a comment): https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/using-keywords-in-issues-and-pull-requests`,
