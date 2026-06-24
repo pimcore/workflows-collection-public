@@ -79,12 +79,29 @@ jobs:
               return;
             }
 
+            const action = context.payload.action;
+            const actor = context.payload.sender && context.payload.sender.login;
+
+            // A Dev-Team member converting the PR back to draft retracts the
+            // override: remove the label so the guardrails re-apply next time it
+            // is made ready. Gated to a member actor so the guardrails' own
+            // draft-conversion (by the bot token) never clears the label.
+            if (context.eventName === 'pull_request_target' && action === 'converted_to_draft') {
+              if (actor && await lib.isDevTeamMember({ github, username: actor })) {
+                for (const pr of prs) {
+                  await lib.removeLabel({ github, context, issueNumber: pr.number, label: OVERRIDE_LABEL });
+                  core.info(`@${actor} (Dev-Team) converted PR #${pr.number} to draft — override label removed.`);
+                }
+              }
+              core.setOutput('bypass', 'false');
+              return;
+            }
+
             // Manual override: a Dev-Team member pressing "Ready for review" on a
             // PR. The override is persisted as a label so later events (e.g.
             // check_suite) keep bypassing instead of re-drafting.
             const isReadyForReview = context.eventName === 'pull_request_target'
-              && context.payload.action === 'ready_for_review';
-            const actor = context.payload.sender && context.payload.sender.login;
+              && action === 'ready_for_review';
 
             // bypass=true only if EVERY associated PR qualifies (so any still-gated
             // PR keeps the other guardrails running). Membership posts no comment.

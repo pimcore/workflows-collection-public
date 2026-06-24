@@ -29,7 +29,7 @@ jobs:
   # the override label, or a Dev-Team member pressed "Ready for review".
   # Skipped only on draft PRs from a pull_request_target event.
   membership:
-    if: ${{ github.event_name == 'check_suite' || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false) }}
+    if: ${{ github.event_name == 'check_suite' || (github.event_name == 'pull_request_target' && (github.event.pull_request.draft == false || github.event.action == 'converted_to_draft')) }}
     uses: ./.github/workflows/reusable-guardrail-membership.yml
     secrets:
       MEMBERSHIP_GUARD_TOKEN: ${{ secrets.MEMBERSHIP_GUARD_TOKEN }}

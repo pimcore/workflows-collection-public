@@ -194,6 +194,18 @@ async function addLabel({ github, context, issueNumber, label }) {
   }
 }
 
+/** Remove a label from a PR/issue. No-op if the label is not present. */
+async function removeLabel({ github, context, issueNumber, label }) {
+  const { owner, repo } = context.repo;
+  const issue_number = issueNumber || context.payload.pull_request.number;
+  try {
+    await github.rest.issues.removeLabel({ owner, repo, issue_number, name: label });
+  } catch (err) {
+    if (err.status === 404) return; // label not on the PR — nothing to do
+    throw err;
+  }
+}
+
 /** Short footer telling the author how to re-run the guardrails after fixing. */
 const REVALIDATE_HINT = 'When fixed, press **Ready for review** to re-run the checks.';
 
@@ -212,4 +224,5 @@ module.exports = {
   upsertComment,
   deleteMarkerComment,
   addLabel,
+  removeLabel,
 };

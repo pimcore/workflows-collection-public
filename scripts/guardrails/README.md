@@ -21,7 +21,7 @@ scripts/guardrails/lib.js                       shared helpers (loaded by each g
 name: PR Guardrails
 on:
   pull_request_target:
-    types: [opened, reopened, ready_for_review, edited, synchronize]
+    types: [opened, reopened, ready_for_review, converted_to_draft, edited, synchronize]
   check_suite:
     types: [completed]
 concurrency:
@@ -78,6 +78,12 @@ as an override: it adds the `guardrails:override` label, **removes any guardrail
 failure comments**, and emits `bypass=true`, so issue-link and CI are skipped and
 the PR stays ready. The label persists, so later `check_suite` runs and pushes
 keep bypassing instead of re-drafting.
+
+To **retract** an override, a Dev-Team member converts the PR back to draft
+(`converted_to_draft`): the `guardrails:override` label is removed, so the
+guardrails apply again the next time the PR is made ready. Only a member's
+draft-conversion clears it — the guardrails' own drafting (by the bot token)
+does not.
 
 ## Tokens & required settings
 
