@@ -79,8 +79,9 @@ function parseIssueReferences(text, { defaultOwner = ISSUE_REPO_OWNER, defaultRe
 }
 
 /**
- * Validate that an issue reference points to a real, open issue (not a PR).
- * Returns { valid, reason?, state? }.
+ * Validate that an issue reference points to a real, existing issue (not a pull
+ * request). The issue may be open or closed — state is returned for the caller,
+ * but a closed tracking issue is still a valid link. Returns { valid, reason?, state? }.
  */
 async function validateIssue({ github, owner, repo, number }) {
   try {

@@ -49,5 +49,9 @@ jobs:
     # Empty bypass (membership skipped/errored) -> CI runs (fail-safe).
     if: ${{ always() && needs.membership.outputs.bypass != 'true' }}
     uses: ./.github/workflows/reusable-guardrail-ci.yml
+    with:
+      # Skip individually-bypassed PRs (e.g. a member PR sharing a check_suite
+      # with a non-member PR, where the aggregate gate still lets CI run).
+      bypassed_prs: ${{ needs.membership.outputs.bypassed_prs || '[]' }}
     secrets:
       CI_GUARD_TOKEN: ${{ secrets.CI_GUARD_TOKEN }}

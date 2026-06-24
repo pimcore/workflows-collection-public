@@ -17,8 +17,11 @@ on:
         required: true
     outputs:
       bypass:
-        description: "true when guardrails should be skipped (member author, override label, or member override)"
+        description: "true when ALL associated PRs should be skipped (member author, override label, or member override)"
         value: ${{ jobs.membership.outputs.bypass }}
+      bypassed_prs:
+        description: "JSON array of the PR numbers that individually qualify for bypass"
+        value: ${{ jobs.membership.outputs.bypassed_prs }}
 
 permissions:
   contents: read
@@ -31,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       bypass: ${{ steps.check.outputs.bypass }}
+      bypassed_prs: ${{ steps.check.outputs.bypassed_prs }}
     steps:
       # Checks out this (trusted, public) collection repo to load lib.js
       # (never the PR head). Public repo → no token needed for checkout.
@@ -76,6 +80,7 @@ jobs:
             if (prs.length === 0) {
               core.info('No pull request for this event; not bypassing.');
               core.setOutput('bypass', 'false');
+              core.setOutput('bypassed_prs', '[]');
               return;
             }
 
@@ -94,6 +99,7 @@ jobs:
                 }
               }
               core.setOutput('bypass', 'false');
+              core.setOutput('bypassed_prs', '[]');
               return;
             }
 
@@ -103,9 +109,11 @@ jobs:
             const isReadyForReview = context.eventName === 'pull_request_target'
               && action === 'ready_for_review';
 
-            // bypass=true only if EVERY associated PR qualifies (so any still-gated
-            // PR keeps the other guardrails running). Membership posts no comment.
+            // Compute bypass PER PR. `bypassed_prs` lets later guardrails skip the
+            // exact PRs that qualify (important when a check_suite is shared by
+            // several PRs); `bypass` (all qualify) drives the orchestrator's gate.
             let allBypass = true;
+            const bypassedPrs = [];
             for (const pr of prs) {
               const hasLabel = (pr.labels || []).some((l) => l.name === OVERRIDE_LABEL);
               let bypass = hasLabel || await lib.isDevTeamMember({ github, username: pr.user.login });
@@ -122,6 +130,7 @@ jobs:
               }
 
               core.info(`PR #${pr.number}: bypass=${bypass}`);
-              if (!bypass) allBypass = false;
+              if (bypass) bypassedPrs.push(pr.number); else allBypass = false;
             }
             core.setOutput('bypass', allBypass ? 'true' : 'false');
+            core.setOutput('bypassed_prs', JSON.stringify(bypassedPrs));

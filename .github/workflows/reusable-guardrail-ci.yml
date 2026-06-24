@@ -11,6 +11,12 @@ name: "Reusable Guardrail: CI & merge readiness"
 
 on:
   workflow_call:
+    inputs:
+      bypassed_prs:
+        description: "JSON array of PR numbers that are bypassed (member/override) and must be skipped"
+        required: false
+        type: string
+        default: "[]"
     secrets:
       CI_GUARD_TOKEN:
         required: true
@@ -36,11 +42,19 @@ jobs:
           path: _central
 
       - uses: actions/github-script@v7
+        env:
+          BYPASSED_PRS: ${{ inputs.bypassed_prs }}
         with:
           github-token: ${{ secrets.CI_GUARD_TOKEN }}
           script: |
             const lib = require(`${process.env.GITHUB_WORKSPACE}/_central/scripts/guardrails/lib.js`);
             const marker = 'guardrail:ci-status';
+
+            // PRs the membership stage marked as bypassed (member author / override).
+            // On a check_suite shared by multiple PRs, the aggregate gate may let CI
+            // run; skip those individual PRs here so an exempt PR is never drafted.
+            let bypassedPrs = [];
+            try { bypassedPrs = JSON.parse(process.env.BYPASSED_PRS || '[]'); } catch (_) { bypassedPrs = []; }
             // Ignore our own guardrail checks. Their check-run names look like
             // "guardrails / issue-link / Guardrail: Issue link", so match the
             // "guardrail" token anywhere in the name (not just as a prefix).
@@ -65,6 +79,10 @@ jobs:
             }
 
             const evaluate = async (prNumber) => {
+              if (bypassedPrs.includes(prNumber)) {
+                core.info(`PR #${prNumber} is bypassed (member/override); skipping CI guardrail.`);
+                return null;
+              }
               // Fetch PR, polling until `mergeable` is computed.
               const pr = await lib.getMergeablePullRequest({ github, ...context.repo, prNumber });
               if (pr.state !== 'open') {
@@ -91,13 +109,16 @@ jobs:
                 pendingReasons.push('mergeability is still being computed by GitHub');
               }
 
-              // 2) CI check runs. A SHA accumulates a check run per (re-)run, so
-              // keep only the LATEST run per check name (highest id) — otherwise a
-              // stale failure that was later re-run green would still count. Then
-              // drop our own guardrail checks.
-              const allChecks = await github.paginate(github.rest.checks.listForRef, {
-                ...context.repo, ref: headSha, per_page: 100,
-              });
+              // 2) CI check runs. listForRef returns { total_count, check_runs };
+              // pass a map function so paginate yields the flat check_runs array.
+              // A SHA accumulates a check run per (re-)run, so keep only the LATEST
+              // run per check name (highest id) — otherwise a stale failure that was
+              // later re-run green would still count. Then drop our own guardrail checks.
+              const allChecks = await github.paginate(
+                github.rest.checks.listForRef,
+                { ...context.repo, ref: headSha, per_page: 100 },
+                (response) => response.data.check_runs,
+              );
               const latestByName = new Map();
               for (const c of allChecks) {
                 const prev = latestByName.get(c.name);
@@ -109,12 +130,19 @@ jobs:
                 (c) => c.status === 'completed' && !['success', 'neutral', 'skipped'].includes(c.conclusion),
               );
 
-              // 3) Legacy commit statuses.
+              // 3) Legacy commit statuses. Dedupe by context (keep the latest by id)
+              // so an earlier failure does not linger after a later success.
               const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
                 ...context.repo, ref: headSha,
               });
-              const failedStatuses = combined.statuses.filter((s) => s.state === 'failure' || s.state === 'error');
-              const pendingStatuses = combined.statuses.filter((s) => s.state === 'pending');
+              const latestStatusByContext = new Map();
+              for (const s of combined.statuses) {
+                const prev = latestStatusByContext.get(s.context);
+                if (!prev || s.id > prev.id) latestStatusByContext.set(s.context, s);
+              }
+              const statuses = [...latestStatusByContext.values()];
+              const failedStatuses = statuses.filter((s) => s.state === 'failure' || s.state === 'error');
+              const pendingStatuses = statuses.filter((s) => s.state === 'pending');
 
               failedChecks.forEach((c) => failures.push(`CI check not successful: \`${c.name}\` (${c.conclusion}).`));
               failedStatuses.forEach((s) => failures.push(`CI status not successful: \`${s.context}\` (${s.state}).`));
