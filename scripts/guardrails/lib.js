@@ -13,6 +13,9 @@ const ORG = process.env.GUARD_ORG || 'pimcore';
 const TEAM_SLUG = process.env.GUARD_TEAM_SLUG || 'dev-team'; // slug of the "Dev-Team" GitHub team
 const ISSUE_REPO_OWNER = process.env.GUARD_ISSUE_OWNER || 'pimcore';
 const ISSUE_REPO_NAME = process.env.GUARD_ISSUE_REPO || 'platform-version';
+// Service account the guardrails act as (drafts PRs, comments). It is itself a
+// Dev-Team member, so override retraction must ignore draft-conversions by it.
+const GUARD_BOT = process.env.GUARD_BOT_LOGIN || 'pimcore-deployments';
 
 // GitHub's supported issue-closing keywords.
 const CLOSING_KEYWORDS = [
@@ -215,6 +218,7 @@ module.exports = {
   TEAM_SLUG,
   ISSUE_REPO_OWNER,
   ISSUE_REPO_NAME,
+  GUARD_BOT,
   CLOSING_KEYWORDS,
   REVALIDATE_HINT,
   isDevTeamMember,

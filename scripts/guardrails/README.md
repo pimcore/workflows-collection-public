@@ -25,7 +25,9 @@ on:
   check_suite:
     types: [completed]
 concurrency:
-  group: pr-guardrails-${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || github.event.check_suite.head_sha || github.run_id }}
+  # Separate group for converted_to_draft so a guardrail's own draft-conversion
+  # does not cancel the run that is still acting on the PR.
+  group: pr-guardrails-${{ github.event.action == 'converted_to_draft' && 'retract-' || '' }}${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || github.event.check_suite.head_sha || github.run_id }}
   cancel-in-progress: true
 jobs:
   guardrails:

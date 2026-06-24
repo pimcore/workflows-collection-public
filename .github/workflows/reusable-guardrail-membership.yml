@@ -89,10 +89,11 @@ jobs:
 
             // A Dev-Team member converting the PR back to draft retracts the
             // override: remove the label so the guardrails re-apply next time it
-            // is made ready. Gated to a member actor so the guardrails' own
-            // draft-conversion (by the bot token) never clears the label.
+            // is made ready. The guard service account is itself a Dev-Team
+            // member, so its own draft-conversions (when a guardrail drafts a PR)
+            // are explicitly ignored — only a human member retracts.
             if (context.eventName === 'pull_request_target' && action === 'converted_to_draft') {
-              if (actor && await lib.isDevTeamMember({ github, username: actor })) {
+              if (actor && actor !== lib.GUARD_BOT && await lib.isDevTeamMember({ github, username: actor })) {
                 for (const pr of prs) {
                   await lib.removeLabel({ github, context, issueNumber: pr.number, label: OVERRIDE_LABEL });
                   core.info(`@${actor} (Dev-Team) converted PR #${pr.number} to draft — override label removed.`);
