@@ -131,6 +131,8 @@ jobs:
                     `🚫 **CI & merge-readiness guardrail failed — this PR has been converted to draft.**`,
                     ``,
                     failures.map((f) => `- ${f}`).join('\n'),
+                    ``,
+                    lib.REVALIDATE_HINT,
                   ].join('\n'),
                 });
                 return { prNumber, result: 'failed', failures };

@@ -174,12 +174,16 @@ async function deleteMarkerComment({ github, context, issueNumber, marker }) {
   }
 }
 
+/** Short footer telling the author how to re-run the guardrails after fixing. */
+const REVALIDATE_HINT = 'When fixed, press **Ready for review** to re-run the checks.';
+
 module.exports = {
   ORG,
   TEAM_SLUG,
   ISSUE_REPO_OWNER,
   ISSUE_REPO_NAME,
   CLOSING_KEYWORDS,
+  REVALIDATE_HINT,
   isDevTeamMember,
   parseIssueReferences,
   validateIssue,

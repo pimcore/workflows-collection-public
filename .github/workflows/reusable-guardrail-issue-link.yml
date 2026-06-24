@@ -90,7 +90,9 @@ jobs:
                 ``,
                 problemList,
                 ``,
-                `https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/using-keywords-in-issues-and-pull-requests`,
+                `Add the link with a keyword in the **PR description** (not in a comment): https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/using-keywords-in-issues-and-pull-requests`,
+                ``,
+                lib.REVALIDATE_HINT,
               ].join('\n'),
             });
             core.setFailed('Issue-link guardrail failed.');
