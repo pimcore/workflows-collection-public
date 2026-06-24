@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: pimcore/workflows-collection-public
-          ref: feature/pr-guardrails
+          ref: main
           path: _central
 
       - id: check
