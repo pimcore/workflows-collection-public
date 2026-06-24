@@ -97,10 +97,16 @@ No consumer repo is touched.
 
 ## Configuration
 
-`lib.js` reads `GUARD_ORG`, `GUARD_TEAM_SLUG`, `GUARD_ISSUE_OWNER`,
-`GUARD_ISSUE_REPO` from the environment (defaults `pimcore` / `dev-team` /
-`pimcore/platform-version`). Confirm the **team slug** — the slug of "Dev-Team"
-is assumed to be `dev-team`.
+`lib.js` reads these from the environment:
+
+- `GUARD_ORG` (default `pimcore`)
+- `GUARD_TEAM_SLUG` (default `dev-team`) — confirm the slug of "Dev-Team"
+- `GUARD_ISSUE_OWNER` / `GUARD_ISSUE_REPO` (default `pimcore` / `platform-version`)
+- `GUARD_BOT_LOGIN` (default `pimcore-deployments`) — the service account the
+  guardrails act as. Used to (a) ignore the bot's own draft-conversions during
+  override retraction, and (b) restrict marker-comment management to the bot's
+  own comments. **Set this if your guardrail tokens belong to a different
+  account**, or retraction and comment cleanup will misbehave.
 
 ## Security
 

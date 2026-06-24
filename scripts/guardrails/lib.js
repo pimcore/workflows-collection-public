@@ -6,8 +6,9 @@
 // only), never interpolated as code or commands.
 //
 // Configuration can be overridden per workflow via environment variables
-// (GUARD_ORG, GUARD_TEAM_SLUG, GUARD_ISSUE_OWNER, GUARD_ISSUE_REPO) without
-// editing this file.
+// (GUARD_ORG, GUARD_TEAM_SLUG, GUARD_ISSUE_OWNER, GUARD_ISSUE_REPO, and
+// GUARD_BOT_LOGIN — the service account the guardrails act as) without editing
+// this file.
 
 const ORG = process.env.GUARD_ORG || 'pimcore';
 const TEAM_SLUG = process.env.GUARD_TEAM_SLUG || 'dev-team'; // slug of the "Dev-Team" GitHub team
@@ -122,16 +123,22 @@ async function getMergeablePullRequest({ github, owner, repo, prNumber, attempts
   return pr;
 }
 
-/** Convert a pull request to draft via GraphQL. */
+/** Convert a pull request to draft via GraphQL. Idempotent: if the PR is already
+ *  a draft (e.g. two guardrail jobs race), the "already a draft" error is ignored. */
 async function convertToDraft({ github, pullRequestNodeId }) {
-  await github.graphql(
-    `mutation($id: ID!) {
-       convertPullRequestToDraft(input: { pullRequestId: $id }) {
-         pullRequest { isDraft }
-       }
-     }`,
-    { id: pullRequestNodeId },
-  );
+  try {
+    await github.graphql(
+      `mutation($id: ID!) {
+         convertPullRequestToDraft(input: { pullRequestId: $id }) {
+           pullRequest { isDraft }
+         }
+       }`,
+      { id: pullRequestNodeId },
+    );
+  } catch (err) {
+    if (String(err && err.message || '').toLowerCase().includes('draft')) return; // already a draft
+    throw err;
+  }
 }
 
 /**
@@ -150,9 +157,12 @@ async function upsertComment({ github, context, issueNumber, marker, body }) {
     issue_number,
     per_page: 100,
   });
-  // Handle duplicates (e.g. from a prior race): update the first marker comment
-  // and delete any extras so a single marker comment remains.
-  const matches = comments.filter((c) => c.body && c.body.includes(tag));
+  // Only manage OUR own marker comments (authored by the guard bot), so a human
+  // comment that happens to contain the marker is never mutated. Handle duplicates
+  // (e.g. from a prior race): update the first and delete any extras.
+  const matches = comments.filter(
+    (c) => c.user && c.user.login === GUARD_BOT && c.body && c.body.includes(tag),
+  );
 
   if (matches.length === 0) {
     await github.rest.issues.createComment({ owner, repo, issue_number, body: fullBody });
@@ -177,9 +187,12 @@ async function deleteMarkerComment({ github, context, issueNumber, marker }) {
     issue_number,
     per_page: 100,
   });
-  // Delete ALL matching marker comments, so duplicates (e.g. from a prior race)
-  // do not leave a stale failure comment behind.
-  const matches = comments.filter((c) => c.body && c.body.includes(tag));
+  // Delete ALL of OUR matching marker comments (authored by the guard bot), so
+  // duplicates do not leave a stale comment behind and human comments containing
+  // the marker are never deleted.
+  const matches = comments.filter(
+    (c) => c.user && c.user.login === GUARD_BOT && c.body && c.body.includes(tag),
+  );
   for (const c of matches) {
     await github.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
   }
