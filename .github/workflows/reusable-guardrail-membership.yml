@@ -1,0 +1,138 @@
+name: "Reusable Guardrail: Dev-Team membership"
+
+# Fast-path / bypass guardrail. Emits `bypass=true` (so the orchestrator skips
+# the issue-link and CI guardrails) when ANY of:
+#   - the PR author is a Dev-Team member, or
+#   - the PR carries the override label, or
+#   - a Dev-Team member pressed "Ready for review" on the PR (manual override) —
+#     in which case the override label is added so later runs keep bypassing.
+# This workflow never converts a PR to draft and always succeeds.
+#
+# Called by parent-pr-guardrails.yml in the caller's event context.
+
+on:
+  workflow_call:
+    secrets:
+      MEMBERSHIP_GUARD_TOKEN:
+        required: true
+    outputs:
+      bypass:
+        description: "true when ALL associated PRs should be skipped (member author, override label, or member override)"
+        value: ${{ jobs.membership.outputs.bypass }}
+      bypassed_prs:
+        description: "JSON array of the PR numbers that individually qualify for bypass"
+        value: ${{ jobs.membership.outputs.bypassed_prs }}
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  membership:
+    name: "Guardrail: Dev-Team membership"
+    runs-on: ubuntu-latest
+    outputs:
+      bypass: ${{ steps.check.outputs.bypass }}
+      bypassed_prs: ${{ steps.check.outputs.bypassed_prs }}
+    steps:
+      # Load lib.js from this collection on `main` (stable ref). Changing logic is
+      # just edit + push to main — no ref change needed here. Public repo, trusted
+      # ref (never the PR head) → no token needed for checkout.
+      - uses: actions/checkout@v4
+        with:
+          repository: pimcore/workflows-collection-public
+          ref: main
+          path: _central
+
+      - id: check
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.MEMBERSHIP_GUARD_TOKEN }}
+          script: |
+            const lib = require(`${process.env.GITHUB_WORKSPACE}/_central/scripts/guardrails/lib.js`);
+            const OVERRIDE_LABEL = 'guardrails:override';
+
+            // Resolve the PR(s) for this event. On pull_request_target there is
+            // exactly one; on check_suite resolve from the payload / commit.
+            async function resolvePrs() {
+              if (context.payload.pull_request) return [context.payload.pull_request];
+              if (context.eventName === 'check_suite') {
+                const cs = context.payload.check_suite;
+                let prs = cs.pull_requests || [];
+                if (prs.length === 0) {
+                  const { data } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                    ...context.repo, commit_sha: cs.head_sha,
+                  });
+                  prs = data;
+                }
+                // check_suite PR entries are minimal; fetch the full PR.
+                const full = [];
+                for (const p of prs) {
+                  const { data } = await github.rest.pulls.get({ ...context.repo, pull_number: p.number });
+                  full.push(data);
+                }
+                return full;
+              }
+              return [];
+            }
+
+            const prs = await resolvePrs();
+            if (prs.length === 0) {
+              core.info('No pull request for this event; not bypassing.');
+              core.setOutput('bypass', 'false');
+              core.setOutput('bypassed_prs', '[]');
+              return;
+            }
+
+            const action = context.payload.action;
+            const actor = context.payload.sender && context.payload.sender.login;
+
+            // A Dev-Team member converting the PR back to draft retracts the
+            // override: remove the label so the guardrails re-apply next time it
+            // is made ready. The guard service account is itself a Dev-Team
+            // member, so its own draft-conversions (when a guardrail drafts a PR)
+            // are explicitly ignored — only a human member retracts.
+            if (context.eventName === 'pull_request_target' && action === 'converted_to_draft') {
+              if (actor && actor !== lib.GUARD_BOT && await lib.isDevTeamMember({ github, username: actor })) {
+                for (const pr of prs) {
+                  await lib.removeLabel({ github, context, issueNumber: pr.number, label: OVERRIDE_LABEL });
+                  core.info(`@${actor} (Dev-Team) converted PR #${pr.number} to draft — override label removed.`);
+                }
+              }
+              core.setOutput('bypass', 'false');
+              core.setOutput('bypassed_prs', '[]');
+              return;
+            }
+
+            // Manual override: a Dev-Team member pressing "Ready for review" on a
+            // PR. The override is persisted as a label so later events (e.g.
+            // check_suite) keep bypassing instead of re-drafting.
+            const isReadyForReview = context.eventName === 'pull_request_target'
+              && action === 'ready_for_review';
+
+            // Compute bypass PER PR. `bypassed_prs` lets later guardrails skip the
+            // exact PRs that qualify (important when a check_suite is shared by
+            // several PRs); `bypass` (all qualify) drives the orchestrator's gate.
+            let allBypass = true;
+            const bypassedPrs = [];
+            for (const pr of prs) {
+              const hasLabel = (pr.labels || []).some((l) => l.name === OVERRIDE_LABEL);
+              let bypass = hasLabel || await lib.isDevTeamMember({ github, username: pr.user.login });
+
+              if (!bypass && isReadyForReview && actor
+                  && await lib.isDevTeamMember({ github, username: actor })) {
+                bypass = true;
+                await lib.addLabel({ github, context, issueNumber: pr.number, label: OVERRIDE_LABEL });
+                // Override clears any guardrail failure comments left by earlier runs.
+                for (const m of ['guardrail:issue-link', 'guardrail:ci-status']) {
+                  await lib.deleteMarkerComment({ github, context, issueNumber: pr.number, marker: m });
+                }
+                core.info(`Override: @${actor} (Dev-Team) marked PR #${pr.number} ready — guardrails bypassed, failure comments cleared.`);
+              }
+
+              core.info(`PR #${pr.number}: bypass=${bypass}`);
+              if (bypass) bypassedPrs.push(pr.number); else allBypass = false;
+            }
+            core.setOutput('bypass', allBypass ? 'true' : 'false');
+            core.setOutput('bypassed_prs', JSON.stringify(bypassedPrs));

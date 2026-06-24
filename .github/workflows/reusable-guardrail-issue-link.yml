@@ -1,0 +1,101 @@
+name: "Reusable Guardrail: Issue link"
+
+# Enforcing guardrail. The orchestrator only invokes this for non-draft PRs whose
+# author is NOT a Dev-Team member, so there is no membership check here. The PR
+# must link at least one valid issue in pimcore/platform-version using a
+# supported closing keyword, AND every closing-keyword reference must be valid.
+# On failure the PR is converted to draft with an explanatory comment.
+#
+# Called by parent-pr-guardrails.yml in the caller's pull_request_target context.
+
+on:
+  workflow_call:
+    secrets:
+      ISSUE_LINK_GUARD_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  issue-link:
+    name: "Guardrail: Issue link"
+    runs-on: ubuntu-latest
+    steps:
+      # Load lib.js from this collection on `main` (stable ref). Changing logic is
+      # just edit + push to main — no ref change needed here. Public repo, trusted
+      # ref (never the PR head) → no token needed for checkout.
+      - uses: actions/checkout@v4
+        with:
+          repository: pimcore/workflows-collection-public
+          ref: main
+          path: _central
+
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.ISSUE_LINK_GUARD_TOKEN }}
+          script: |
+            const lib = require(`${process.env.GITHUB_WORKSPACE}/_central/scripts/guardrails/lib.js`);
+            const marker = 'guardrail:issue-link';
+
+            const pr = context.payload.pull_request;
+            const issueNumber = pr.number;
+
+            // Parse closing-keyword references from title + body (untrusted data).
+            const text = `${pr.title}\n\n${pr.body || ''}`;
+            const refs = lib.parseIssueReferences(text);
+
+            const problems = [];
+            let validCount = 0;
+
+            if (refs.length === 0) {
+              problems.push(`No issue in \`${lib.ISSUE_REPO_OWNER}/${lib.ISSUE_REPO_NAME}\` is linked.`);
+            }
+
+            for (const ref of refs) {
+              // Every reference must target the platform-version repo.
+              if (
+                ref.owner.toLowerCase() !== lib.ISSUE_REPO_OWNER.toLowerCase() ||
+                ref.repo.toLowerCase() !== lib.ISSUE_REPO_NAME.toLowerCase()
+              ) {
+                problems.push(`\`${ref.raw}\` does not reference \`${lib.ISSUE_REPO_OWNER}/${lib.ISSUE_REPO_NAME}\`.`);
+                continue;
+              }
+              const res = await lib.validateIssue({ github, owner: ref.owner, repo: ref.repo, number: ref.number });
+              if (res.valid) {
+                validCount++;
+              } else {
+                problems.push(`\`${ref.raw}\` is not valid: ${res.reason}.`);
+              }
+            }
+
+            const passed = refs.length > 0 && problems.length === 0 && validCount > 0;
+
+            if (passed) {
+              core.info(`Issue-link guardrail passed (${validCount} valid link(s)).`);
+              await lib.deleteMarkerComment({ github, context, issueNumber, marker });
+              return;
+            }
+
+            // FAIL → convert to draft + comment the simple reason(s) + docs link.
+            if (!pr.draft) {
+              await lib.convertToDraft({ github, pullRequestNodeId: pr.node_id });
+            }
+            const problemList = problems.map((p) => `- ${p}`).join('\n');
+            await lib.upsertComment({
+              github, context, issueNumber, marker,
+              body: [
+                `🚫 **Issue-link guardrail failed — this PR has been converted to draft.**`,
+                ``,
+                `Every PR must reference a tracking issue in \`${lib.ISSUE_REPO_OWNER}/${lib.ISSUE_REPO_NAME}\` so the change stays traceable.`,
+                ``,
+                problemList,
+                ``,
+                `Add the link with a keyword in the **PR description** (not in a comment): https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/using-keywords-in-issues-and-pull-requests`,
+                ``,
+                lib.REVALIDATE_HINT,
+              ].join('\n'),
+            });
+            core.setFailed('Issue-link guardrail failed.');
