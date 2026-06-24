@@ -39,11 +39,14 @@ added/removed — that only changes this repo (+ org secrets).
 
 ## Pipeline
 
+Comments are posted **only when a guardrail fails**. On a pass (or when a member
+is exempt) no comment is created, and any prior failure comment is removed.
+
 | Stage | Runs when | On failure |
 |-------|-----------|------------|
-| membership | all events (resolves author on PR + `check_suite`) | never drafts; emits `is_member` |
-| issue-link | non-draft PR events **and** author is not a Dev-Team member | draft + comment |
-| ci | all events (PR + `check_suite`) **and** author is not a Dev-Team member | draft + comment |
+| membership | all events (resolves author on PR + `check_suite`) | never drafts, never comments; emits `is_member` |
+| issue-link | non-draft PR events **and** author is not a Dev-Team member | draft + comment (reason + docs link) |
+| ci | all events (PR + `check_suite`) **and** author is not a Dev-Team member | draft + comment (reason) |
 
 - **Members are fully exempt**: if the PR author is a Dev-Team member,
   `is_member=true` and the orchestrator **skips every other guardrail** (both
@@ -58,8 +61,10 @@ added/removed — that only changes this repo (+ org secrets).
 ## Revalidation
 
 On failure a guardrail converts the PR to **draft** and posts a single marker
-comment (updated in place on re-runs). The PR author fixes the issue and clicks
-**Ready for review**; the `ready_for_review` event re-fires the pipeline.
+comment with the reason (issue-link also links the GitHub keywords docs). The PR
+author fixes the issue and clicks **Ready for review**; the `ready_for_review`
+event re-fires the pipeline. When the guardrail then passes, its failure comment
+is removed.
 
 ## Tokens & required settings
 
@@ -73,7 +78,7 @@ used for `CI_GUARD_TOKEN` because it has no *Checks* permission.
 
 | Token | GitHub App permissions (by target repo / org) | Classic PAT scopes | Used for |
 |-------|-----------------------------------------------|--------------------|----------|
-| `MEMBERSHIP_GUARD_TOKEN` | consumer repo → Pull requests: **R&W**; `pimcore` org → Members: **Read** | `repo` (or `public_repo`) + `read:org` | Team-membership lookup; read PR(s) (incl. resolving from `check_suite`); post membership comment. Never drafts. |
+| `MEMBERSHIP_GUARD_TOKEN` | consumer repo → Pull requests: **Read**; `pimcore` org → Members: **Read** | `repo` (or `public_repo`) + `read:org` | Team-membership lookup; read PR(s) (incl. resolving from `check_suite`). Never drafts, never comments. |
 | `ISSUE_LINK_GUARD_TOKEN` | consumer repo → Pull requests: **R&W**; `pimcore/platform-version` → Issues: **Read** | `repo` (+ read on `platform-version` if private) | Validate linked issues exist; convert PR to draft; comment. No org permission. |
 | `CI_GUARD_TOKEN` | consumer repo → Pull requests: **R&W**, Checks: **Read**, Commit statuses: **Read**, Contents: **Read** | `repo` | Read PR + mergeability; list checks & statuses; convert PR to draft; comment. No org permission. |
 

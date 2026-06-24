@@ -19,8 +19,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
+  pull-requests: read
 
 jobs:
   membership:
@@ -43,7 +42,6 @@ jobs:
           github-token: ${{ secrets.MEMBERSHIP_GUARD_TOKEN }}
           script: |
             const lib = require(`${process.env.GITHUB_WORKSPACE}/_central/scripts/guardrails/lib.js`);
-            const marker = 'guardrail:membership';
 
             // Resolve the PR(s) for this event. On pull_request_target there is
             // exactly one; on check_suite resolve from the payload / commit.
@@ -78,26 +76,13 @@ jobs:
 
             // is_member is 'true' only if EVERY associated PR author is a member
             // (so if any non-member PR is in scope, the other guardrails still run).
+            // Membership posts no comment (only failed guardrails comment); it
+            // just resolves whether every PR author is a member.
             let allMembers = true;
             for (const pr of prs) {
               const author = pr.user.login;
               const member = await lib.isDevTeamMember({ github, username: author });
               if (!member) allMembers = false;
               core.info(`${author} (PR #${pr.number}): member=${member}`);
-
-              // Comment only on the direct PR event (avoids noise on check_suite).
-              if (context.eventName === 'pull_request_target') {
-                if (member) {
-                  await lib.upsertComment({
-                    github, context, issueNumber: pr.number, marker,
-                    body: `✅ **Dev-Team membership guardrail passed** — @${author} is a member of \`${lib.ORG}/${lib.TEAM_SLUG}\`. This PR is exempt from all other guardrails.`,
-                  });
-                } else {
-                  await lib.upsertComment({
-                    github, context, issueNumber: pr.number, marker,
-                    body: `ℹ️ @${author} is **not** a member of \`${lib.ORG}/${lib.TEAM_SLUG}\`, so the remaining guardrails apply: link a valid issue in \`${lib.ISSUE_REPO_OWNER}/${lib.ISSUE_REPO_NAME}\` and pass CI.`,
-                  });
-                }
-              }
             }
             core.setOutput('is_member', allMembers ? 'true' : 'false');

@@ -40,7 +40,6 @@ jobs:
             const marker = 'guardrail:issue-link';
 
             const pr = context.payload.pull_request;
-            const author = pr.user.login;
             const issueNumber = pr.number;
 
             // Parse closing-keyword references from title + body (untrusted data).
@@ -51,20 +50,16 @@ jobs:
             let validCount = 0;
 
             if (refs.length === 0) {
-              problems.push(
-                `No closing-keyword issue reference found. Add one, e.g. \`Fixes ${lib.ISSUE_REPO_OWNER}/${lib.ISSUE_REPO_NAME}#123\`.`,
-              );
+              problems.push(`No issue in \`${lib.ISSUE_REPO_OWNER}/${lib.ISSUE_REPO_NAME}\` is linked.`);
             }
 
             for (const ref of refs) {
-              // Every keyword reference must target the platform-version repo.
+              // Every reference must target the platform-version repo.
               if (
                 ref.owner.toLowerCase() !== lib.ISSUE_REPO_OWNER.toLowerCase() ||
                 ref.repo.toLowerCase() !== lib.ISSUE_REPO_NAME.toLowerCase()
               ) {
-                problems.push(
-                  `\`${ref.raw}\` references \`${ref.owner}/${ref.repo}\`, but only \`${lib.ISSUE_REPO_OWNER}/${lib.ISSUE_REPO_NAME}\` is accepted.`,
-                );
+                problems.push(`\`${ref.raw}\` does not reference \`${lib.ISSUE_REPO_OWNER}/${lib.ISSUE_REPO_NAME}\`.`);
                 continue;
               }
               const res = await lib.validateIssue({ github, owner: ref.owner, repo: ref.repo, number: ref.number });
@@ -79,14 +74,11 @@ jobs:
 
             if (passed) {
               core.info(`Issue-link guardrail passed (${validCount} valid link(s)).`);
-              await lib.upsertComment({
-                github, context, issueNumber, marker,
-                body: `✅ **Issue-link guardrail passed** — ${validCount} valid issue link(s) to \`${lib.ISSUE_REPO_OWNER}/${lib.ISSUE_REPO_NAME}\`.`,
-              });
+              await lib.deleteMarkerComment({ github, context, issueNumber, marker });
               return;
             }
 
-            // FAIL → convert to draft + explain.
+            // FAIL → convert to draft + comment the simple reason(s) + docs link.
             if (!pr.draft) {
               await lib.convertToDraft({ github, pullRequestNodeId: pr.node_id });
             }
@@ -96,14 +88,9 @@ jobs:
               body: [
                 `🚫 **Issue-link guardrail failed — this PR has been converted to draft.**`,
                 ``,
-                `@${author} is not a member of \`${lib.ORG}/${lib.TEAM_SLUG}\`, so this PR must link a valid issue in \`${lib.ISSUE_REPO_OWNER}/${lib.ISSUE_REPO_NAME}\` using a supported closing keyword, and every closing-keyword reference must be valid.`,
-                ``,
-                `**Problems found:**`,
                 problemList,
                 ``,
-                `**Supported keywords:** ${lib.CLOSING_KEYWORDS.join(', ')}`,
-                ``,
-                lib.REVALIDATE_HINT,
+                `https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/using-keywords-in-issues-and-pull-requests`,
               ].join('\n'),
             });
             core.setFailed('Issue-link guardrail failed.');

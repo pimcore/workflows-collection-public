@@ -155,10 +155,24 @@ async function upsertComment({ github, context, issueNumber, marker, body }) {
   }
 }
 
-/** Shared "how to revalidate" footer for failure comments. */
-const REVALIDATE_HINT =
-  '**To revalidate:** fix the issue above, then click **“Ready for review”** on this PR. ' +
-  'The guardrail re-runs automatically and, if it passes, the PR stays ready.';
+/** Delete the marker comment if present (used when a guardrail now passes, so a
+ *  stale failure comment does not linger). No-op when there is nothing to remove. */
+async function deleteMarkerComment({ github, context, issueNumber, marker }) {
+  const { owner, repo } = context.repo;
+  const issue_number = issueNumber || context.payload.pull_request.number;
+  const tag = `<!-- ${marker} -->`;
+
+  const comments = await github.paginate(github.rest.issues.listComments, {
+    owner,
+    repo,
+    issue_number,
+    per_page: 100,
+  });
+  const existing = comments.find((c) => c.body && c.body.includes(tag));
+  if (existing) {
+    await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id });
+  }
+}
 
 module.exports = {
   ORG,
@@ -166,11 +180,11 @@ module.exports = {
   ISSUE_REPO_OWNER,
   ISSUE_REPO_NAME,
   CLOSING_KEYWORDS,
-  REVALIDATE_HINT,
   isDevTeamMember,
   parseIssueReferences,
   validateIssue,
   getMergeablePullRequest,
   convertToDraft,
   upsertComment,
+  deleteMarkerComment,
 };
