@@ -150,12 +150,17 @@ async function upsertComment({ github, context, issueNumber, marker, body }) {
     issue_number,
     per_page: 100,
   });
-  const existing = comments.find((c) => c.body && c.body.includes(tag));
+  // Handle duplicates (e.g. from a prior race): update the first marker comment
+  // and delete any extras so a single marker comment remains.
+  const matches = comments.filter((c) => c.body && c.body.includes(tag));
 
-  if (existing) {
-    await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: fullBody });
-  } else {
+  if (matches.length === 0) {
     await github.rest.issues.createComment({ owner, repo, issue_number, body: fullBody });
+    return;
+  }
+  await github.rest.issues.updateComment({ owner, repo, comment_id: matches[0].id, body: fullBody });
+  for (const dup of matches.slice(1)) {
+    await github.rest.issues.deleteComment({ owner, repo, comment_id: dup.id });
   }
 }
 
@@ -172,9 +177,11 @@ async function deleteMarkerComment({ github, context, issueNumber, marker }) {
     issue_number,
     per_page: 100,
   });
-  const existing = comments.find((c) => c.body && c.body.includes(tag));
-  if (existing) {
-    await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id });
+  // Delete ALL matching marker comments, so duplicates (e.g. from a prior race)
+  // do not leave a stale failure comment behind.
+  const matches = comments.filter((c) => c.body && c.body.includes(tag));
+  for (const c of matches) {
+    await github.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
   }
 }
 

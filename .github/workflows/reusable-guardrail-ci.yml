@@ -33,12 +33,13 @@ jobs:
     name: "Guardrail: CI & merge readiness"
     runs-on: ubuntu-latest
     steps:
-      # Checks out this (trusted, public) collection repo to load lib.js
-      # (never the PR head). Public repo → no token needed for checkout.
+      # Load lib.js from this reusable workflow's exact commit (job_workflow_sha)
+      # so it always matches the running version and survives branch deletion on
+      # merge. Public repo, trusted ref (never the PR head) → no token needed.
       - uses: actions/checkout@v4
         with:
           repository: pimcore/workflows-collection-public
-          ref: feature/pr-guardrails
+          ref: ${{ github.job_workflow_sha }}
           path: _central
 
       - uses: actions/github-script@v7

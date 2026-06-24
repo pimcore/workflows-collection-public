@@ -46,7 +46,7 @@ is exempt) no comment is created, and any prior failure comment is removed.
 
 | Stage | Runs when | On failure |
 |-------|-----------|------------|
-| membership | all events (resolves author on PR + `check_suite`) | never drafts, never comments; emits `bypass` |
+| membership | `check_suite`, non-draft PR events, and `converted_to_draft` (skipped on draft PR events) | never drafts, never comments; emits `bypass` |
 | issue-link | non-draft PR events **and** not bypassed | draft + comment (reason + docs link) |
 | ci | all events (PR + `check_suite`) **and** not bypassed | draft + comment (reason) |
 
