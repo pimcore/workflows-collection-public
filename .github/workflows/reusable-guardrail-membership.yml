@@ -117,8 +117,14 @@ jobs:
             let allBypass = true;
             const bypassedPrs = [];
             for (const pr of prs) {
+              // PRs opened before the start date are exempt (checked before any
+              // API call). Then override label, then Dev-Team membership.
+              const ageExempt = lib.isExemptByAge(pr);
               const hasLabel = (pr.labels || []).some((l) => l.name === OVERRIDE_LABEL);
-              let bypass = hasLabel || await lib.isDevTeamMember({ github, username: pr.user.login });
+              let bypass = ageExempt || hasLabel || await lib.isDevTeamMember({ github, username: pr.user.login });
+              if (ageExempt) {
+                core.info(`PR #${pr.number} created ${pr.created_at} is before start date ${lib.START_DATE} — exempt.`);
+              }
 
               if (!bypass && isReadyForReview && actor
                   && await lib.isDevTeamMember({ github, username: actor })) {
