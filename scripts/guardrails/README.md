@@ -50,6 +50,9 @@ is exempt) no comment is created, and any prior failure comment is removed.
 | issue-link | non-draft PR events **and** not bypassed | draft + comment (reason + docs link) |
 | ci | all events (PR + `check_suite`) **and** not bypassed | draft + comment (reason) |
 
+- **Age exemption**: PRs created **before `GUARD_START_DATE`** (default
+  `2026-07-07`) are exempt — every guardrail skips them, so the policy only
+  applies to PRs opened on/after that date.
 - **Bypass**: the membership stage emits `bypass=true` (orchestrator skips both
   issue-link and CI) when the PR author is a Dev-Team member, the PR carries the
   `guardrails:override` label, or a Dev-Team member overrode it (see below).
@@ -107,6 +110,9 @@ No consumer repo is touched.
   override retraction, and (b) restrict marker-comment management to the bot's
   own comments. **Set this if your guardrail tokens belong to a different
   account**, or retraction and comment cleanup will misbehave.
+- `GUARD_START_DATE` (default `2026-07-07`) — only PRs **created on/after** this
+  date are checked; older PRs are exempt (all guardrails skip). Set to empty to
+  disable the date gate and check every PR.
 
 ## Security
 

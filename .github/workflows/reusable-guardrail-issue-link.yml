@@ -43,6 +43,12 @@ jobs:
             const pr = context.payload.pull_request;
             const issueNumber = pr.number;
 
+            // PRs opened before the start date are exempt (not checked).
+            if (lib.isExemptByAge(pr)) {
+              core.info(`PR #${pr.number} predates ${lib.START_DATE} — exempt from issue-link guardrail.`);
+              return;
+            }
+
             // Parse closing-keyword references from title + body (untrusted data).
             const text = `${pr.title}\n\n${pr.body || ''}`;
             const refs = lib.parseIssueReferences(text);

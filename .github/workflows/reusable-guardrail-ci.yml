@@ -94,6 +94,10 @@ jobs:
                 core.info(`PR #${prNumber} is a draft; skipping (work in progress).`);
                 return null;
               }
+              if (lib.isExemptByAge(pr)) {
+                core.info(`PR #${prNumber} predates ${lib.START_DATE}; skipping (exempt).`);
+                return null;
+              }
               const headSha = pr.head.sha;
 
               const failures = [];

@@ -17,6 +17,9 @@ const ISSUE_REPO_NAME = process.env.GUARD_ISSUE_REPO || 'platform-version';
 // Service account the guardrails act as (drafts PRs, comments). It is itself a
 // Dev-Team member, so override retraction must ignore draft-conversions by it.
 const GUARD_BOT = process.env.GUARD_BOT_LOGIN || 'pimcore-deployments';
+// Only PRs created on/after this date are checked; older PRs are exempt. Empty
+// disables the date gate. ISO date (UTC) — e.g. "2026-07-07".
+const START_DATE = process.env.GUARD_START_DATE || '2026-07-07';
 
 // GitHub's supported issue-closing keywords.
 const CLOSING_KEYWORDS = [
@@ -24,6 +27,16 @@ const CLOSING_KEYWORDS = [
   'fix', 'fixes', 'fixed',
   'resolve', 'resolves', 'resolved',
 ];
+
+/**
+ * True if the PR predates the guardrail start date and is therefore exempt.
+ * Older PRs (opened before START_DATE) are not checked. Returns false if no
+ * start date is configured or the PR has no created_at.
+ */
+function isExemptByAge(pr, startDate = START_DATE) {
+  if (!startDate || !pr || !pr.created_at) return false;
+  return new Date(pr.created_at).getTime() < new Date(startDate).getTime();
+}
 
 /**
  * Returns true if `username` is an active member of org/teamSlug.
@@ -239,8 +252,10 @@ module.exports = {
   ISSUE_REPO_OWNER,
   ISSUE_REPO_NAME,
   GUARD_BOT,
+  START_DATE,
   CLOSING_KEYWORDS,
   REVALIDATE_HINT,
+  isExemptByAge,
   isDevTeamMember,
   parseIssueReferences,
   validateIssue,
