@@ -110,16 +110,16 @@ jobs:
                 pendingReasons.push('mergeability is still being computed by GitHub');
               }
 
-              // 2) CI check runs. listForRef returns { total_count, check_runs };
-              // pass a map function so paginate yields the flat check_runs array.
+              // 2) CI check runs. octokit's paginate already flattens this
+              // endpoint's { total_count, check_runs } response into a plain array
+              // of check runs (no map function — with one, response.data is the
+              // already-normalized array, so .check_runs would be undefined).
               // A SHA accumulates a check run per (re-)run, so keep only the LATEST
               // run per check name (highest id) — otherwise a stale failure that was
               // later re-run green would still count. Then drop our own guardrail checks.
-              const allChecks = await github.paginate(
-                github.rest.checks.listForRef,
-                { ...context.repo, ref: headSha, per_page: 100 },
-                (response) => response.data.check_runs,
-              );
+              const allChecks = await github.paginate(github.rest.checks.listForRef, {
+                ...context.repo, ref: headSha, per_page: 100,
+              });
               const latestByName = new Map();
               for (const c of allChecks) {
                 const prev = latestByName.get(c.name);
