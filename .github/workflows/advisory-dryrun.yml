@@ -1,0 +1,45 @@
+name: Advisory Dry Run
+
+# Read-only demo: given a GHSA id, print the routing decision the automation
+# WOULD make. Creates nothing. Trigger manually from the Actions tab.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ghsa_id:
+        description: "GHSA id to evaluate (e.g. GHSA-34vf-ww58-w3wc)"
+        required: true
+        type: string
+      repo:
+        description: "Advisory source repo"
+        required: false
+        default: "pimcore/pimcore"
+        type: string
+
+permissions:
+  contents: read
+  security-events: read
+
+jobs:
+  dryrun:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scripts/security-advisory-automation
+    env:
+      # Prefer a PAT that can read repository security advisories (incl. triage
+      # state); fall back to the default GITHUB_TOKEN. If the token lacks
+      # advisory read access the `gh api` call will 404/403 — add an
+      # ADVISORY_READ_TOKEN secret (a PAT with security-advisory read) then.
+      GH_TOKEN: ${{ secrets.ADVISORY_READ_TOKEN != '' && secrets.ADVISORY_READ_TOKEN || secrets.GITHUB_TOKEN }}
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install runtime deps
+        run: python -m pip install --upgrade pip "PyYAML>=6.0"
+      - name: Dry run
+        run: python -m advisory_automation.dryrun "${{ inputs.ghsa_id }}" --repo "${{ inputs.repo }}"

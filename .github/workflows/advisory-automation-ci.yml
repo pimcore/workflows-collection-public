@@ -1,0 +1,38 @@
+name: Advisory Automation CI
+
+# Runs the security-advisory-automation config-layer test suite in GitHub
+# Actions. Scoped via paths so it only fires when that tool changes.
+
+on:
+  push:
+    paths:
+      - "scripts/security-advisory-automation/**"
+      - ".github/workflows/advisory-automation-ci.yml"
+  pull_request:
+    paths:
+      - "scripts/security-advisory-automation/**"
+      - ".github/workflows/advisory-automation-ci.yml"
+
+# Least privilege: this job only reads the checked-out code.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: scripts/security-advisory-automation
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest "PyYAML>=6.0"
+      - name: Run tests
+        run: python -m pytest -v
