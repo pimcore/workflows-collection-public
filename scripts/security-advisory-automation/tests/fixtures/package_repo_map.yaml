@@ -1,5 +1,0 @@
-packages:
-  "pimcore/pimcore":
-    repo: "pimcore/pimcore"
-  "pimcore/data-hub":
-    repo: "pimcore/data-hub"
