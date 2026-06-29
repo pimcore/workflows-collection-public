@@ -36,9 +36,12 @@ jobs:
           github-token: ${{ secrets.ADVISORY_READ_TOKEN != '' && secrets.ADVISORY_READ_TOKEN || github.token }}
           script: |
             const { runDryRun } = require(`${process.env.GITHUB_WORKSPACE}/scripts/security-advisory-automation/index.js`);
+            // Public repo: non-published advisories are redacted in the log. Full detail is
+            // available only via the local CLI.
             await runDryRun({
               github,
               repo: process.env.SRC_REPO,
               ghsaId: process.env.GHSA_ID,
               log: core.info,
+              publicSafe: true,
             });

@@ -48,3 +48,39 @@ test('formatReport: no packages produces HUMAN-FALLBACK line', () => {
   const report = formatReport(adv, route(adv));
   assert.ok(report.includes('HUMAN-FALLBACK'));
 });
+
+test('formatReport: publicSafe + triage → redacted, no sensitive details', () => {
+  const adv = makeCriticalAdvisory();
+  const report = formatReport(adv, route(adv), { publicSafe: true });
+  assert.ok(report.includes(BANNER));
+  assert.ok(report.includes('GHSA-34vf-ww58-w3wc'));
+  assert.ok(report.includes('[state: triage]'));
+  assert.ok(report.includes('details suppressed'));
+  assert.ok(!report.includes('IDOR in version deletion')); // no summary
+  assert.ok(!report.includes('pimcore/admin-ui-classic-bundle')); // no package
+  assert.ok(!report.includes('fix repo:')); // no routing detail
+  assert.ok(!report.includes('LTS backport:')); // no lts detail
+  assert.ok(!report.includes('ee-')); // no ee-* repo
+});
+
+test('formatReport: publicSafe + published → full report, not redacted', () => {
+  const adv = {
+    ghsaId: 'GHSA-34vf-ww58-w3wc',
+    state: 'published',
+    severity: 'critical',
+    summary: 'IDOR in version deletion',
+    packages: ['pimcore/admin-ui-classic-bundle'],
+  };
+  const report = formatReport(adv, route(adv), { publicSafe: true });
+  assert.ok(report.includes('fix repo:'));
+  assert.ok(report.includes('pimcore/admin-ui-classic-bundle'));
+});
+
+test('formatReport: publicSafe false (or omitted) + triage → full report', () => {
+  const adv = makeCriticalAdvisory();
+  const report = formatReport(adv, route(adv), { publicSafe: false });
+  assert.ok(report.includes('fix repo:'));
+  assert.ok(report.includes('pimcore/admin-ui-classic-bundle'));
+  const reportDefault = formatReport(adv, route(adv));
+  assert.ok(reportDefault.includes('fix repo:'));
+});

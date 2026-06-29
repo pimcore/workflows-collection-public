@@ -60,3 +60,8 @@ optionally a source repo.
 
 If the workflow token lacks advisory read access, add an `ADVISORY_READ_TOKEN`
 secret (a PAT with security-advisory read scope).
+
+Because this repository is public and Actions logs are world-readable, the CI
+dry-run **redacts non-published advisories** (prints only a minimal
+acknowledgment with the GHSA id and state). Use the local CLI for full detail
+on `triage`/unpublished advisories.

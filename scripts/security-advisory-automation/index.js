@@ -25,11 +25,11 @@ const {
  * Dry-run: fetch advisory/advisories and log the routing report.
  * @param {{ github: object, repo: string, ghsaId?: string, latest?: number, log?: function }} opts
  */
-async function runDryRun({ github, repo, ghsaId, latest, log = console.log }) {
+async function runDryRun({ github, repo, ghsaId, latest, log = console.log, publicSafe = true }) {
   const raws = latest
     ? await fetchLatestViaOctokit(github, repo, latest)
     : [await fetchAdvisoryViaOctokit(github, repo, ghsaId)];
-  log(raws.map(buildReport).join('\n\n'));
+  log(raws.map((raw) => buildReport(raw, { publicSafe })).join('\n\n'));
 }
 
 module.exports = {
