@@ -26,8 +26,6 @@ const {
  * @param {{ github: object, repo: string, ghsaId?: string, latest?: number, log?: function }} opts
  */
 async function runDryRun({ github, repo, ghsaId, latest, log = console.log }) {
-  const { fetchAdvisoryViaOctokit, fetchLatestViaOctokit } = require('./lib/source');
-  const { buildReport } = require('./lib/report');
   const raws = latest
     ? await fetchLatestViaOctokit(github, repo, latest)
     : [await fetchAdvisoryViaOctokit(github, repo, ghsaId)];

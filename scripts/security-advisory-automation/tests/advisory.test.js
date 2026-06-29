@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseAdvisory, requiresLtsBackport } = require('../lib/advisory');
 
-const FIXTURE_PATH = path.join(__dirname, '..', 'fixtures', 'advisory_sample.json');
+const FIXTURE_PATH = path.join(__dirname, 'fixtures', 'advisory_sample.json');
 
 test('parseAdvisory: extracts core fields from fixture', () => {
   const raw = JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8'));

@@ -8,14 +8,16 @@ later phase.
 
 ## What's here
 
-- `src/advisory_automation/` — pure routing logic (no I/O):
-  - `ghsa.py` — `extract_ghsa_id` (the canonical dedup key)
-  - `branches.py` — `is_unified_era`, `parse_compatible_line`,
-    `select_lowest_active_line`, `ee_repo_name`, `select_branch_repo`
-  - `advisory.py` / `routing.py` — parse an advisory and produce routing decisions
-  - `advisory_source.py` — thin read-only `gh api` wrappers
-  - `dryrun.py` — the read-only dry-run CLI
-- `tests/` — pytest suite (pure-logic, fully covered)
+- `lib/` — pure routing logic (no I/O):
+  - `lib/ghsa.js` — `extractGhsaId` (the canonical dedup key)
+  - `lib/branches.js` — `isUnifiedEra`, `parseCompatibleLine`,
+    `selectLowestActiveLine`, `eeRepoName`, `selectBranchRepo`
+  - `lib/advisory.js` / `lib/routing.js` — parse an advisory and produce routing decisions
+  - `lib/source.js` — thin read-only `gh api` wrappers (local) and octokit wrappers (CI)
+  - `lib/report.js` — `buildReport`, `formatReport`, `BANNER`
+- `index.js` — re-exports the full public API; `runDryRun` for use via `github-script`
+- `cli.js` — thin local CLI (shells to `gh`); convenience only, not used in CI
+- `tests/*.test.js` — node:test suite (pure-logic, no network)
 
 ## Key conventions
 
@@ -32,21 +34,29 @@ later phase.
 
 ```bash
 cd scripts/security-advisory-automation
-python -m pytest -v        # or python3
+node --test
 ```
 
-## Run the dry-run (read-only)
+## Run the dry-run locally (read-only)
 
 Requires an authenticated `gh` with read access to the advisory source repo.
 
 ```bash
-PYTHONPATH=src python -m advisory_automation.dryrun GHSA-xxxx-xxxx-xxxx
+cd scripts/security-advisory-automation
+node cli.js GHSA-xxxx-xxxx-xxxx [--repo pimcore/pimcore]
 # or evaluate the most recent advisories:
-PYTHONPATH=src python -m advisory_automation.dryrun --latest 5 --repo pimcore/pimcore
+node cli.js --latest 5 --repo pimcore/pimcore
 ```
 
 It prints, per affected package, the fix repo, the dedup key, and whether an LTS
 backport is in scope — under a clear `DRY RUN — no … writes performed.` banner.
 
-The same dry-run is runnable from the Actions tab via the
-`Advisory Dry Run` (`workflow_dispatch`) workflow.
+## Run the dry-run in CI (read-only)
+
+The `Advisory Dry Run` workflow (`workflow_dispatch`) runs the dry run entirely
+via `actions/github-script` (octokit) — no local node dependencies, no `gh`
+shell-out. Trigger it manually from the Actions tab, providing a GHSA id and
+optionally a source repo.
+
+If the workflow token lacks advisory read access, add an `ADVISORY_READ_TOKEN`
+secret (a PAT with security-advisory read scope).
