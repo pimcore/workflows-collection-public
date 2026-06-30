@@ -26,7 +26,10 @@ jobs:
     composer-checks:
         name: "Composer Checks"
         runs-on: "ubuntu-latest"
-        env: 
+        outputs:
+          has_vulnerabilities: ${{ steps.vulnerabilities.outputs.found }}
+          vulnerabilities_text: ${{ steps.vulnerabilities.outputs.text }}
+        env:
           IGNORE_LIST_KEY: ${{ inputs.ignore-list }}
         steps:
             - name: "Checkout depdendent workflow code"
@@ -112,39 +115,40 @@ jobs:
 
             - name: "Check for security vulnerabilities"
               id: vulnerabilities
-              continue-on-error: true
               run: |
-                VULNERABILITIES=$(composer audit || true)
+                set +e
+                VULNERABILITIES=$(composer audit)
                 EXIT_CODE=$?
+                set -e
 
                 echo "Raw composer audit output:"
                 echo "$VULNERABILITIES"
-            
+
                 if [ "$EXIT_CODE" -ne 0 ]; then
                     echo "Security vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
                     echo "$VULNERABILITIES" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
+
+                    echo "found=true" >> $GITHUB_OUTPUT
                     {
-                      echo "VULNERABILITIES_ENV<<EOF"
+                      echo "text<<EOF"
+                      echo "Please check the following link for details:"
+                      echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                      echo ""
+                      echo "**Vulnerabilities found:**"
+                      echo '```'
                       echo "$VULNERABILITIES"
+                      echo '```'
+                      echo ""
+                      echo "If the list is too long, please refer to the link above."
                       echo "EOF"
-                    } >> $GITHUB_ENV
-                    exit 1
+                    } >> $GITHUB_OUTPUT
                 fi
 
-            - name: Send results of previous checks to Microsoft Teams
-              if: steps.vulnerabilities.outcome == 'failure'
-              uses: aliencube/microsoft-teams-actions@v0.8.0
-              with:
-                webhook_uri: ${{ secrets.TEAMS_COMPOSER_VULNERABILITY_URI }}
-                title: ${{ github.repository }}@${{ inputs.branch }} outdated - vulnerabilities report
-                summary: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}} 
-                text: |
-                  Please check the following link for details: 
-                  ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
-            
-                  **Vulnerabilities found:**
-                  ```
-                  ${{ env.VULNERABILITIES_ENV }}
-                  ```
-            
-                  If the list is too long, please refer to the link above.
+    notify:
+        needs: composer-checks
+        if: ${{ needs.composer-checks.outputs.has_vulnerabilities == 'true' }}
+        uses: ./.github/workflows/reusable-teams-notify.yaml
+        with:
+          title: "${{ github.repository }}@${{ inputs.branch }} outdated - vulnerabilities report"
+          text: ${{ needs.composer-checks.outputs.vulnerabilities_text }}
+        secrets: inherit
