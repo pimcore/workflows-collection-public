@@ -23,4 +23,7 @@ reason = "Fixed in LTS"
 [[IgnoredVulns]]
 id = "GHSA-wc7j-g8wx-m2qx"
 reason = "Fixed in LTS"
+[[IgnoredVulns]]
+id = "GHSA-7p36-fq2r-4h7r"
+reason = "Fixed in LTS"
 
