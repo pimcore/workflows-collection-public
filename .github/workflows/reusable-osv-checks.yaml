@@ -106,27 +106,43 @@ jobs:
 
       - name: CREATE SBOM
         if: ${{ inputs.composer-check-only == false }}
-        run: composer CycloneDX:make-sbom --output-file=generated-sbom.json --output-format=json
+        # osv-scanner only recognises CycloneDX SBOMs whose filename ends in
+        # `.cdx.json` (or is `bom.json`), so the file must be named accordingly.
+        run: composer CycloneDX:make-sbom --output-file=generated-sbom.cdx.json --output-format=json
 
       - name: Run OSV-Scanner
         if: ${{ inputs.composer-check-only == false }}
         id: osvscanner
+        # osv-scanner v2 CLI: `scan source -L <sbom>` with `--output-file`.
+        # Markdown format renders cleanly in the job summary and Teams message.
         run: |
-          osv-scanner --sbom=generated-sbom.json --output=osv-results.txt --config=tools/osv/${{inputs.platform-version}}.toml
+          osv-scanner scan source -L generated-sbom.cdx.json --format markdown --output-file=osv-results.md --config=tools/osv/${{inputs.platform-version}}.toml
 
-      - name: Upload SBOM as an artifact on failure
+      - name: Upload OSV results as an artifact on failure
         if: ${{ failure() && steps.osvscanner.conclusion == 'failure' }}
         uses: actions/upload-artifact@v6
         with:
           name: osv-${{ inputs.platform-version }}
-          path: osv-results.txt
+          path: osv-results.md
 
       - name: Get new vulnerabilities
         if: ${{ failure() && steps.osvscanner.conclusion == 'failure' && inputs.composer-check-only == false }}
         id: get_vulnerabilities
         run: |
-          VULNERABILITIES=$(grep '^| ' osv-results.txt | cut -d'|' -f2,5,6)
+          if [ -s osv-results.md ]; then
+            VULNERABILITIES=$(cat osv-results.md)
+          else
+            VULNERABILITIES="No detailed results were produced (osv-results.md is missing or empty)."
+          fi
 
+          # Render the results in the GitHub Actions run summary.
+          {
+            echo "## OSV-Scanner vulnerabilities — ${{ inputs.platform-version }}"
+            echo ""
+            echo "$VULNERABILITIES"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Expose the same output to the Teams notification job.
           echo "found=true" >> $GITHUB_OUTPUT
           {
             echo "text<<EOF"
@@ -134,9 +150,7 @@ jobs:
             echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             echo ""
             echo "**Vulnerabilities found:**"
-            echo '```'
             echo "$VULNERABILITIES"
-            echo '```'
             echo ""
             echo "If the list is too long, please refer to the link above."
             echo "EOF"
