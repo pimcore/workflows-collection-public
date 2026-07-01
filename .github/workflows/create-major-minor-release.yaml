@@ -371,20 +371,35 @@ jobs:
       PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
       AUTO_CHANGELOG: ${{ needs.prepare.outputs.auto_changelog_norm }}
     steps:
-      - name: Ensure tag does not already exist
+      - name: Ensure tag/release state is safe
         id: tag_check
         shell: bash
         run: |
           set -euo pipefail
-          CHECK_TAG=$(curl -s -o /dev/null -w "%{http_code}" --location \
+
+          TAG_REF_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --location \
             "https://api.github.com/repos/${OWNER}/${REPO}/git/refs/tags/${TAG_NAME}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-          if [[ "${CHECK_TAG}" -eq 200 ]]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "⚠️ Tag ${TAG_NAME} already exists on ${OWNER}/${REPO}; skipping" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${TAG_REF_STATUS}" -eq 200 ]]; then
+            REL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --location \
+              "https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/${TAG_NAME}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+            if [[ "${REL_STATUS}" -eq 200 ]]; then
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              echo "ℹ️ Tag ${TAG_NAME} and release already exist on ${OWNER}/${REPO}; skipping." >> "$GITHUB_STEP_SUMMARY"
+            elif [[ "${REL_STATUS}" -eq 404 ]]; then
+              echo "exists=false" >> "$GITHUB_OUTPUT"
+              echo "ℹ️ Tag ${TAG_NAME} exists but release is missing on ${OWNER}/${REPO}; will create release." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "❌ Failed to check release-by-tag for ${OWNER}/${REPO} (HTTP ${REL_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
@@ -508,17 +523,19 @@ jobs:
             -d "${REQ_BODY}")
 
           HTTP_STATUS=$(echo "${CREATE_RELEASE}" | awk -F: '/HTTP_STATUS:/ {print $2}')
-          if [[ "${HTTP_STATUS}" -ne 201 ]]; then
+          if [[ "${HTTP_STATUS}" -eq 201 ]]; then
+            RELEASE_URL=$(echo "${CREATE_RELEASE}" | sed '$d' | jq -r '.html_url // ""')
+            if [[ "${DRAFT}" == "true" ]]; then
+              echo "✅ Draft release created for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "✅ Release published for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          elif [[ "${HTTP_STATUS}" -eq 422 ]]; then
+            echo "ℹ️ Release already exists for ${OWNER}/${REPO} and tag ${TAG_NAME}; skipping." >> "$GITHUB_STEP_SUMMARY"
+          else
             echo "❌ Failed to create release for ${OWNER}/${REPO} (HTTP ${HTTP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
             echo "$(echo "${CREATE_RELEASE}" | sed '$d' | head -c 1500)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
-          fi
-
-          RELEASE_URL=$(echo "${CREATE_RELEASE}" | sed '$d' | jq -r '.html_url // ""')
-          if [[ "${DRAFT}" == "true" ]]; then
-            echo "✅ Draft release created for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "✅ Release published for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
           fi
 
   milestone-automation:
