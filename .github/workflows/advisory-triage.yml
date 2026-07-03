@@ -1,0 +1,52 @@
+name: Advisory Triage
+
+# Read-only "plan mode" for Workflow 1: for the recent advisories on the source
+# repo, decide what the automation WOULD do (fetch -> dedup -> classify ->
+# resolve target branch) and print the plan. Creates nothing — no tickets, no
+# PRs, no writes. Trigger manually from the Actions tab, or weekly.
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Advisory source repo"
+        required: false
+        default: "pimcore/pimcore"
+        type: string
+      limit:
+        description: "Max number of recent advisories to evaluate"
+        required: false
+        default: "30"
+        type: string
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+
+permissions:
+  contents: read
+  security-events: read
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        env:
+          SRC_REPO: ${{ inputs.repo || 'pimcore/pimcore' }}
+          LIMIT: ${{ inputs.limit || '30' }}
+        with:
+          # Prefer a PAT that can read repository security advisories (incl.
+          # triage state) and search issues/PRs org-wide; fall back to the
+          # workflow token. If the token lacks advisory read access the
+          # request 404s/403s — add an ADVISORY_READ_TOKEN secret then.
+          github-token: ${{ secrets.ADVISORY_READ_TOKEN != '' && secrets.ADVISORY_READ_TOKEN || github.token }}
+          script: |
+            const { runTriage } = require(`${process.env.GITHUB_WORKSPACE}/scripts/security-advisory-automation/index.js`);
+            // Public repo: non-published advisories are redacted in the log. Full detail is
+            // available only via the local CLI (`node cli.js --triage`).
+            await runTriage({
+              github,
+              sourceRepo: process.env.SRC_REPO,
+              limit: parseInt(process.env.LIMIT, 10) || 30,
+              log: core.info,
+              publicSafe: true,
+            });

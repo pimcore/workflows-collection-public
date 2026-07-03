@@ -13,9 +13,16 @@ later phase.
   - `lib/branches.js` — `isUnifiedEra`, `parseCompatibleLine`,
     `selectLowestActiveLine`, `eeRepoName`, `selectBranchRepo`
   - `lib/advisory.js` / `lib/routing.js` — parse an advisory and produce routing decisions
+  - `lib/triage.js` — `classifyAdvisory` (already-handled / not-applicable /
+    actionable) and `artifactSearchQuery` (org-wide dedup search)
+  - `lib/versions.js` — `loadSupportedVersions`, `lowestActiveBugfixLine`, `ltsLinesInScope`
   - `lib/source.js` — thin read-only `gh api` wrappers (local) and octokit wrappers (CI)
-  - `lib/report.js` — `buildReport`, `formatReport`, `BANNER`
-- `index.js` — re-exports the full public API; `runDryRun` for use via `github-script`
+  - `lib/report.js` — `buildReport`, `formatReport`, `BANNER` (single-advisory dry run)
+  - `lib/orchestrate.js` — read-only **Workflow 1** orchestration: `runTriage`
+    (fetch → dedup → classify → resolve target branch), plus its GET-only
+    octokit helpers `searchHandled`, `branchExists`, `resolveFixLocation`
+  - `lib/triage-report.js` — `formatTriagePlan`, `BANNER` (triage-sweep report)
+- `index.js` — re-exports the full public API; `runDryRun` / `runTriage` for use via `github-script`
 - `cli.js` — thin local CLI (shells to `gh`); convenience only, not used in CI
 - `tests/*.test.js` — node:test suite (pure-logic, no network)
 
@@ -65,3 +72,41 @@ Because this repository is public and Actions logs are world-readable, the CI
 dry-run **redacts non-published advisories** (prints only a minimal
 acknowledgment with the GHSA id and state). Use the local CLI for full detail
 on `triage`/unpublished advisories.
+
+## Triage (plan mode)
+
+Workflow 1's read-only "plan mode": for the most recent advisories on the
+source repo, sweep through fetch → dedup (org-wide issue/PR search) → classify
+(`already-handled` / `not-applicable` / `actionable`) → for actionable
+advisories, resolve the initial fix location (base repo, else its `ee-*`
+counterpart, else human-fallback) and the LTS backport lines in scope. Prints
+a plan. **Strictly read-only** — every `github.request` call is a GET; nothing
+is ticketed, opened, or written.
+
+### Locally (full detail)
+
+Requires an authenticated `gh` with read access to the advisory source repo
+and to search issues/PRs. Runs against a small octokit-shim over `gh api`, not
+octokit — so no local Node dependencies beyond `gh` itself.
+
+```bash
+cd scripts/security-advisory-automation
+node cli.js --triage [--repo pimcore/pimcore] [--limit N]
+```
+
+This runs with `publicSafe: false`, so `triage`/unpublished advisories are
+shown in full (severity, affected packages, resolved branch, LTS scope) —
+appropriate for a local run, never for a public log.
+
+### In CI (read-only, redacted)
+
+The `Advisory Triage` workflow (`workflow_dispatch`, plus an optional weekly
+schedule) runs `runTriage` via `actions/github-script` (octokit only). It runs
+with `permissions: contents: read, security-events: read` and `publicSafe:
+true`: non-`published` advisories are shown as a minimal redacted line (no
+severity, package, or repo) since Actions logs on this public repo are
+world-readable. Trigger it manually from the Actions tab, optionally
+overriding the source repo or the number of advisories to evaluate.
+
+If the workflow token lacks advisory read (or org search) access, add an
+`ADVISORY_READ_TOKEN` secret (a PAT with security-advisory read scope).

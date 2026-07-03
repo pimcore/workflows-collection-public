@@ -20,6 +20,7 @@ const {
   fetchAdvisoryViaOctokit,
   fetchLatestViaOctokit,
 } = require('./lib/source');
+const { runTriage } = require('./lib/orchestrate');
 
 /**
  * Dry-run: fetch advisory/advisories and log the routing report.
@@ -87,4 +88,5 @@ module.exports = {
   fetchLatestViaOctokit,
   // orchestration
   runDryRun,
+  runTriage,
 };
