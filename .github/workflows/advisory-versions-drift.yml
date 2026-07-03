@@ -26,16 +26,17 @@ jobs:
           node -e '
             const fs = require("fs");
             const { loadSupportedVersions } = require("./lib/versions");
-            const { detectNewRelease } = require("./lib/versions-drift");
+            const { evaluateDrift } = require("./lib/versions-drift");
             const cfg = loadSupportedVersions();
             const page = fs.readFileSync("/tmp/platform-versions.html", "utf8");
-            const r = detectNewRelease(cfg, page);
-            const line = r.drifted
-              ? `⚠️ Docs page shows ${r.newest}, newer than configured activeBugfixLine ${r.active}. Update config/supported-versions.json (see the page).`
-              : `✅ No new release beyond configured activeBugfixLine ${r.active} (newest on docs: ${r.newest}).`;
+            const r = evaluateDrift(cfg, page);
+            const icon = r.status === "ok" ? "✅" : r.status === "drift" ? "⚠️" : "❌";
+            const line = `${icon} ${r.message}`;
             fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, line + "\n");
             console.log(line);
-            if (r.drifted) process.exit(1);
+            // Fail loud on both drift AND an unparseable page (a broken scraper
+            // must not look like "no drift").
+            if (r.status !== "ok") process.exit(1);
             // NOTE: to actively notify, a follow-up can open/update a tracking
             // issue here via github-script (issues:write on this repo).
           '
