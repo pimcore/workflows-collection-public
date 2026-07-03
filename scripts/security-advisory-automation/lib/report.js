@@ -6,6 +6,24 @@ const { route } = require('./routing');
 const BANNER = 'DRY RUN — no tickets, PRs, or writes performed.';
 
 /**
+ * Advisory text is untrusted data. Replace control characters (newlines, tabs,
+ * ANSI escapes, etc.) with spaces and collapse runs, so a crafted summary
+ * cannot forge extra report lines or inject terminal escapes into the (public)
+ * log. Uses char-code checks rather than an embedded control-char regex so the
+ * source stays readable and copy-safe.
+ * @param {string} s
+ * @returns {string}
+ */
+function sanitizeText(s) {
+  let out = '';
+  for (const ch of String(s)) {
+    const code = ch.charCodeAt(0);
+    out += code < 0x20 || code === 0x7f ? ' ' : ch;
+  }
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Render the routing decision for one advisory as human-readable text.
  * @param {{ ghsaId: string, state: string, severity: string, summary: string, packages: string[] }} advisory
  * @param {{ package: string, fixRepo: string, dedupKey: string, ltsInScope: boolean, eeRepo: string|null }[]} decisions
@@ -25,7 +43,7 @@ function formatReport(advisory, decisions, opts = {}) {
   const lines = [
     BANNER,
     `Advisory ${advisory.ghsaId}  [state: ${advisory.state}, severity: ${advisory.severity}]`,
-    `  summary: ${advisory.summary}`,
+    `  summary: ${sanitizeText(advisory.summary)}`,
   ];
 
   if (!decisions || decisions.length === 0) {
@@ -46,7 +64,7 @@ function formatReport(advisory, decisions, opts = {}) {
     }
     lines.push(
       `  → ${d.package}`,
-      `      fix repo:     ${d.fixRepo}   (package→repo)`,
+      `      fix repo:     ${d.fixRepo}   (identity)`,
       `      dedup key:    ${d.dedupKey}`,
       `      LTS backport: ${lts}`,
       '      WOULD: create tracking issue + assign Copilot   (NOT executed)'

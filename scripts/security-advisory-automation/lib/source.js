@@ -19,7 +19,7 @@ function advisoryApiPath(repo, ghsaId) {
  * @returns {string}
  */
 function latestApiPath(repo, limit) {
-  return `repos/${repo}/security-advisories?per_page=${Number(limit)}`;
+  return `repos/${repo}/security-advisories?per_page=${Number(limit) || 5}`;
 }
 
 /**
@@ -78,7 +78,7 @@ async function fetchLatestViaOctokit(github, repo, limit) {
   const name = repo.slice(slash + 1);
   const response = await github.request(
     'GET /repos/{owner}/{repo}/security-advisories',
-    { owner, repo: name, per_page: Number(limit) }
+    { owner, repo: name, per_page: Number(limit) || 5 }
   );
   return Array.isArray(response.data) ? response.data : [];
 }

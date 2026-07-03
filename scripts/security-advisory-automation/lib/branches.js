@@ -35,7 +35,7 @@ function _versionKey(line) {
 }
 
 /**
- * Compare two version tuples lexicographically (numeric).
+ * Compare two numeric version tuples element-wise (e.g. [2,9] < [11,0]).
  * @param {number[]} a
  * @param {number[]} b
  * @returns {number}

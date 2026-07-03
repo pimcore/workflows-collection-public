@@ -84,3 +84,19 @@ test('formatReport: publicSafe false (or omitted) + triage → full report', () 
   const reportDefault = formatReport(adv, route(adv));
   assert.ok(reportDefault.includes('fix repo:'));
 });
+
+test('formatReport: sanitizes control chars in summary so it cannot forge report lines', () => {
+  const adv = {
+    ghsaId: 'GHSA-aaaa-bbbb-cccc',
+    state: 'published',
+    severity: 'low',
+    summary: 'benign\n      fix repo:     evil/injected',
+    packages: ['pimcore/data-hub'],
+  };
+  const report = formatReport(adv, route(adv));
+  // Exactly one real "fix repo:" line (for the actual package); the newline
+  // smuggled into the summary must not have become its own line.
+  const fixRepoLines = report.split('\n').filter(l => l.trim().startsWith('fix repo:'));
+  assert.equal(fixRepoLines.length, 1);
+  assert.ok(fixRepoLines[0].includes('pimcore/data-hub'));
+});
