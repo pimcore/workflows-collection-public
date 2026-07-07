@@ -54,45 +54,24 @@ on:
         type: string
         default: "."
 
+# NOTE: Do NOT request `actions: write` here. The caller workflows grant only
+# `contents: write`, and a reusable workflow's permissions can only be reduced,
+# never elevated, relative to the caller — requesting a scope the caller lacks
+# fails the whole run at startup ("workflow file issue").
+#
+# Caching is intentionally omitted: on untrusted triggers (pull_request_target)
+# GitHub issues a read-only cache token, so cache saves are blocked and restores
+# rarely match. Each job just runs `npm ci` — simple, reliable, no false-alarm
+# "failed to save cache" warnings.
 permissions:
   contents: read
-  actions: write
 
 env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
 
 jobs:
-  install:
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ env.BRANCH_NAME }}
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: ${{ inputs.node-version }}
-
-      - name: Cache npm dependencies
-        uses: actions/cache@v5
-        with:
-          path: ./${{ inputs.working-directory }}/node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
-
-      - name: Install dependencies
-        working-directory: ${{ inputs.working-directory }}
-        run: npm ci
-
   lint:
-    needs: install
-    if: ${{ inputs.lint }}
+    if: ${{ inputs.lint && !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -110,13 +89,9 @@ jobs:
         with:
           node-version: ${{ inputs.node-version }}
 
-      - name: Cache npm dependencies
-        uses: actions/cache@v5
-        with:
-          path: ./${{ inputs.working-directory }}/node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
 
       - name: Run code linting
         working-directory: ${{ inputs.working-directory }}
@@ -130,12 +105,8 @@ jobs:
           commit_message: Apply eslint-fixer changes
 
   check-types:
-    needs: install
-    if: ${{ inputs.typecheck }}
+    if: ${{ inputs.typecheck && !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout code
@@ -149,13 +120,9 @@ jobs:
         with:
           node-version: ${{ inputs.node-version }}
 
-      - name: Cache npm dependencies
-        uses: actions/cache@v5
-        with:
-          path: ./${{ inputs.working-directory }}/node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
 
       - name: Run type checks
         working-directory: ${{ inputs.working-directory }}
@@ -163,10 +130,9 @@ jobs:
 
   build:
     needs:
-      - install
       - lint
       - check-types
-    if: ${{ always() && needs.install.result == 'success' && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.check-types.result == 'success' || needs.check-types.result == 'skipped') }}
+    if: ${{ always() && !startsWith(github.ref, 'refs/tags/') && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.check-types.result == 'success' || needs.check-types.result == 'skipped') }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -184,13 +150,9 @@ jobs:
         with:
           node-version: ${{ inputs.node-version }}
 
-      - name: Cache npm dependencies
-        uses: actions/cache@v5
-        with:
-          path: ./${{ inputs.working-directory }}/node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
 
       - name: Run production build
         working-directory: ${{ inputs.working-directory }}
