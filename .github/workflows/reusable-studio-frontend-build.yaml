@@ -56,6 +56,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
