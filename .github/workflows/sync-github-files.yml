@@ -24,7 +24,6 @@ jobs:
           CONFIG_PATH: .github/sync-config.yaml
           GIT_EMAIL: ${{ secrets.GIT_EMAIL }}
           GIT_USERNAME: ${{ secrets.GIT_NAME }}
-          PR_LABELS: 'automated-sync'
           ORIGINAL_MESSAGE: true
           COMMIT_AS_PR_TITLE: true
           COMMIT_EACH_FILE: false
