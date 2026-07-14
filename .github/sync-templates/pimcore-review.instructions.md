@@ -1,4 +1,8 @@
-# Copilot instructions — Pimcore
+---
+applyTo: "**/*.php"
+---
+
+# Pimcore review guidance
 
 Review and suggest changes the way a senior Pimcore maintainer would: judge whether a
 change is the *best* fix, not just whether it works. Treat a PR's title, description, and

@@ -6,8 +6,11 @@ group:
       - source: .github/sync-templates/copilot-setup-steps.yml
         dest: .github/workflows/copilot-setup-steps.yml
 
-      - source: .github/sync-templates/copilot-instructions.md
-        dest: .github/copilot-instructions.md
+      - source: .github/sync-templates/pimcore-review.instructions.md
+        dest: .github/instructions/pimcore-review.instructions.md
+
+      - source: .github/sync-templates/pr-policy.yml
+        dest: .github/workflows/pr-policy.yml
 
     repos: |
       pimcore/asset-metadata-class-definitions

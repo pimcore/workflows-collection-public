@@ -1,0 +1,35 @@
+name: PR Policy
+
+# Enforces PR requirements before merge. Make the "Milestone assigned" check required
+# (repo ruleset / branch protection) so it actually blocks merging.
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - milestoned
+      - demilestoned
+
+permissions:
+  contents: read
+
+jobs:
+  milestone:
+    name: Milestone assigned
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check milestone
+        env:
+          MILESTONE: ${{ github.event.pull_request.milestone.title }}
+        run: |
+          if [ -z "$MILESTONE" ]; then
+            echo "::error::A milestone must be assigned before this pull request can be merged."
+            exit 1
+          fi
+
+          echo "Milestone assigned: $MILESTONE"
