@@ -42,4 +42,5 @@ jobs:
           composer-options: "--no-scripts --ignore-platform-reqs"
 
       - name: Restore composer.json
+        if: ${{ always() }}
         run: git restore composer.json
