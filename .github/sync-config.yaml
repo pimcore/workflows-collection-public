@@ -6,6 +6,9 @@ group:
       - source: .github/sync-templates/copilot-setup-steps.yml
         dest: .github/workflows/copilot-setup-steps.yml
 
+      - source: .github/sync-templates/copilot-instructions.md
+        dest: .github/copilot-instructions.md
+
     repos: |
       pimcore/asset-metadata-class-definitions
       pimcore/backend-power-tools-bundle
