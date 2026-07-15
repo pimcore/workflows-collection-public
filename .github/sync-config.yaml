@@ -1,0 +1,47 @@
+group:
+  - files:
+      - source: .github/skills/code-review/SKILL.md
+        dest: .github/skills/code-review/SKILL.md
+
+      - source: .github/sync-templates/copilot-setup-steps.yml
+        dest: .github/workflows/copilot-setup-steps.yml
+
+      - source: .github/sync-templates/pimcore-review.instructions.md
+        dest: .github/instructions/pimcore-review.instructions.md
+
+      - source: .github/sync-templates/pr-policy.yml
+        dest: .github/workflows/pr-policy.yml
+
+    repos: |
+      pimcore/asset-metadata-class-definitions
+      pimcore/backend-power-tools-bundle
+      pimcore/copilot-bundle
+      pimcore/customer-management-framework-bundle
+      pimcore/data-hub
+      pimcore/data-hub-file-export
+      pimcore/data-hub-productsup
+      pimcore/data-hub-simple-rest
+      pimcore/data-hub-webhooks
+      pimcore/data-importer
+      pimcore/data-quality-management-bundle
+      pimcore/direct-edit
+      pimcore/ecommerce-framework-bundle
+      pimcore/frontend-permission-toolkit-bundle
+      pimcore/generic-data-index-bundle
+      pimcore/headless-documents
+      pimcore/object-merger
+      pimcore/openid-connect
+      pimcore/personalization-bundle
+      pimcore/pimcore
+      pimcore/portal-engine
+      pimcore/quill-bundle
+      pimcore/static-resolver-bundle
+      pimcore/statistics-explorer
+      pimcore/studio-backend-bundle
+      pimcore/studio-dashboards-bundle
+      pimcore/studio-ui-bundle
+      pimcore/tinymce-bundle
+      pimcore/translations-provider-interfaces
+      pimcore/web-to-print-bundle
+      pimcore/workflow-automation-integration-bundle
+      pimcore/workflow-designer
