@@ -1,0 +1,239 @@
+name: Create release
+description: >
+  Create a single GitHub release for one repository. Re-resolves the branch HEAD
+  at run time (so a release cut after a CE → EE sync points at the post-sync
+  commit), ensures the tag does not already exist, builds merged CE+EE notes for
+  EE bundles (or auto/custom notes otherwise), and creates the release.
+
+inputs:
+  owner:
+    required: true
+  repo:
+    required: true
+  base_branch:
+    description: "Branch whose current HEAD is tagged (re-resolved at run time)"
+    required: true
+  tag_name:
+    required: true
+  release_name:
+    required: true
+  draft:
+    description: '"true" or "false"'
+    required: true
+  prerelease:
+    default: "false"
+  auto_changelog:
+    default: "true"
+  changelog:
+    default: ""
+  ce_owner:
+    default: ""
+  ce_repo:
+    default: ""
+  release_token:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve post-sync HEAD SHA
+      shell: bash
+      env:
+        RELEASE_TOKEN: ${{ inputs.release_token }}
+        OWNER: ${{ inputs.owner }}
+        REPO: ${{ inputs.repo }}
+        BASE_BRANCH: ${{ inputs.base_branch }}
+        CE_OWNER: ${{ inputs.ce_owner }}
+        CE_REPO: ${{ inputs.ce_repo }}
+      run: |
+        set -euo pipefail
+
+        # Re-resolve HEAD here (not at prepare time) so an EE release cut after
+        # the CE → EE sync merge points at the post-sync commit.
+        resolve() {
+          local o="$1" r="$2" b="$3" resp status sha
+          resp=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+            "https://api.github.com/repos/${o}/${r}/commits/${b}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}")
+          status=$(echo "${resp}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          if [[ "${status}" -ne 200 ]]; then
+            echo "❌ Failed to resolve HEAD of ${o}/${r}@${b} (HTTP ${status})" >> "$GITHUB_STEP_SUMMARY"
+            return 1
+          fi
+          sha=$(echo "${resp}" | sed '$d' | jq -r '.sha // ""')
+          if [[ -z "${sha}" || "${sha}" == "null" ]]; then
+            echo "❌ Empty SHA for ${o}/${r}@${b}" >> "$GITHUB_STEP_SUMMARY"
+            return 1
+          fi
+          printf '%s' "${sha}"
+        }
+
+        LATEST_SHA=$(resolve "${OWNER}" "${REPO}" "${BASE_BRANCH}")
+        echo "LATEST_SHA=${LATEST_SHA}" >> "$GITHUB_ENV"
+        if [[ -n "${CE_REPO}" ]]; then
+          CE_SHA=$(resolve "${CE_OWNER}" "${CE_REPO}" "${BASE_BRANCH}")
+          echo "CE_SHA=${CE_SHA}" >> "$GITHUB_ENV"
+        fi
+
+    - name: Ensure tag does not already exist
+      shell: bash
+      env:
+        RELEASE_TOKEN: ${{ inputs.release_token }}
+        OWNER: ${{ inputs.owner }}
+        REPO: ${{ inputs.repo }}
+        TAG_NAME: ${{ inputs.tag_name }}
+      run: |
+        set -euo pipefail
+        CHECK_TAG=$(curl -s -o /dev/null -w "%{http_code}" --location \
+          "https://api.github.com/repos/${OWNER}/${REPO}/git/refs/tags/${TAG_NAME}" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+        if [[ "${CHECK_TAG}" -eq 200 ]]; then
+          echo "⚠️ Tag ${TAG_NAME} already exists on ${OWNER}/${REPO}; skipping" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+
+    - name: Create release
+      shell: bash
+      env:
+        RELEASE_TOKEN: ${{ inputs.release_token }}
+        OWNER: ${{ inputs.owner }}
+        REPO: ${{ inputs.repo }}
+        CE_OWNER: ${{ inputs.ce_owner }}
+        CE_REPO: ${{ inputs.ce_repo }}
+        TAG_NAME: ${{ inputs.tag_name }}
+        RELEASE_NAME: ${{ inputs.release_name }}
+        DRAFT: ${{ inputs.draft }}
+        MAKE_LATEST: ${{ inputs.draft == 'false' }}
+        PRERELEASE: ${{ inputs.prerelease }}
+        AUTO_CHANGELOG: ${{ inputs.auto_changelog }}
+        CHANGELOG: ${{ inputs.changelog }}
+      run: |
+        set -euo pipefail
+
+        FINAL_BODY="${CHANGELOG}"
+
+        # For EE bundles with a CE counterpart, build merged release notes
+        if [[ -n "${CE_REPO}" ]]; then
+          CE_NOTES=""
+          EE_NOTES=""
+
+          CE_GEN=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
+            "https://api.github.com/repos/${CE_OWNER}/${CE_REPO}/releases/generate-notes" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+            -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${CE_SHA}" '{tag_name:$tag, target_commitish:$target}')")
+          CE_STATUS=$(echo "${CE_GEN}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          if [[ "${CE_STATUS}" -eq 200 ]]; then
+            CE_NOTES=$(echo "${CE_GEN}" | sed '$d' | jq -r '.body // ""')
+          else
+            echo "⚠️ generate-notes failed for CE repo ${CE_OWNER}/${CE_REPO} (HTTP ${CE_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          EE_GEN=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/releases/generate-notes" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+            -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${LATEST_SHA}" '{tag_name:$tag, target_commitish:$target}')")
+          EE_STATUS=$(echo "${EE_GEN}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          if [[ "${EE_STATUS}" -eq 200 ]]; then
+            RAW_EE=$(echo "${EE_GEN}" | sed '$d' | jq -r '.body // ""')
+            # Strip sync-bot PRs (incl. this workflow's pre-release sync) and the
+            # auto-generated full-changelog line.
+            EE_NOTES=$(echo "${RAW_EE}" | grep -Ev '@pimcore-deployments|Automated PR by|Pre-release sync CE|\*\*Full Changelog\*\*:' || true)
+            EE_NOTES=$(echo "${EE_NOTES}" | sed -e '/./,$!d' -e :a -e '/^\s*$/{ $d; N; ba; }')
+          else
+            echo "⚠️ generate-notes failed for EE repo ${OWNER}/${REPO} (HTTP ${EE_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          MERGED=""
+          if [[ -n "${CE_NOTES}" ]]; then
+            MERGED="${CE_NOTES}"
+          fi
+          if [[ -n "${EE_NOTES}" ]]; then
+            [[ -n "${MERGED}" ]] && MERGED="${MERGED}"$'\n\n'
+            MERGED="${MERGED}### EE-specific changes"$'\n'"${EE_NOTES}"
+          fi
+          if [[ -n "${CHANGELOG}" ]]; then
+            [[ -n "${MERGED}" ]] && MERGED="${MERGED}"$'\n\n---\n\n'
+            MERGED="${MERGED}${CHANGELOG}"
+          fi
+          FINAL_BODY="${MERGED}"
+
+        elif [[ "${AUTO_CHANGELOG}" == "true" && -n "${CHANGELOG}" ]]; then
+          GEN_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/releases/generate-notes" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+            -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${LATEST_SHA}" '{tag_name:$tag, target_commitish:$target}')")
+
+          GEN_STATUS=$(echo "${GEN_RESPONSE}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          if [[ "${GEN_STATUS}" -eq 200 ]]; then
+            GEN_NOTES=$(echo "${GEN_RESPONSE}" | sed '$d' | jq -r '.body // ""')
+            FINAL_BODY="${GEN_NOTES}"$'\n\n---\n\n'"${CHANGELOG}"
+          else
+            echo "⚠️ generate-notes failed for ${OWNER}/${REPO} (HTTP ${GEN_STATUS}); using custom notes only" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        fi
+
+        MAKE_LATEST_STR="false"
+        if [[ "${MAKE_LATEST}" == "true" ]]; then
+          MAKE_LATEST_STR="true"
+        fi
+
+        # When a body is provided, attach it and disable auto-generated notes;
+        # otherwise let the API generate notes based on AUTO_CHANGELOG.
+        if [[ -n "${FINAL_BODY}" ]]; then
+          GEN_NOTES_FLAG=false
+          BODY_ARG=("--arg" "body" "${FINAL_BODY}")
+        else
+          GEN_NOTES_FLAG="${AUTO_CHANGELOG}"
+          BODY_ARG=()
+        fi
+
+        REQ_BODY=$(jq -n \
+          --arg target_commitish "${LATEST_SHA}" \
+          --arg name "${RELEASE_NAME}" \
+          --arg tag_name "${TAG_NAME}" \
+          --arg make_latest "${MAKE_LATEST_STR}" \
+          --argjson draft "${DRAFT}" \
+          --argjson prerelease "${PRERELEASE}" \
+          --argjson generate_release_notes "${GEN_NOTES_FLAG}" \
+          "${BODY_ARG[@]}" \
+          '{
+            target_commitish: $target_commitish,
+            name: $name,
+            draft: $draft,
+            make_latest: $make_latest,
+            prerelease: $prerelease,
+            tag_name: $tag_name,
+            generate_release_notes: $generate_release_notes
+          } + if $ARGS.named | has("body") then {body: $ARGS.named.body} else {} end')
+
+        CREATE_RELEASE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
+          "https://api.github.com/repos/${OWNER}/${REPO}/releases" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+          -d "${REQ_BODY}")
+
+        HTTP_STATUS=$(echo "${CREATE_RELEASE}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+        if [[ "${HTTP_STATUS}" -ne 201 ]]; then
+          echo "❌ Failed to create release for ${OWNER}/${REPO} (HTTP ${HTTP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+          echo "$(echo "${CREATE_RELEASE}" | sed '$d' | head -c 1500)" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+
+        RELEASE_URL=$(echo "${CREATE_RELEASE}" | sed '$d' | jq -r '.html_url // ""')
+        if [[ "${DRAFT}" == "true" ]]; then
+          echo "✅ Draft release created for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "✅ Release published for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+        fi
