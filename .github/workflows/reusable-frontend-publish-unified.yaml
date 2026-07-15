@@ -110,14 +110,9 @@ jobs:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
 
-      - name: Cache npm dependencies
-        uses: actions/cache@v5
-        with:
-          path: ${{ inputs.working-directory }}/node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
-
+      # No node_modules caching here: `npm ci` deletes node_modules before
+      # installing, so a restored cache was discarded anyway — and cache saves
+      # only warn/fail on untrusted triggers (read-only cache token).
       - name: Install dependencies
         working-directory: ${{ inputs.working-directory }}
         run: npm ci

@@ -78,6 +78,7 @@ runs:
         fi
 
     - name: Ensure tag does not already exist
+      id: tag_check
       shell: bash
       env:
         RELEASE_TOKEN: ${{ inputs.release_token }}
@@ -92,12 +93,17 @@ runs:
           -H "Accept: application/vnd.github+json" \
           -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
+        # If the tag already exists, skip creating the release rather than
+        # failing — this lets a re-run create only the still-missing releases.
         if [[ "${CHECK_TAG}" -eq 200 ]]; then
-          echo "⚠️ Tag ${TAG_NAME} already exists on ${OWNER}/${REPO}; skipping" >> "$GITHUB_STEP_SUMMARY"
-          exit 1
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+          echo "⚠️ Tag ${TAG_NAME} already exists on ${OWNER}/${REPO}; skipping release creation" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "exists=false" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Create release
+      if: steps.tag_check.outputs.exists == 'false'
       shell: bash
       env:
         RELEASE_TOKEN: ${{ inputs.release_token }}

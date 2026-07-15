@@ -1,0 +1,284 @@
+name: Reusable SBOM Generation
+
+on:
+  workflow_call:
+    inputs:
+      php-enabled:
+        description: "Generate a Composer SBOM."
+        required: false
+        type: boolean
+        default: true
+      npm-enabled:
+        description: "Generate NPM SBOM(s)."
+        required: false
+        type: boolean
+        default: true
+      php-version:
+        required: false
+        type: string
+        default: "8.4"
+      node-version:
+        required: false
+        type: string
+        default: "22"
+      promote-conflicts:
+        description: "Pimcore-specific: promote composer.json `conflict` entries to `require` before install (used by platform-version)."
+        required: false
+        type: boolean
+        default: false
+      private-packagist:
+        description: "Configure auth for repo.pimcore.com private packagist and the deployments SSH key."
+        required: false
+        type: boolean
+        default: false
+      npm-search-path:
+        description: "Directory to scan for package.json files (use `vendor` for Composer-based repos, `.` for pure NPM repos)."
+        required: false
+        type: string
+        default: "vendor"
+      commit-sbom:
+        description: "Commit the merged sbom/sbom.json back to the repo."
+        required: false
+        type: boolean
+        default: true
+      attach-to-release:
+        description: "Attach the merged SBOM to a GitHub release when the workflow runs on a tag."
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER:
+        required: false
+      COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
+        required: false
+    outputs:
+      sbom-path:
+        description: "Workspace-relative path to the merged SBOM."
+        value: ${{ jobs.sbom.outputs.sbom-path }}
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sbom-path: ${{ steps.merge.outputs.sbom-path }}
+
+    steps:
+      - name: Validate inputs
+        run: |
+          if [[ "${{ inputs.php-enabled }}" != "true" && "${{ inputs.npm-enabled }}" != "true" ]]; then
+            echo "::error::Both php-enabled and npm-enabled are false — nothing to do." >&2
+            exit 1
+          fi
+
+      - name: Checkout the code
+        uses: actions/checkout@v4
+
+      - name: Create SBOM directory
+        run: mkdir -p sbom
+
+      - name: Set up PHP
+        if: ${{ inputs.php-enabled }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+
+      - name: Set up Node
+        if: ${{ inputs.npm-enabled }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Get Composer cache directory
+        if: ${{ inputs.php-enabled }}
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        if: ${{ inputs.php-enabled }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Cache npm downloads
+        if: ${{ inputs.npm-enabled }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('composer.lock', 'composer.json', 'package-lock.json') }}
+          restore-keys: ${{ runner.os }}-npm-
+
+      - name: Install SSH Key # required for Composer to clone source from pimcore/ee-pimcore
+        if: ${{ inputs.private-packagist }}
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
+          known_hosts: "github.com"
+
+      - name: Add GitHub to known hosts
+        if: ${{ inputs.private-packagist }}
+        run: ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      - name: Add authentication for private pimcore packages
+        if: ${{ inputs.php-enabled && inputs.private-packagist }}
+        run: |
+          composer config repositories.private-packagist composer https://repo.pimcore.com/github-actions/
+          composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
+
+      - name: Promote conflict packages to requirements
+        if: ${{ inputs.php-enabled && inputs.promote-conflicts }}
+        run: |
+          jq '.require = (.require // {}) + ((.conflict // {}) | with_entries(.value = "*"))' composer.json > composer.json.tmp
+          mv composer.json.tmp composer.json
+
+      - name: Install Composer dependencies
+        if: ${{ inputs.php-enabled }}
+        run: |
+          composer config --no-plugins allow-plugins.cyclonedx/cyclonedx-php-composer true
+          if [[ "${{ inputs.promote-conflicts }}" == "true" ]]; then
+            # composer.json was rewritten above; lockfile is intentionally stale,
+            # so we have to update to resolve the expanded dependency set.
+            composer require cyclonedx/cyclonedx-php-composer:5.3.0 --no-update
+            composer update --no-interaction --no-scripts --prefer-dist
+          else
+            # Reproducible install from the lockfile, then add the SBOM plugin.
+            composer install --no-interaction --no-scripts --prefer-dist
+            composer require cyclonedx/cyclonedx-php-composer:5.3.0 --no-interaction --no-scripts
+          fi
+
+      - name: Generate Composer SBOM
+        if: ${{ inputs.php-enabled }}
+        run: |
+          composer CycloneDX:make-sbom \
+            --output-file=sbom/sbom-composer.json \
+            --output-format=json \
+            --spec-version=1.6
+
+      - name: Install cyclonedx-npm
+        if: ${{ inputs.npm-enabled }}
+        run: npm install --global @cyclonedx/cyclonedx-npm
+
+      - name: Generate NPM SBOMs
+        if: ${{ inputs.npm-enabled }}
+        env:
+          NPM_SEARCH_PATH: ${{ inputs.npm-search-path }}
+        run: |
+          if [ ! -d "$NPM_SEARCH_PATH" ]; then
+            echo "::error::npm-search-path '$NPM_SEARCH_PATH' does not exist. Set npm-search-path to a valid directory or disable npm-enabled."
+            exit 1
+          fi
+
+          idx=0
+          succeeded=()
+          failed=()
+          while IFS= read -r pkg; do
+            dir=$(dirname "$pkg")
+            jq -e 'has("dependencies") or has("devDependencies")' "$pkg" >/dev/null || continue
+
+            out="$GITHUB_WORKSPACE/sbom/sbom-npm-${idx}.json"
+            echo "::group::$dir"
+            (
+              cd "$dir"
+              npm install --package-lock-only --ignore-scripts --legacy-peer-deps --no-audit --no-fund && \
+              cyclonedx-npm \
+                --output-format JSON \
+                --output-file "$out" \
+                --spec-version 1.6 \
+                --ignore-npm-errors \
+                --omit dev \
+                --omit optional \
+                --package-lock-only \
+                --flatten-components
+            )
+            status=$?
+            echo "::endgroup::"
+
+            if [ "$status" -eq 0 ] && [ -f "$out" ]; then
+              succeeded+=("$dir")
+            else
+              failed+=("$dir")
+            fi
+            idx=$((idx + 1))
+          done < <(find "$NPM_SEARCH_PATH" -name package.json -not -path '*/node_modules/*')
+
+          {
+            echo "### NPM SBOM Generation"
+            echo ""
+            echo "- Generated: ${#succeeded[@]}"
+            echo "- Failed:    ${#failed[@]}"
+            if [ ${#failed[@]} -gt 0 ]; then
+              echo ""
+              echo "<details><summary>Failed packages</summary>"
+              echo ""
+              for f in "${failed[@]}"; do
+                echo "- \`$f\`"
+              done
+              echo ""
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Include manual SBOM fragment
+        # picks up sbom/manual.cdx.json for things not covered by composer/npm
+        run: |
+          if [ -f sbom/manual.cdx.json ]; then
+            cp sbom/manual.cdx.json sbom/sbom-manual.json
+          fi
+
+      - name: Install CycloneDX CLI
+        env:
+          CYCLONEDX_CLI_VERSION: "0.32.0"
+          CYCLONEDX_CLI_SHA256: "454879e6a4a405c8a13bff49b8982adcb0596f3019b26b0811c66e4d7f0783e1"
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          tmp="$(mktemp -d)"
+          curl -sSfL -o "$tmp/cyclonedx" \
+            "https://github.com/CycloneDX/cyclonedx-cli/releases/download/v${CYCLONEDX_CLI_VERSION}/cyclonedx-linux-x64"
+          echo "${CYCLONEDX_CLI_SHA256}  ${tmp}/cyclonedx" | sha256sum -c -
+          install -m 0755 "$tmp/cyclonedx" "$HOME/.local/bin/cyclonedx"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Merge SBOMs
+        id: merge
+        run: |
+          files=()
+          for f in sbom/sbom-*.json; do
+            [ -f "$f" ] && files+=("$f")
+          done
+
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No SBOM fragments were generated." >&2
+            exit 1
+          fi
+
+          cyclonedx merge \
+            --input-files "${files[@]}" \
+            --output-file sbom/sbom.json \
+            --output-format json
+
+          echo "sbom-path=sbom/sbom.json" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF_NAME" == v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=manual-$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit SBOM
+        if: ${{ inputs.commit-sbom && github.ref_type != 'tag' }}
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update SBOM for ${{ steps.version.outputs.version }}"
+          file_pattern: "sbom/sbom.json"
+
+      - name: Attach SBOM to release
+        if: ${{ inputs.attach-to-release && startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sbom/sbom.json

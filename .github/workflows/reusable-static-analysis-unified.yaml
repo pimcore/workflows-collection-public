@@ -17,10 +17,16 @@ on:
           {"include":[{"php-version":"8.2","dependencies":"highest","experimental":false}]}
 
       private_repo:
-        description: "Enable private repository authentication"
+        description: "Enable SSH key for private GitHub repository access"
         required: false
         type: string
         default: "false"
+
+      use_private_packagist:
+        description: "Configure auth for repo.pimcore.com private packagist"
+        required: false
+        type: string
+        default: "true"
 
       checkout_ref:
         description: "Git ref to checkout (auto-detects PR head if empty)"
@@ -107,14 +113,14 @@ jobs:
           php-version: ${{ matrix.php-version }}
 
       - name: "Install SSH Key"
-        if: ${{ inputs.private_repo }}
+        if: ${{ inputs.private_repo == 'true' }}
         uses: shimataro/ssh-key-action@v2.8.0
         with:
           key: ${{ secrets.SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER }}
           known_hosts: ".... we add this in the next step ;-)"
 
       - name: "Add authentication for private pimcore packages"
-        if: ${{ inputs.private_repo }}
+        if: ${{ inputs.private_repo == 'true' }}
         run: |
           composer config repositories.private-packagist '{"type": "composer", "url": "https://repo.pimcore.com/github-actions/", "canonical": ${{ inputs.PRIVATE_PACKAGIST_CANONICAL }}}'
           composer config --global --auth http-basic.repo.pimcore.com github-actions ${{ secrets.COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN }}
@@ -134,6 +140,28 @@ jobs:
         run: |
           if [ ! -z "$PIMCORE_VERSION" ]; then
             composer require --no-update pimcore/pimcore:"${PIMCORE_VERSION}"
+          fi
+
+      - name: "Extract Pimcore version from composer.json"
+        if: ${{ inputs.INSTALL_PIMCORE == 'true' }}
+        run: |
+          COMPOSER_PIMCORE=""
+          if [ -f composer.json ]; then
+            COMPOSER_PIMCORE=$(php -r "\$j=json_decode(file_get_contents('composer.json'),true); echo \$j['require']['pimcore/pimcore'] ?? '';" 2>/dev/null || true)
+            echo "Pimcore constraint from composer.json: $COMPOSER_PIMCORE"
+          fi
+          echo "COMPOSER_PIMCORE=$COMPOSER_PIMCORE" >> $GITHUB_ENV
+
+      - name: "Ignore phpunit 10.2.7 security advisory for Pimcore 11.4"
+        if: ${{ inputs.INSTALL_PIMCORE == 'true' }}
+        run: |
+          # Strip leading ^ or ~ so ^11.4, ~11.4, 11.4.* all match
+          VERSION="${COMPOSER_PIMCORE#[\^~]}"
+          if [[ "$VERSION" =~ ^11\.4 ]]; then
+            echo "Pimcore 11.4 detected ($COMPOSER_PIMCORE), ignoring phpunit advisory"
+            composer config --json --merge audit.ignore '{"PKSA-z3gr-8qht-p93v":"phpunit 10.2.7 pinned by pimcore 11.4"}'
+          else
+            echo "Pimcore version '$COMPOSER_PIMCORE' does not require advisory ignore, skipping"
           fi
 
       - name: "Install dependencies with Composer"

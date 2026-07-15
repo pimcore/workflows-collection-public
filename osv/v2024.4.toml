@@ -2,3 +2,28 @@
 id = "GHSA-7q22-x757-cmgc"
 # ignoreUntil = 2022-11-09 # Optional exception expiry date
 reason = "Low impact."
+[[IgnoredVulns]]
+id = "GHSA-h4ph-crvj-9h92"
+reason = "Fixed in LTS"
+[[IgnoredVulns]]
+id = "GHSA-3234-gxc3-pq6f"
+reason = "Fixed in LTS"
+[[IgnoredVulns]]
+id = "GHSA-332x-r494-54fq"
+reason = "Fixed in LTS"
+[[IgnoredVulns]]
+id = "GHSA-36fc-7wjg-mfvj"
+reason = "Fixed in LTS"
+[[IgnoredVulns]]
+id = "GHSA-jwcc-gv4m-93x6"
+reason = "Fixed in LTS"
+[[IgnoredVulns]]
+id = "GHSA-r2f4-ff2p-xc64"
+reason = "Fixed in LTS"
+[[IgnoredVulns]]
+id = "GHSA-wc7j-g8wx-m2qx"
+reason = "Fixed in LTS"
+[[IgnoredVulns]]
+id = "GHSA-7p36-fq2r-4h7r"
+reason = "Fixed in LTS"
+
