@@ -77,7 +77,7 @@ runs:
           echo "CE_SHA=${CE_SHA}" >> "$GITHUB_ENV"
         fi
 
-    - name: Ensure tag does not already exist
+    - name: Ensure release does not already exist
       id: tag_check
       shell: bash
       env:
@@ -87,17 +87,57 @@ runs:
         TAG_NAME: ${{ inputs.tag_name }}
       run: |
         set -euo pipefail
-        CHECK_TAG=$(curl -s -o /dev/null -w "%{http_code}" --location \
-          "https://api.github.com/repos/${OWNER}/${REPO}/git/refs/tags/${TAG_NAME}" \
-          -H "X-GitHub-Api-Version: 2022-11-28" \
-          -H "Accept: application/vnd.github+json" \
-          -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-        # If the tag already exists, skip creating the release rather than
+        api() {
+          # $1 = path under the repo; echoes "<body>\nHTTP_STATUS:<code>"
+          curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/$1" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}"
+        }
+
+        exists=false
+
+        # 1) Published tag ref: 200 = exists, 404 = absent. Any other status
+        #    (401/403/5xx …) is a hard failure — never fail *open* and risk
+        #    creating a duplicate release on a transient API error.
+        REF_RESP=$(api "git/refs/tags/${TAG_NAME}")
+        REF_STATUS=$(echo "${REF_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+        if [[ "${REF_STATUS}" -eq 200 ]]; then
+          exists=true
+        elif [[ "${REF_STATUS}" -ne 404 ]]; then
+          echo "❌ Failed to check tag ${TAG_NAME} on ${OWNER}/${REPO} (HTTP ${REF_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+
+        # 2) A draft release does not create a tag ref, so a tag-only check
+        #    would miss it and a re-run would create a duplicate draft. Scan the
+        #    releases list (which includes drafts) for this tag as well.
+        if [[ "${exists}" == "false" ]]; then
+          page=1
+          while :; do
+            REL_RESP=$(api "releases?per_page=100&page=${page}")
+            REL_STATUS=$(echo "${REL_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            if [[ "${REL_STATUS}" -ne 200 ]]; then
+              echo "❌ Failed to list releases for ${OWNER}/${REPO} (HTTP ${REL_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            REL_BODY=$(echo "${REL_RESP}" | sed '$d')
+            if echo "${REL_BODY}" | jq -e --arg t "${TAG_NAME}" 'any(.[]; .tag_name == $t)' >/dev/null; then
+              exists=true
+              break
+            fi
+            [[ "$(echo "${REL_BODY}" | jq 'length')" -lt 100 ]] && break
+            page=$((page + 1))
+          done
+        fi
+
+        # If the tag/release already exists, skip creating it rather than
         # failing — this lets a re-run create only the still-missing releases.
-        if [[ "${CHECK_TAG}" -eq 200 ]]; then
+        if [[ "${exists}" == "true" ]]; then
           echo "exists=true" >> "$GITHUB_OUTPUT"
-          echo "⚠️ Tag ${TAG_NAME} already exists on ${OWNER}/${REPO}; skipping release creation" >> "$GITHUB_STEP_SUMMARY"
+          echo "⚠️ A release for ${TAG_NAME} already exists on ${OWNER}/${REPO}; skipping release creation" >> "$GITHUB_STEP_SUMMARY"
         else
           echo "exists=false" >> "$GITHUB_OUTPUT"
         fi

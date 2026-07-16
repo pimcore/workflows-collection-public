@@ -1,0 +1,134 @@
+name: Validate no ExtJS
+description: >
+  Block a release when ExtJS/Sencha library code is present. Re-resolves the
+  branch HEAD at run time (so an EE bundle advanced by a CE → EE sync is checked
+  at the commit that will actually be tagged), then runs a two-pass detection:
+  path-based (known ExtJS filenames/directories) and a Sencha copyright content
+  search. Any tree-fetch failure is fatal (fail closed) so a release is never cut
+  past an unverifiable tree.
+
+inputs:
+  owner:
+    required: true
+  repo:
+    required: true
+  base_branch:
+    description: "Branch whose current HEAD is validated (re-resolved at run time)"
+    required: true
+  release_token:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve post-sync HEAD SHA
+      id: resolve
+      shell: bash
+      env:
+        RELEASE_TOKEN: ${{ inputs.release_token }}
+        OWNER: ${{ inputs.owner }}
+        REPO: ${{ inputs.repo }}
+        BASE_BRANCH: ${{ inputs.base_branch }}
+      run: |
+        set -euo pipefail
+
+        # Validate the commit that will actually be tagged: for EE bundles the
+        # CE → EE sync may have advanced HEAD past prepare's SHA, so re-resolve.
+        RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+          "https://api.github.com/repos/${OWNER}/${REPO}/commits/${BASE_BRANCH}" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${RELEASE_TOKEN}")
+        STATUS=$(echo "${RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+        if [[ "${STATUS}" -ne 200 ]]; then
+          echo "❌ Failed to resolve HEAD of ${OWNER}/${REPO}@${BASE_BRANCH} (HTTP ${STATUS})" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+        SHA=$(echo "${RESP}" | sed '$d' | jq -r '.sha // ""')
+        if [[ -z "${SHA}" || "${SHA}" == "null" ]]; then
+          echo "❌ Empty SHA for ${OWNER}/${REPO}@${BASE_BRANCH}" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+        echo "latest_sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+    - name: Check for ExtJS code
+      shell: bash
+      env:
+        RELEASE_TOKEN: ${{ inputs.release_token }}
+        OWNER: ${{ inputs.owner }}
+        REPO: ${{ inputs.repo }}
+        BASE_BRANCH: ${{ inputs.base_branch }}
+        LATEST_SHA: ${{ steps.resolve.outputs.latest_sha }}
+      run: |
+        set -euo pipefail
+
+        echo "Checking for ExtJS code in ${OWNER}/${REPO} at ${LATEST_SHA}..." >> "$GITHUB_STEP_SUMMARY"
+
+        TREE_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+          "https://api.github.com/repos/${OWNER}/${REPO}/git/trees/${LATEST_SHA}?recursive=1" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+        TREE_STATUS=$(echo "${TREE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+        if [[ "${TREE_STATUS}" -ne 200 ]]; then
+          # Fail closed: an unverifiable tree must block the release, not pass it.
+          echo "❌ Failed to fetch file tree for ${OWNER}/${REPO} (HTTP ${TREE_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+          echo "$(echo "${TREE_RESP}" | sed '$d' | head -c 1000)" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+
+        TREE=$(echo "${TREE_RESP}" | sed '$d')
+        TRUNCATED=$(echo "${TREE}" | jq -r '.truncated')
+        if [[ "${TRUNCATED}" == "true" ]]; then
+          echo "⚠️ File tree was truncated due to repository size; ExtJS check may be incomplete." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        # --- Pass 1: path-based check ---
+        # Multi-layered detection matching comprehensive ExtJS scanner:
+        # 1. Known ExtJS/Sencha dist files (ext-all.js, ext-debug.js,
+        #    ext-foundation.js, ext-modern-all.js, sencha-touch-all.js, etc.)
+        # 2. Sencha CMD artifacts (.sencha/ directory, sencha.cfg)
+        # 3. ExtJS/Sencha directory names (extjs, ext-js, ext-6, ext-7,
+        #    senchatouch, sencha-touch)
+        # 4. ExtJS structural paths (/ext/src/, /ext/packages/, /ext/classic/,
+        #    /ext/modern/, /ext/overrides/, /senchaextjs/, sencha-generated)
+        # 5. npm/composer Sencha packages (node_modules/@sencha/, node_modules/extjs)
+        PATH_HITS=$(echo "${TREE}" | jq -r '.tree[] | select(.type == "blob" or .type == "tree") | .path' | \
+          grep -iE '(^|/)(\.sencha|extjs|ext-js|ext-[67]|senchatouch|sencha-touch)(/|$)|\b(ext-all(-debug|-rtl|-rtl-debug|-sandbox|-dev)?(\.min)?|ext(-debug|-foundation|-foundation-debug)?|ext-modern-all(-debug)?|sencha-touch(-all|-debug|-all-debug)?)\.js$|\bsencha\.cfg$|(^|/)node_modules/(@sencha/|extjs(/|$))|/ext/(src|packages|classic|modern|overrides)/|/(senchaextjs|sencha-generated)/' || true)
+
+        # --- Pass 2: Sencha copyright content search ---
+        # Catches actual Sencha/ExtJS library files regardless of their filename.
+        # Uses the GitHub code search API (rate-limited). Results are filtered to
+        # code/config files only — documentation files (*.md, *.txt, *.rst, etc.)
+        # that merely reference Sencha are ignored.
+        SEARCH_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+          "https://api.github.com/search/code?q=Sencha+Inc+repo:${OWNER}/${REPO}" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+        SEARCH_STATUS=$(echo "${SEARCH_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+        CONTENT_HITS=""
+        if [[ "${SEARCH_STATUS}" -eq 200 ]]; then
+          TOTAL=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.total_count')
+          if [[ "${TOTAL}" -gt 0 ]]; then
+            CONTENT_HITS=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.items[].path' | \
+              grep -iE '\.(js|ts|mjs|jsx|tsx|css|scss|less|html|htm|xml|json|cfg|properties)$' || true)
+          fi
+        else
+          echo "⚠️ Sencha copyright content search failed for ${OWNER}/${REPO} (HTTP ${SEARCH_STATUS}); relying on path-based check only." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        # --- Aggregate results ---
+        if [[ -n "${PATH_HITS}" || -n "${CONTENT_HITS}" ]]; then
+          echo "❌ ExtJS/Sencha library code detected in ${OWNER}/${REPO}. Release blocked." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          [[ -n "${PATH_HITS}" ]] && printf "**Path matches (known ExtJS filenames/directories):**\n\`\`\`\n%s\n\`\`\`\n" "${PATH_HITS}" >> "$GITHUB_STEP_SUMMARY"
+          [[ -n "${CONTENT_HITS}" ]] && printf "**Content matches (Sencha Inc. copyright found in):**\n\`\`\`\n%s\n\`\`\`\n" "${CONTENT_HITS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Remove all ExtJS/Sencha library files from branch '${BASE_BRANCH}' before releasing." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+
+        echo "✅ No ExtJS/Sencha library code detected in ${OWNER}/${REPO}." >> "$GITHUB_STEP_SUMMARY"

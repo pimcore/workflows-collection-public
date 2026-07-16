@@ -285,88 +285,22 @@ jobs:
     if: ${{ !cancelled() && needs.sync-ee.result != 'failure' }}
     strategy:
       fail-fast: true
+      # Cap concurrency: each matrix job issues a GitHub code-search call, which
+      # has a much stricter secondary rate limit than the core API. Without a cap
+      # a large release fan-out throttles and silently degrades to path-only.
+      max-parallel: 5
       matrix:
         target: ${{ fromJSON(needs.prepare.outputs.targets_json) }}
-    env:
-      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-      OWNER: ${{ matrix.target.owner }}
-      REPO: ${{ matrix.target.repo }}
-      LATEST_SHA: ${{ matrix.target.latest_sha }}
     steps:
-      - name: Resolve post-sync HEAD SHA
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Validate the commit that will actually be tagged: for EE bundles the
-          # CE → EE sync may have advanced HEAD past prepare's SHA, so re-resolve.
-          RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
-            "https://api.github.com/repos/${OWNER}/${REPO}/commits/${BASE_BRANCH}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${RELEASE_TOKEN}")
-          STATUS=$(echo "${RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
-          if [[ "${STATUS}" -ne 200 ]]; then
-            echo "❌ Failed to resolve HEAD of ${OWNER}/${REPO}@${BASE_BRANCH} (HTTP ${STATUS})" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          SHA=$(echo "${RESP}" | sed '$d' | jq -r '.sha // ""')
-          if [[ -z "${SHA}" || "${SHA}" == "null" ]]; then
-            echo "❌ Empty SHA for ${OWNER}/${REPO}@${BASE_BRANCH}" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          echo "LATEST_SHA=${SHA}" >> "$GITHUB_ENV"
-
-      - name: Check for ExtJS code
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          TREE_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
-            "https://api.github.com/repos/${OWNER}/${REPO}/git/trees/${LATEST_SHA}?recursive=1" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${RELEASE_TOKEN}")
-
-          TREE_STATUS=$(echo "${TREE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
-          if [[ "${TREE_STATUS}" -ne 200 ]]; then
-            echo "⚠️ Cannot fetch file tree for ${OWNER}/${REPO} (HTTP ${TREE_STATUS}); skipping ExtJS check" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          TREE=$(echo "${TREE_RESP}" | sed '$d')
-
-          # Multi-layered path-based detection (see bugfix/hotfix workflow for full docs)
-          PATH_HITS=$(echo "${TREE}" | jq -r '.tree[] | select(.type == "blob" or .type == "tree") | .path' | \
-            grep -iE '(^|/)(\.sencha|extjs|ext-js|ext-[67]|senchatouch|sencha-touch)(/|$)|\b(ext-all(-debug|-rtl|-rtl-debug|-sandbox|-dev)?(\.min)?|ext(-debug|-foundation|-foundation-debug)?|ext-modern-all(-debug)?|sencha-touch(-all|-debug|-all-debug)?)\.js$|\bsencha\.cfg$|(^|/)node_modules/(@sencha/|extjs(/|$))|/ext/(src|packages|classic|modern|overrides)/|/(senchaextjs|sencha-generated)/' || true)
-
-          # Content search — only flag code/config files, not docs
-          SEARCH_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
-            "https://api.github.com/search/code?q=Sencha+Inc+repo:${OWNER}/${REPO}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${RELEASE_TOKEN}")
-
-          SEARCH_STATUS=$(echo "${SEARCH_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
-          CONTENT_HITS=""
-          if [[ "${SEARCH_STATUS}" -eq 200 ]]; then
-            TOTAL=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.total_count')
-            if [[ "${TOTAL}" -gt 0 ]]; then
-              CONTENT_HITS=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.items[].path' | \
-                grep -iE '\.(js|ts|mjs|jsx|tsx|css|scss|less|html|htm|xml|json|cfg|properties)$' || true)
-            fi
-          else
-            echo "⚠️ Sencha copyright content search failed for ${OWNER}/${REPO} (HTTP ${SEARCH_STATUS}); relying on path-based check only." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          if [[ -n "${PATH_HITS}" || -n "${CONTENT_HITS}" ]]; then
-            echo "❌ ExtJS/Sencha code detected in ${OWNER}/${REPO}. Release blocked." >> "$GITHUB_STEP_SUMMARY"
-            [[ -n "${PATH_HITS}" ]] && printf "Path matches:\n\`\`\`\n%s\n\`\`\`\n" "${PATH_HITS}" >> "$GITHUB_STEP_SUMMARY"
-            [[ -n "${CONTENT_HITS}" ]] && printf "Content matches:\n\`\`\`\n%s\n\`\`\`\n" "${CONTENT_HITS}" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-          echo "✅ No ExtJS in ${OWNER}/${REPO}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Checkout workflow repo (for composite action)
+        uses: actions/checkout@v5
+      - name: Validate no ExtJS
+        uses: ./.github/actions/validate-no-extjs
+        with:
+          owner: ${{ matrix.target.owner }}
+          repo: ${{ matrix.target.repo }}
+          base_branch: ${{ inputs.base_branch }}
+          release_token: ${{ secrets.RELEASE_TOKEN }}
 
   sync-ee:
     name: Sync CE → EE (${{ matrix.pair.repo }})
@@ -379,112 +313,24 @@ jobs:
       fail-fast: true
       matrix:
         pair: ${{ fromJSON(needs.prepare.outputs.sync_pairs_json) }}
-    env:
-      SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
-      GIT_NAME: ${{ secrets.GIT_NAME }}
-      GIT_EMAIL: ${{ secrets.GIT_EMAIL }}
-      RUN_ID: ${{ github.run_id }}
-      RUN_ATTEMPT: ${{ github.run_attempt }}
-      EE_OWNER: ${{ matrix.pair.owner }}
-      EE_REPO: ${{ matrix.pair.repo }}
-      CE_OWNER: ${{ matrix.pair.ce_owner }}
-      CE_REPO: ${{ matrix.pair.ce_repo }}
     steps:
-      - name: Checkout CE base branch (sync source)
+      - name: Checkout workflow repo (for composite action)
         uses: actions/checkout@v5
+      # sync_pairs only contains EE bundles whose CE counterpart is itself a
+      # release target, so the CE base branch is guaranteed present.
+      - name: Sync CE → EE
+        uses: ./.github/actions/sync-ce-to-ee
         with:
-          repository: ${{ matrix.pair.ce_owner }}/${{ matrix.pair.ce_repo }}
-          ref: ${{ env.BASE_BRANCH }}
-          token: ${{ secrets.SYNC_TOKEN }}
-          fetch-depth: 0
-          path: ce-src
-
-      - name: Configure git identity
-        working-directory: ce-src
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "${GIT_NAME}"
-          git config user.email "${GIT_EMAIL}"
-
-      - name: Sync CE → EE (open + merge PR when EE is behind)
-        working-directory: ce-src
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Sync direction is CE → EE (confirmed). We are checked out on CE's
-          # base branch (guaranteed present — checkout would have failed
-          # otherwise, so there is no silent skip). Fetch EE's base branch into
-          # an explicit remote-tracking ref (never relying on opportunistic
-          # updates); if CE has commits EE lacks, open a PR in EE from CE's
-          # state and merge it. Any error fails the job (fail closed) so a
-          # release is never cut against an unsynced EE.
-          git remote add ee "https://x-access-token:${SYNC_TOKEN}@github.com/${EE_OWNER}/${EE_REPO}.git"
-          git fetch ee "${BASE_BRANCH}:refs/remotes/ee/${BASE_BRANCH}" --quiet
-
-          AHEAD=$(git rev-list --count "refs/remotes/ee/${BASE_BRANCH}..HEAD")
-          if [[ "${AHEAD}" -eq 0 ]]; then
-            echo "✅ ${EE_OWNER}/${EE_REPO} already in sync with ${CE_OWNER}/${CE_REPO} on ${BASE_BRANCH}; nothing to sync." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          echo "🔁 ${CE_OWNER}/${CE_REPO} is ${AHEAD} commit(s) ahead of EE on ${BASE_BRANCH}; opening sync PR." >> "$GITHUB_STEP_SUMMARY"
-
-          # Include run_attempt so a re-run of a failed release uses a fresh
-          # branch and never collides with a leftover sync PR from a prior attempt.
-          SYNC_BRANCH="sync-ce-to-ee-${RUN_ID}-${RUN_ATTEMPT}-${BASE_BRANCH}"
-          git push ee "HEAD:refs/heads/${SYNC_BRANCH}"
-
-          PR_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
-            "https://api.github.com/repos/${EE_OWNER}/${EE_REPO}/pulls" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${SYNC_TOKEN}" \
-            -d "$(jq -n \
-                  --arg t "Pre-release sync CE → EE (${BASE_BRANCH})" \
-                  --arg h "${SYNC_BRANCH}" \
-                  --arg b "${BASE_BRANCH}" \
-                  --arg body "Automated pre-release sync of ${CE_OWNER}/${CE_REPO}@${BASE_BRANCH} into ${EE_OWNER}/${EE_REPO}@${BASE_BRANCH}." \
-                  '{title:$t, head:$h, base:$b, body:$body}')")
-          PR_STATUS=$(echo "${PR_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
-          PR_JSON=$(echo "${PR_RESP}" | sed '$d')
-          if [[ "${PR_STATUS}" -ne 201 ]]; then
-            echo "❌ Failed to open sync PR in ${EE_OWNER}/${EE_REPO} (HTTP ${PR_STATUS})." >> "$GITHUB_STEP_SUMMARY"
-            echo "$(echo "${PR_JSON}" | head -c 1000)" >> "$GITHUB_STEP_SUMMARY"
-            git push ee --delete "${SYNC_BRANCH}" --quiet || true
-            exit 1
-          fi
-          PR_NUM=$(echo "${PR_JSON}" | jq -r '.number')
-          echo "Opened sync PR #${PR_NUM} in ${EE_OWNER}/${EE_REPO}." >> "$GITHUB_STEP_SUMMARY"
-
-          # Merge (auto). Retry briefly while GitHub computes mergeability.
-          MERGED=false
-          MERGE_STATUS=""
-          for attempt in 1 2 3 4 5; do
-            MERGE_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT --location \
-              "https://api.github.com/repos/${EE_OWNER}/${EE_REPO}/pulls/${PR_NUM}/merge" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${SYNC_TOKEN}" \
-              -d "$(jq -n --arg m "Pre-release sync CE → EE (${BASE_BRANCH})" '{merge_method:"merge", commit_title:$m}')")
-            MERGE_STATUS=$(echo "${MERGE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
-            if [[ "${MERGE_STATUS}" -eq 200 ]]; then
-              MERGED=true
-              break
-            fi
-            echo "⏳ Merge attempt ${attempt} for PR #${PR_NUM} returned HTTP ${MERGE_STATUS}; retrying..." >> "$GITHUB_STEP_SUMMARY"
-            sleep 10
-          done
-
-          if [[ "${MERGED}" != "true" ]]; then
-            echo "❌ Could not merge sync PR #${PR_NUM} in ${EE_OWNER}/${EE_REPO} (last HTTP ${MERGE_STATUS})." >> "$GITHUB_STEP_SUMMARY"
-            echo "Likely a merge conflict or branch protection. Resolve/merge PR #${PR_NUM} manually, then re-run the release (or use skip_sync_check: true)." >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-          echo "✅ Merged sync PR #${PR_NUM}; ${EE_OWNER}/${EE_REPO}@${BASE_BRANCH} now contains CE's latest." >> "$GITHUB_STEP_SUMMARY"
-          git push ee --delete "${SYNC_BRANCH}" --quiet || true
+          ce_owner: ${{ matrix.pair.ce_owner }}
+          ce_repo: ${{ matrix.pair.ce_repo }}
+          ee_owner: ${{ matrix.pair.owner }}
+          ee_repo: ${{ matrix.pair.repo }}
+          base_branch: ${{ inputs.base_branch }}
+          sync_token: ${{ secrets.SYNC_TOKEN }}
+          git_name: ${{ secrets.GIT_NAME }}
+          git_email: ${{ secrets.GIT_EMAIL }}
+          run_id: ${{ github.run_id }}
+          run_attempt: ${{ github.run_attempt }}
 
   # EE bundles are released (tagged) first: create-releases-ce needs
   # create-releases-ee, so every EE tag exists before any CE release starts —

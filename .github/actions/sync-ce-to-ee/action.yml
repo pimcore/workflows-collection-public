@@ -1,0 +1,130 @@
+name: Sync CE to EE
+description: >
+  Bring an EE bundle's base branch up to date with its CE counterpart before a
+  release. Sync direction is CE → EE: when CE has commits EE lacks, open a PR in
+  EE from CE's state and merge it. No-op when EE is already in sync. Any error
+  fails the step (fail closed) so a release is never cut against an unsynced EE.
+  The caller is responsible for confirming the CE counterpart branch exists
+  before invoking this action.
+
+inputs:
+  ce_owner:
+    required: true
+  ce_repo:
+    required: true
+  ee_owner:
+    required: true
+  ee_repo:
+    required: true
+  base_branch:
+    required: true
+  sync_token:
+    required: true
+  git_name:
+    required: true
+  git_email:
+    required: true
+  run_id:
+    description: "github.run_id — namespaces the sync branch"
+    required: true
+  run_attempt:
+    description: "github.run_attempt — a re-run gets a fresh, non-colliding sync branch"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Sync CE → EE (open + merge PR when EE is behind)
+      shell: bash
+      env:
+        SYNC_TOKEN: ${{ inputs.sync_token }}
+        GIT_NAME: ${{ inputs.git_name }}
+        GIT_EMAIL: ${{ inputs.git_email }}
+        RUN_ID: ${{ inputs.run_id }}
+        RUN_ATTEMPT: ${{ inputs.run_attempt }}
+        CE_OWNER: ${{ inputs.ce_owner }}
+        CE_REPO: ${{ inputs.ce_repo }}
+        EE_OWNER: ${{ inputs.ee_owner }}
+        EE_REPO: ${{ inputs.ee_repo }}
+        BASE_BRANCH: ${{ inputs.base_branch }}
+      run: |
+        set -euo pipefail
+
+        # Check out CE's base branch (the sync source) with full history so
+        # rev-list can compare against EE. Cloned into a fresh dir to avoid any
+        # collision with the workflow-repo checkout in the same workspace.
+        rm -rf ce-src
+        git clone --quiet --branch "${BASE_BRANCH}" \
+          "https://x-access-token:${SYNC_TOKEN}@github.com/${CE_OWNER}/${CE_REPO}.git" ce-src
+        cd ce-src
+        git config user.name "${GIT_NAME}"
+        git config user.email "${GIT_EMAIL}"
+
+        # Fetch EE's base branch into an explicit remote-tracking ref (never
+        # relying on opportunistic updates); if CE has commits EE lacks, open a
+        # PR in EE from CE's state and merge it.
+        git remote add ee "https://x-access-token:${SYNC_TOKEN}@github.com/${EE_OWNER}/${EE_REPO}.git"
+        git fetch ee "${BASE_BRANCH}:refs/remotes/ee/${BASE_BRANCH}" --quiet
+
+        AHEAD=$(git rev-list --count "refs/remotes/ee/${BASE_BRANCH}..HEAD")
+        if [[ "${AHEAD}" -eq 0 ]]; then
+          echo "✅ ${EE_OWNER}/${EE_REPO} already in sync with ${CE_OWNER}/${CE_REPO} on ${BASE_BRANCH}; nothing to sync." >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        echo "🔁 ${CE_OWNER}/${CE_REPO} is ${AHEAD} commit(s) ahead of EE on ${BASE_BRANCH}; opening sync PR." >> "$GITHUB_STEP_SUMMARY"
+
+        # Include run_attempt so a re-run of a failed release uses a fresh
+        # branch and never collides with a leftover sync PR from a prior attempt.
+        SYNC_BRANCH="sync-ce-to-ee-${RUN_ID}-${RUN_ATTEMPT}-${BASE_BRANCH}"
+        git push ee "HEAD:refs/heads/${SYNC_BRANCH}"
+
+        PR_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
+          "https://api.github.com/repos/${EE_OWNER}/${EE_REPO}/pulls" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${SYNC_TOKEN}" \
+          -d "$(jq -n \
+                --arg t "Pre-release sync CE → EE (${BASE_BRANCH})" \
+                --arg h "${SYNC_BRANCH}" \
+                --arg b "${BASE_BRANCH}" \
+                --arg body "Automated pre-release sync of ${CE_OWNER}/${CE_REPO}@${BASE_BRANCH} into ${EE_OWNER}/${EE_REPO}@${BASE_BRANCH}." \
+                '{title:$t, head:$h, base:$b, body:$body}')")
+        PR_STATUS=$(echo "${PR_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+        PR_JSON=$(echo "${PR_RESP}" | sed '$d')
+        if [[ "${PR_STATUS}" -ne 201 ]]; then
+          echo "❌ Failed to open sync PR in ${EE_OWNER}/${EE_REPO} (HTTP ${PR_STATUS})." >> "$GITHUB_STEP_SUMMARY"
+          echo "$(echo "${PR_JSON}" | head -c 1000)" >> "$GITHUB_STEP_SUMMARY"
+          git push ee --delete "${SYNC_BRANCH}" --quiet || true
+          exit 1
+        fi
+        PR_NUM=$(echo "${PR_JSON}" | jq -r '.number')
+        echo "Opened sync PR #${PR_NUM} in ${EE_OWNER}/${EE_REPO}." >> "$GITHUB_STEP_SUMMARY"
+
+        # Merge (auto). Retry briefly while GitHub computes mergeability.
+        MERGED=false
+        MERGE_STATUS=""
+        for attempt in 1 2 3 4 5; do
+          MERGE_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT --location \
+            "https://api.github.com/repos/${EE_OWNER}/${EE_REPO}/pulls/${PR_NUM}/merge" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${SYNC_TOKEN}" \
+            -d "$(jq -n --arg m "Pre-release sync CE → EE (${BASE_BRANCH})" '{merge_method:"merge", commit_title:$m}')")
+          MERGE_STATUS=$(echo "${MERGE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          if [[ "${MERGE_STATUS}" -eq 200 ]]; then
+            MERGED=true
+            break
+          fi
+          echo "⏳ Merge attempt ${attempt} for PR #${PR_NUM} returned HTTP ${MERGE_STATUS}; retrying..." >> "$GITHUB_STEP_SUMMARY"
+          sleep 10
+        done
+
+        if [[ "${MERGED}" != "true" ]]; then
+          echo "❌ Could not merge sync PR #${PR_NUM} in ${EE_OWNER}/${EE_REPO} (last HTTP ${MERGE_STATUS})." >> "$GITHUB_STEP_SUMMARY"
+          echo "Likely a merge conflict or branch protection. Resolve/merge PR #${PR_NUM} manually, then re-run the release (or use skip_sync_check: true)." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+
+        echo "✅ Merged sync PR #${PR_NUM}; ${EE_OWNER}/${EE_REPO}@${BASE_BRANCH} now contains CE's latest." >> "$GITHUB_STEP_SUMMARY"
+        git push ee --delete "${SYNC_BRANCH}" --quiet || true
