@@ -63,6 +63,14 @@ on:
 # GitHub issues a read-only cache token, so cache saves are blocked and restores
 # rarely match. Each job just runs `npm ci` — simple, reliable, no false-alarm
 # "failed to save cache" warnings.
+#
+# SECURITY: jobs that execute repo-provided code (`npm ci` runs install hooks,
+# `npm run …` runs repo scripts) run with `contents: read` ONLY. The
+# `contents: write` token lives exclusively in the `commit-*` jobs, which never
+# run project code — they only apply a captured patch and commit it. Those
+# commit jobs are additionally gated to non-fork contexts, so a caller wiring
+# this into `pull_request_target` can never hand a fork's code a write-capable
+# token.
 permissions:
   contents: read
 
@@ -70,12 +78,13 @@ env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
 
 jobs:
+  # Read-only: executes repo-provided code (npm hooks + lint script). Captures
+  # any lint fixes as a patch artifact; the write token is NOT present here.
   lint:
     if: ${{ inputs.lint && !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
+    outputs:
+      has_changes: ${{ steps.capture.outputs.has_changes }}
 
     steps:
       - name: Checkout code
@@ -83,6 +92,10 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          # This job runs repo-provided code (npm hooks + lint script). Keep no
+          # git credentials in .git/config while that code executes; nothing
+          # here needs authenticated git after checkout.
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -97,8 +110,62 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: npm run ${{ inputs.lint-script }}
 
-      - name: Commit lint fixes
+      - name: Capture lint fixes as a patch
+        id: capture
         if: ${{ inputs.commit-lint-output }}
+        run: |
+          set -euo pipefail
+          # Stage everything (adds, modifications AND deletions) so the patch is
+          # a faithful round-trip. `-N` (intent-to-add) would only mark additions
+          # and silently drop deletions from the unstaged diff, so we stage fully
+          # and diff --cached instead.
+          git add -A
+          git diff --cached --binary > "${RUNNER_TEMP}/lint-fixes.patch"
+          if [[ -s "${RUNNER_TEMP}/lint-fixes.patch" ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload lint-fix patch
+        if: ${{ inputs.commit-lint-output && steps.capture.outputs.has_changes == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-fixes-patch
+          path: ${{ runner.temp }}/lint-fixes.patch
+          retention-days: 1
+          if-no-files-found: error
+          # v4 artifact names are immutable per run; allow re-running failed
+          # jobs to re-upload instead of 409-ing on the second attempt.
+          overwrite: true
+
+  # Write-capable, but runs NO repo-provided code: it only applies the patch
+  # produced above and commits it. Gated to non-fork contexts.
+  commit-lint:
+    needs: lint
+    if: ${{ inputs.commit-lint-output && needs.lint.outputs.has_changes == 'true' && (github.event.pull_request.head.repo.full_name == '' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.BRANCH_NAME }}
+          repository: ${{ github.repository }}
+
+      - name: Download lint-fix patch
+        uses: actions/download-artifact@v4
+        with:
+          name: lint-fixes-patch
+          path: ${{ runner.temp }}
+
+      - name: Apply lint fixes
+        run: git apply "${RUNNER_TEMP}/lint-fixes.patch"
+
+      - name: Commit lint fixes
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
@@ -114,6 +181,9 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          # Runs repo-provided code (npm hooks + typecheck script); no
+          # authenticated git needed after checkout.
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -128,15 +198,26 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: npm run ${{ inputs.typecheck-script }}
 
+  # Read-only: executes repo-provided code (npm hooks + build script). Captures
+  # the build output as a patch artifact; the write token is NOT present here.
+  # (Patch, not a directory artifact, because build-output-path defaults to the
+  # whole tree.)
   build:
+    # Depends on commit-lint so the checkout below already contains any pushed
+    # lint fixes, matching the original sequential behaviour and avoiding a
+    # concurrent push race between the two commit jobs. `lint` is ALSO listed
+    # directly (and its result checked below) to preserve the lint failure gate:
+    # commit-lint reports `skipped` both when lint passed with nothing to commit
+    # AND when lint failed, so it can't distinguish the two — a direct check on
+    # lint.result is what actually blocks the build on a lint failure.
     needs:
       - lint
+      - commit-lint
       - check-types
-    if: ${{ always() && !startsWith(github.ref, 'refs/tags/') && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.check-types.result == 'success' || needs.check-types.result == 'skipped') }}
+    if: ${{ always() && !startsWith(github.ref, 'refs/tags/') && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.commit-lint.result == 'success' || needs.commit-lint.result == 'skipped') && (needs.check-types.result == 'success' || needs.check-types.result == 'skipped') }}
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
+    outputs:
+      has_changes: ${{ steps.capture.outputs.has_changes }}
 
     steps:
       - name: Checkout code
@@ -144,6 +225,9 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          # Runs repo-provided code (npm hooks + build script); no authenticated
+          # git needed after checkout.
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -158,8 +242,65 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: npm run ${{ inputs.build-script }}
 
-      - name: Commit build output
+      - name: Capture build output as a patch
+        id: capture
         if: ${{ inputs.commit-build-output }}
+        env:
+          BUILD_OUTPUT_PATH: ${{ inputs.build-output-path }}
+        run: |
+          set -euo pipefail
+          # Stage everything (adds, modifications AND deletions) so the patch is
+          # a faithful round-trip. `-N` (intent-to-add) would only mark additions
+          # and silently drop deletions from the unstaged diff, so we stage fully
+          # and diff --cached instead — this is what lets stale content-hashed
+          # bundles get removed from the committed publish dir.
+          git add -A
+          git diff --cached --binary -- "${BUILD_OUTPUT_PATH}" > "${RUNNER_TEMP}/build-output.patch"
+          if [[ -s "${RUNNER_TEMP}/build-output.patch" ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload build-output patch
+        if: ${{ inputs.commit-build-output && steps.capture.outputs.has_changes == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output-patch
+          path: ${{ runner.temp }}/build-output.patch
+          retention-days: 1
+          if-no-files-found: error
+          # v4 artifact names are immutable per run; allow re-running failed
+          # jobs to re-upload instead of 409-ing on the second attempt.
+          overwrite: true
+
+  # Write-capable, but runs NO repo-provided code: it only applies the build
+  # patch and commits it. Gated to non-fork contexts.
+  commit-build:
+    needs: build
+    if: ${{ inputs.commit-build-output && needs.build.outputs.has_changes == 'true' && (github.event.pull_request.head.repo.full_name == '' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.BRANCH_NAME }}
+          repository: ${{ github.repository }}
+
+      - name: Download build-output patch
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output-patch
+          path: ${{ runner.temp }}
+
+      - name: Apply build output
+        run: git apply "${RUNNER_TEMP}/build-output.patch"
+
+      - name: Commit build output
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
