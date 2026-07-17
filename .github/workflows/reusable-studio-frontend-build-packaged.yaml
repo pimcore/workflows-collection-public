@@ -110,6 +110,10 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          # This job runs repo-provided code (npm hooks + scripts). Keep no git
+          # credentials in .git/config while that code executes; nothing here
+          # needs authenticated git after checkout.
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -129,10 +133,12 @@ jobs:
         if: ${{ inputs.commit-lint-output }}
         run: |
           set -euo pipefail
-          # Mark untracked (non-ignored) files as intent-to-add so `git diff`
-          # includes newly created files as well as modifications.
-          git add -A -N
-          git diff --binary > "${RUNNER_TEMP}/lint-fixes.patch"
+          # Stage everything (adds, modifications AND deletions) so the patch is
+          # a faithful round-trip. `-N` (intent-to-add) would only mark additions
+          # and silently drop deletions from the unstaged diff, so we stage fully
+          # and diff --cached instead.
+          git add -A
+          git diff --cached --binary > "${RUNNER_TEMP}/lint-fixes.patch"
           if [[ -s "${RUNNER_TEMP}/lint-fixes.patch" ]]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
           else
@@ -147,6 +153,9 @@ jobs:
           path: ${{ runner.temp }}/lint-fixes.patch
           retention-days: 1
           if-no-files-found: error
+          # v4 artifact names are immutable per run; allow re-running failed
+          # jobs to re-upload instead of 409-ing on the second attempt.
+          overwrite: true
 
   # Write-capable, but runs NO repo-provided code: it only applies the patch
   # produced above and commits it. Gated to non-fork contexts.
@@ -190,6 +199,10 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          # This job runs repo-provided code (npm hooks + scripts). Keep no git
+          # credentials in .git/config while that code executes; nothing here
+          # needs authenticated git after checkout.
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -207,13 +220,18 @@ jobs:
   # Read-only: executes repo-provided code (npm hooks + build/package scripts).
   # Uploads the packaged archive as an artifact; the write token is NOT here.
   build:
-    # Depends on commit-lint (not lint) so the checkout below already contains
-    # any pushed lint fixes, matching the original sequential behaviour and
-    # avoiding a concurrent push race between the two commit jobs.
+    # Depends on commit-lint so the checkout below already contains any pushed
+    # lint fixes, matching the original sequential behaviour and avoiding a
+    # concurrent push race between the two commit jobs. `lint` is ALSO listed
+    # directly (and its result checked below) to preserve the lint failure gate:
+    # commit-lint reports `skipped` both when lint passed with nothing to commit
+    # AND when lint failed, so it can't distinguish the two — a direct check on
+    # lint.result is what actually blocks the build on a lint failure.
     needs:
+      - lint
       - commit-lint
       - check-types
-    if: ${{ always() && !startsWith(github.ref, 'refs/tags/') && (needs.commit-lint.result == 'success' || needs.commit-lint.result == 'skipped') && (needs.check-types.result == 'success' || needs.check-types.result == 'skipped') }}
+    if: ${{ always() && !startsWith(github.ref, 'refs/tags/') && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.commit-lint.result == 'success' || needs.commit-lint.result == 'skipped') && (needs.check-types.result == 'success' || needs.check-types.result == 'skipped') }}
     runs-on: ubuntu-latest
 
     steps:
@@ -222,6 +240,10 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          # This job runs repo-provided code (npm hooks + scripts). Keep no git
+          # credentials in .git/config while that code executes; nothing here
+          # needs authenticated git after checkout.
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -248,6 +270,9 @@ jobs:
           path: ${{ inputs.build-output-path }}
           retention-days: 1
           if-no-files-found: error
+          # v4 artifact names are immutable per run; allow re-running failed
+          # jobs to re-upload instead of 409-ing on the second attempt.
+          overwrite: true
 
   # Write-capable, but runs NO repo-provided code: it only downloads the build
   # archive and commits it. Gated to non-fork contexts.
@@ -266,8 +291,27 @@ jobs:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.repository }}
 
+      # Guard the destructive `git rm` below: build-output-path is a caller
+      # input, and a value of "." / "" / "/" / an absolute or parent path would
+      # stage the entire tracked tree for deletion. Reject those before removing
+      # anything. Input passed via env (not ${{ }} interpolation) since this
+      # runs in the token-bearing job.
+      - name: Validate build-output-path
+        env:
+          BUILD_OUTPUT_PATH: ${{ inputs.build-output-path }}
+        run: |
+          set -euo pipefail
+          case "${BUILD_OUTPUT_PATH}" in
+            ""|"."|"./"|"/"|".."|"../"*|/*)
+              echo "::error::build-output-path must be a repo-relative subdirectory, got '${BUILD_OUTPUT_PATH}'"
+              exit 1
+              ;;
+          esac
+
       - name: Remove previously committed build archive
-        run: git rm -r --ignore-unmatch -- "${{ inputs.build-output-path }}"
+        env:
+          BUILD_OUTPUT_PATH: ${{ inputs.build-output-path }}
+        run: git rm -r --ignore-unmatch -- "${BUILD_OUTPUT_PATH}"
 
       - name: Download build archive
         uses: actions/download-artifact@v4
