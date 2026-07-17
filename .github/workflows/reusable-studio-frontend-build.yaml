@@ -192,13 +192,18 @@ jobs:
   # whole tree — see reusable-studio-frontend-build-packaged.yaml for the
   # single-archive variant.)
   build:
-    # Depends on commit-lint (not lint) so the checkout below already contains
-    # any pushed lint fixes, matching the original sequential behaviour and
-    # avoiding a concurrent push race between the two commit jobs.
+    # Depends on commit-lint so the checkout below already contains any pushed
+    # lint fixes, matching the original sequential behaviour and avoiding a
+    # concurrent push race between the two commit jobs. `lint` is ALSO listed
+    # directly (and its result checked below) to preserve the lint failure gate:
+    # commit-lint reports `skipped` both when lint passed with nothing to commit
+    # AND when lint failed, so it can't distinguish the two — a direct check on
+    # lint.result is what actually blocks the build on a lint failure.
     needs:
+      - lint
       - commit-lint
       - check-types
-    if: ${{ always() && !startsWith(github.ref, 'refs/tags/') && (needs.commit-lint.result == 'success' || needs.commit-lint.result == 'skipped') && (needs.check-types.result == 'success' || needs.check-types.result == 'skipped') }}
+    if: ${{ always() && !startsWith(github.ref, 'refs/tags/') && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.commit-lint.result == 'success' || needs.commit-lint.result == 'skipped') && (needs.check-types.result == 'success' || needs.check-types.result == 'skipped') }}
     runs-on: ubuntu-latest
     outputs:
       has_changes: ${{ steps.capture.outputs.has_changes }}
