@@ -85,9 +85,10 @@ on:
 # `npm run …` runs repo scripts) run with `contents: read` ONLY. The
 # `contents: write` token lives exclusively in the `commit-*` jobs, which never
 # run project code — they only apply an artifact/patch and commit. Those commit
-# jobs are additionally gated to non-fork contexts (see IS_TRUSTED), so a
-# caller wiring this into `pull_request_target` can never hand a fork's code a
-# write-capable token.
+# jobs are additionally gated to non-fork contexts (via the
+# `github.event.pull_request.head.repo.full_name` check in each `commit-*` job's
+# `if:`), so a caller wiring this into `pull_request_target` can never hand a
+# fork's code a write-capable token.
 permissions:
   contents: read
 
