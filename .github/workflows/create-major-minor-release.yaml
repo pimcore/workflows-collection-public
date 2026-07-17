@@ -41,6 +41,7 @@ env:
   DRAFT: ${{ inputs.draft }}
   AUTO_CHANGELOG: ${{ inputs.autoChangelog }}
   CHANGELOG: ${{ inputs.changeLog }}
+  SKIP_SYNC_CHECK: ${{ inputs.skip_sync_check }}
 
 jobs:
   prepare:
@@ -241,6 +242,21 @@ jobs:
 
           # EE bundles that have a CE counterpart — the set the sync job acts on.
           SYNC_PAIRS_JSON=$(jq -c '[ .[] | select((.repo | startswith("ee-")) and ((.ce_repo // "") != "")) ]' <<< "${TARGETS_JSON}")
+
+          # Fail closed: an EE bundle in the release set whose CE counterpart is
+          # NOT also a target gets no sync pair, so releasing it would silently
+          # skip the CE → EE sync. Unless the sync gate is explicitly skipped,
+          # block rather than release an unsynced EE bundle. (The auto-discovery
+          # path never yields EE targets, so this only guards manual
+          # repositories_override runs.)
+          if [[ "${SKIP_SYNC_CHECK}" != "true" ]]; then
+            UNPAIRED_EE=$(jq -r '[ .[] | select((.repo | startswith("ee-")) and ((.ce_repo // "") == "")) | .full_name ] | join(", ")' <<< "${TARGETS_JSON}")
+            if [[ -n "${UNPAIRED_EE}" ]]; then
+              echo "❌ EE bundle(s) selected without their CE counterpart: ${UNPAIRED_EE}" >> "$GITHUB_STEP_SUMMARY"
+              echo "Releasing these would skip the CE → EE sync. Add the matching CE repo(s) to the release set, or set skip_sync_check=true if EE and CE are already aligned." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          fi
 
           # Split targets so EE bundles are released (tagged) before CE/standalone.
           TARGETS_EE_JSON=$(jq -c '[ .[] | select(.repo | startswith("ee-")) ]' <<< "${TARGETS_JSON}")
