@@ -181,7 +181,7 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-            COMP_STATUS=$(echo "${COMP_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            COMP_STATUS=$(echo "${COMP_RESP}" | tail -n 1 | cut -d: -f2)
             if [[ "${COMP_STATUS}" -ne 200 ]]; then
               echo "❌ Failed to fetch composer.json from ${PV_REPO}@${PV_REF} (HTTP ${COMP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
               echo "$(echo "${COMP_RESP}" | sed '$d' | head -c 1000)" >> "$GITHUB_STEP_SUMMARY"
@@ -222,7 +222,7 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-            SHA_STATUS=$(echo "${SHA_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            SHA_STATUS=$(echo "${SHA_RESP}" | tail -n 1 | cut -d: -f2)
             if [[ "${SHA_STATUS}" -ne 200 ]]; then
               echo "⚠️ Skipping ${FULL_NAME}: branch ${BASE_BRANCH} not found (HTTP ${SHA_STATUS})" >> "$GITHUB_STEP_SUMMARY"
               SKIPPED="${SKIPPED}${FULL_NAME}\n"
@@ -306,7 +306,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-          TREE_STATUS=$(echo "${TREE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          TREE_STATUS=$(echo "${TREE_RESP}" | tail -n 1 | cut -d: -f2)
           if [[ "${TREE_STATUS}" -ne 200 ]]; then
             echo "⚠️ Cannot fetch file tree for ${OWNER}/${REPO} (HTTP ${TREE_STATUS}); skipping ExtJS check" >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -325,7 +325,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-          SEARCH_STATUS=$(echo "${SEARCH_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          SEARCH_STATUS=$(echo "${SEARCH_RESP}" | tail -n 1 | cut -d: -f2)
           CONTENT_HITS=""
           if [[ "${SEARCH_STATUS}" -eq 200 ]]; then
             TOTAL=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.total_count')
@@ -371,22 +371,82 @@ jobs:
       PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
       AUTO_CHANGELOG: ${{ needs.prepare.outputs.auto_changelog_norm }}
     steps:
-      - name: Ensure tag does not already exist
+      - name: Ensure tag/release state is safe
         id: tag_check
         shell: bash
         run: |
           set -euo pipefail
-          CHECK_TAG=$(curl -s -o /dev/null -w "%{http_code}" --location \
-            "https://api.github.com/repos/${OWNER}/${REPO}/git/refs/tags/${TAG_NAME}" \
+
+          # A published release for the tag means there is nothing to do.
+          REL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/${TAG_NAME}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-          if [[ "${CHECK_TAG}" -eq 200 ]]; then
+          if [[ "${REL_STATUS}" -eq 200 ]]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "⚠️ Tag ${TAG_NAME} already exists on ${OWNER}/${REPO}; skipping" >> "$GITHUB_STEP_SUMMARY"
-          else
+            echo "ℹ️ Release for tag ${TAG_NAME} already exists on ${OWNER}/${REPO}; skipping." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          elif [[ "${REL_STATUS}" -ne 404 ]]; then
+            echo "❌ Failed to check release-by-tag for ${OWNER}/${REPO} (HTTP ${REL_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # /releases/tags/{tag} does not return drafts, so scan the newest
+          # releases for a draft with this tag_name to keep re-runs idempotent.
+          LIST_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/releases?per_page=100" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+          LIST_STATUS=$(echo "${LIST_RESP}" | tail -n 1 | cut -d: -f2)
+          if [[ "${LIST_STATUS}" -ne 200 ]]; then
+            echo "❌ Failed to list releases for ${OWNER}/${REPO} (HTTP ${LIST_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          DRAFT_URL=$(echo "${LIST_RESP}" | sed '$d' | jq -r --arg t "${TAG_NAME}" \
+            'first(.[] | select(.draft == true and .tag_name == $t) | .html_url) // ""')
+          if [[ -n "${DRAFT_URL}" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "ℹ️ Draft release for tag ${TAG_NAME} already exists on ${OWNER}/${REPO}; skipping: ${DRAFT_URL}" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # No release exists. If the tag ref itself exists (exact match via the
+          # singular /git/ref/ endpoint — the plural form prefix-matches), a new
+          # release would attach to that tag's commit, so it must match the
+          # commit this run validated and generated notes for.
+          TAG_REF_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/git/ref/tags/${TAG_NAME}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+          if [[ "${TAG_REF_STATUS}" -eq 404 ]]; then
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          elif [[ "${TAG_REF_STATUS}" -ne 200 ]]; then
+            echo "❌ Failed to check tag ref for ${OWNER}/${REPO} (HTTP ${TAG_REF_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # /commits/{ref} resolves annotated tags to the commit they point to.
+          TAG_SHA=$(curl -s --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/commits/${TAG_NAME}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}" | jq -r '.sha // ""')
+
+          if [[ "${TAG_SHA}" == "${LATEST_SHA}" ]]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ️ Tag ${TAG_NAME} exists at the release commit but has no release on ${OWNER}/${REPO}; will create release." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Tag ${TAG_NAME} already exists on ${OWNER}/${REPO} at ${TAG_SHA:-<unresolved>}, but the branch head is ${LATEST_SHA}." >> "$GITHUB_STEP_SUMMARY"
+            echo "A release would attach to the existing tag commit, which this run did not validate or generate notes for. Move or delete the tag before re-running." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
       - name: Create release
@@ -409,7 +469,7 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}" \
               -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${CE_SHA}" '{tag_name:$tag, target_commitish:$target}')")
-            CE_STATUS=$(echo "${CE_GEN}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            CE_STATUS=$(echo "${CE_GEN}" | tail -n 1 | cut -d: -f2)
             if [[ "${CE_STATUS}" -eq 200 ]]; then
               CE_NOTES=$(echo "${CE_GEN}" | sed '$d' | jq -r '.body // ""')
             else
@@ -423,7 +483,7 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}" \
               -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${LATEST_SHA}" '{tag_name:$tag, target_commitish:$target}')")
-            EE_STATUS=$(echo "${EE_GEN}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            EE_STATUS=$(echo "${EE_GEN}" | tail -n 1 | cut -d: -f2)
             if [[ "${EE_STATUS}" -eq 200 ]]; then
               RAW_EE=$(echo "${EE_GEN}" | sed '$d' | jq -r '.body // ""')
               # Strip sync-bot PRs and auto-generated full-changelog lines
@@ -457,7 +517,7 @@ jobs:
               -H "Authorization: Bearer ${RELEASE_TOKEN}" \
               -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${LATEST_SHA}" '{tag_name:$tag, target_commitish:$target}')")
 
-            GEN_STATUS=$(echo "${GEN_RESPONSE}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            GEN_STATUS=$(echo "${GEN_RESPONSE}" | tail -n 1 | cut -d: -f2)
             if [[ "${GEN_STATUS}" -eq 200 ]]; then
               GEN_NOTES=$(echo "${GEN_RESPONSE}" | sed '$d' | jq -r '.body // ""')
               FINAL_BODY="${GEN_NOTES}"$'\n\n---\n\n'"${CHANGELOG}"
@@ -507,18 +567,23 @@ jobs:
             -H "Authorization: Bearer ${RELEASE_TOKEN}" \
             -d "${REQ_BODY}")
 
-          HTTP_STATUS=$(echo "${CREATE_RELEASE}" | awk -F: '/HTTP_STATUS:/ {print $2}')
-          if [[ "${HTTP_STATUS}" -ne 201 ]]; then
-            echo "❌ Failed to create release for ${OWNER}/${REPO} (HTTP ${HTTP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
-            echo "$(echo "${CREATE_RELEASE}" | sed '$d' | head -c 1500)" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          HTTP_STATUS=$(echo "${CREATE_RELEASE}" | tail -n 1 | cut -d: -f2)
+          RESPONSE_BODY=$(echo "${CREATE_RELEASE}" | sed '$d')
 
-          RELEASE_URL=$(echo "${CREATE_RELEASE}" | sed '$d' | jq -r '.html_url // ""')
-          if [[ "${DRAFT}" == "true" ]]; then
-            echo "✅ Draft release created for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${HTTP_STATUS}" -eq 201 ]]; then
+            RELEASE_URL=$(echo "${RESPONSE_BODY}" | jq -r '.html_url // ""')
+            if [[ "${DRAFT}" == "true" ]]; then
+              echo "✅ Draft release created for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "✅ Release published for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          elif [[ "${HTTP_STATUS}" -eq 422 ]] && echo "${RESPONSE_BODY}" | jq -e '.errors[]? | select(.code == "already_exists")' >/dev/null 2>&1; then
+            echo "⚠️ Release for tag ${TAG_NAME} was created concurrently on ${OWNER}/${REPO}; this run's release settings and notes were NOT applied. Verify the existing release." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "✅ Release published for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+            echo "❌ Failed to create release for ${OWNER}/${REPO} (HTTP ${HTTP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+            echo "${RESPONSE_BODY}" | head -c 1500 >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
   milestone-automation:
@@ -624,7 +689,7 @@ jobs:
                 -H "Authorization: Bearer ${RELEASE_TOKEN}" \
                 -d "$(jq -n --arg t "${TITLE}" '{title:$t}')")
 
-              CREATE_STATUS=$(echo "${CREATE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+              CREATE_STATUS=$(echo "${CREATE_RESP}" | tail -n 1 | cut -d: -f2)
               if [[ "${CREATE_STATUS}" -eq 201 ]]; then
                 NEW_NUM=$(echo "${CREATE_RESP}" | sed '$d' | jq -r '.number')
                 echo "Created milestone '${TITLE}' (#${NEW_NUM})" >> "$GITHUB_STEP_SUMMARY"
@@ -802,7 +867,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-          SHA_STATUS=$(echo "${SHA_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          SHA_STATUS=$(echo "${SHA_RESP}" | tail -n 1 | cut -d: -f2)
           if [[ "${SHA_STATUS}" -ne 200 ]]; then
             echo "⚠️ Branch '${CLONE_FROM}' not found on ${OWNER}/${REPO} (HTTP ${SHA_STATUS}); skipping" >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -821,7 +886,7 @@ jobs:
             -H "Authorization: Bearer ${RELEASE_TOKEN}" \
             -d "$(jq -n --arg ref "refs/heads/${CLONE_TO}" --arg sha "${SHA}" '{ref:$ref, sha:$sha}')")
 
-          CREATE_STATUS=$(echo "${CREATE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          CREATE_STATUS=$(echo "${CREATE_RESP}" | tail -n 1 | cut -d: -f2)
           if [[ "${CREATE_STATUS}" -eq 201 ]]; then
             echo "✅ Created branch '${CLONE_TO}' from '${CLONE_FROM}' on ${OWNER}/${REPO}" >> "$GITHUB_STEP_SUMMARY"
           elif [[ "${CREATE_STATUS}" -eq 422 ]]; then
