@@ -403,9 +403,12 @@ jobs:
       issues: write
       contents: read
     needs: [prepare, create-releases-ee, create-releases-ce]
-    # Run unless a release job failed; skipped release jobs (e.g. no EE or no CE
-    # targets) must not cascade-skip milestone automation.
-    if: ${{ !cancelled() && needs.create-releases-ee.result != 'failure' && needs.create-releases-ce.result != 'failure' }}
+    # Run only when at least one release group actually succeeded, and neither
+    # failed. Skipped release jobs (e.g. no EE or no CE targets) must not
+    # cascade-skip milestone automation, but if BOTH are skipped — e.g. ExtJS
+    # validation or sync failed, leaving nothing released — milestone automation
+    # must not run either.
+    if: ${{ !cancelled() && needs.create-releases-ee.result != 'failure' && needs.create-releases-ce.result != 'failure' && (needs.create-releases-ee.result == 'success' || needs.create-releases-ce.result == 'success') }}
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       RELEASE_KIND: ${{ needs.prepare.outputs.release_kind }}
@@ -643,9 +646,11 @@ jobs:
     permissions:
       contents: write
     needs: [prepare, create-releases-ee, create-releases-ce]
-    # Run unless a release job failed; skipped release jobs must not
-    # cascade-skip branch automation.
-    if: ${{ !cancelled() && needs.create-releases-ee.result != 'failure' && needs.create-releases-ce.result != 'failure' }}
+    # Run only when at least one release group actually succeeded, and neither
+    # failed. Skipped release jobs must not cascade-skip branch automation, but
+    # if BOTH are skipped (e.g. ExtJS validation or sync failed, so nothing was
+    # released) no maintenance branch must be created.
+    if: ${{ !cancelled() && needs.create-releases-ee.result != 'failure' && needs.create-releases-ce.result != 'failure' && (needs.create-releases-ee.result == 'success' || needs.create-releases-ce.result == 'success') }}
     strategy:
       fail-fast: false
       matrix:

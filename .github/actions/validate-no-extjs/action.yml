@@ -81,7 +81,12 @@ runs:
         TREE=$(echo "${TREE_RESP}" | sed '$d')
         TRUNCATED=$(echo "${TREE}" | jq -r '.truncated')
         if [[ "${TRUNCATED}" == "true" ]]; then
-          echo "⚠️ File tree was truncated due to repository size; ExtJS check may be incomplete." >> "$GITHUB_STEP_SUMMARY"
+          # Fail closed: a truncated tree is incomplete, so the path-based pass
+          # below could miss ExtJS files. An unverifiable tree must block the
+          # release, not warn and pass — consistent with the tree-fetch failure
+          # handling above and this action's documented fail-closed contract.
+          echo "❌ File tree for ${OWNER}/${REPO} was truncated (repository too large); cannot verify absence of ExtJS. Release blocked." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
         fi
 
         # --- Pass 1: path-based check ---
