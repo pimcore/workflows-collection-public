@@ -13,8 +13,15 @@ inputs:
   repo:
     required: true
   base_branch:
-    description: "Branch whose current HEAD is validated (re-resolved at run time)"
+    description: "Branch whose current HEAD is validated (used only when 'sha' is empty)"
     required: true
+  sha:
+    description: >
+      Exact commit to validate. When set, the action validates THIS commit
+      instead of re-resolving base_branch — pass the single post-sync SHA that
+      release creation will tag, so validation and tagging cannot diverge if the
+      branch advances mid-run. When empty, base_branch HEAD is resolved at run time.
+    default: ""
   release_token:
     required: true
 
@@ -29,8 +36,17 @@ runs:
         OWNER: ${{ inputs.owner }}
         REPO: ${{ inputs.repo }}
         BASE_BRANCH: ${{ inputs.base_branch }}
+        INPUT_SHA: ${{ inputs.sha }}
       run: |
         set -euo pipefail
+
+        # Prefer the caller-provided immutable SHA so validation and release
+        # creation act on the exact same commit. Only fall back to resolving
+        # base_branch HEAD when no SHA was passed.
+        if [[ -n "${INPUT_SHA}" ]]; then
+          echo "latest_sha=${INPUT_SHA}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
 
         # Validate the commit that will actually be tagged: for EE bundles the
         # CE → EE sync may have advanced HEAD past prepare's SHA, so re-resolve.
@@ -39,7 +55,7 @@ runs:
           -H "X-GitHub-Api-Version: 2022-11-28" \
           -H "Accept: application/vnd.github+json" \
           -H "Authorization: Bearer ${RELEASE_TOKEN}")
-        STATUS=$(echo "${RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+        STATUS=$(echo "${RESP}" | tail -n 1 | cut -d: -f2)
         if [[ "${STATUS}" -ne 200 ]]; then
           echo "❌ Failed to resolve HEAD of ${OWNER}/${REPO}@${BASE_BRANCH} (HTTP ${STATUS})" >> "$GITHUB_STEP_SUMMARY"
           exit 1
@@ -70,7 +86,7 @@ runs:
           -H "Accept: application/vnd.github+json" \
           -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-        TREE_STATUS=$(echo "${TREE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+        TREE_STATUS=$(echo "${TREE_RESP}" | tail -n 1 | cut -d: -f2)
         if [[ "${TREE_STATUS}" -ne 200 ]]; then
           # Fail closed: an unverifiable tree must block the release, not pass it.
           echo "❌ Failed to fetch file tree for ${OWNER}/${REPO} (HTTP ${TREE_STATUS})" >> "$GITHUB_STEP_SUMMARY"
@@ -102,18 +118,27 @@ runs:
         PATH_HITS=$(echo "${TREE}" | jq -r '.tree[] | select(.type == "blob" or .type == "tree") | .path' | \
           grep -iE '(^|/)(\.sencha|extjs|ext-js|ext-[67]|senchatouch|sencha-touch)(/|$)|\b(ext-all(-debug|-rtl|-rtl-debug|-sandbox|-dev)?(\.min)?|ext(-debug|-foundation|-foundation-debug)?|ext-modern-all(-debug)?|sencha-touch(-all|-debug|-all-debug)?)\.js$|\bsencha\.cfg$|(^|/)node_modules/(@sencha/|extjs(/|$))|/ext/(src|packages|classic|modern|overrides)/|/(senchaextjs|sencha-generated)/' || true)
 
-        # --- Pass 2: Sencha copyright content search ---
+        # --- Pass 2: Sencha copyright content search (best-effort supplement) ---
         # Catches actual Sencha/ExtJS library files regardless of their filename.
         # Uses the GitHub code search API (rate-limited). Results are filtered to
         # code/config files only — documentation files (*.md, *.txt, *.rst, etc.)
         # that merely reference Sencha are ignored.
+        #
+        # LIMITATION: /search/code only indexes a repository's DEFAULT branch and
+        # cannot be scoped to LATEST_SHA or ${BASE_BRANCH}. So this pass may inspect
+        # content that differs from the commit being tagged (e.g. a just-merged sync
+        # commit that GitHub has not re-indexed yet). It is therefore a supplement,
+        # not the authority: Pass 1 (path-based, fetched at LATEST_SHA and fail-closed
+        # on a missing/truncated tree) is the SHA-accurate check. Pass 2 only adds
+        # hits; a stale index can miss a file but never fabricates a false block that
+        # Pass 1 wouldn't, and its failure is non-fatal by design (warn + continue).
         SEARCH_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
           "https://api.github.com/search/code?q=Sencha+Inc+repo:${OWNER}/${REPO}" \
           -H "X-GitHub-Api-Version: 2022-11-28" \
           -H "Accept: application/vnd.github+json" \
           -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-        SEARCH_STATUS=$(echo "${SEARCH_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+        SEARCH_STATUS=$(echo "${SEARCH_RESP}" | tail -n 1 | cut -d: -f2)
         CONTENT_HITS=""
         if [[ "${SEARCH_STATUS}" -eq 200 ]]; then
           TOTAL=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.total_count')

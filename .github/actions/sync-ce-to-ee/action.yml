@@ -90,7 +90,7 @@ runs:
                 --arg b "${BASE_BRANCH}" \
                 --arg body "Automated pre-release sync of ${CE_OWNER}/${CE_REPO}@${BASE_BRANCH} into ${EE_OWNER}/${EE_REPO}@${BASE_BRANCH}." \
                 '{title:$t, head:$h, base:$b, body:$body}')")
-        PR_STATUS=$(echo "${PR_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+        PR_STATUS=$(echo "${PR_RESP}" | tail -n 1 | cut -d: -f2)
         PR_JSON=$(echo "${PR_RESP}" | sed '$d')
         if [[ "${PR_STATUS}" -ne 201 ]]; then
           echo "❌ Failed to open sync PR in ${EE_OWNER}/${EE_REPO} (HTTP ${PR_STATUS})." >> "$GITHUB_STEP_SUMMARY"
@@ -111,7 +111,7 @@ runs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${SYNC_TOKEN}" \
             -d "$(jq -n --arg m "Pre-release sync CE → EE (${BASE_BRANCH})" '{merge_method:"merge", commit_title:$m}')")
-          MERGE_STATUS=$(echo "${MERGE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          MERGE_STATUS=$(echo "${MERGE_RESP}" | tail -n 1 | cut -d: -f2)
           if [[ "${MERGE_STATUS}" -eq 200 ]]; then
             MERGED=true
             break

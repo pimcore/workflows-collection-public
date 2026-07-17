@@ -165,7 +165,7 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-            COMP_STATUS=$(echo "${COMP_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            COMP_STATUS=$(echo "${COMP_RESP}" | tail -n 1 | cut -d: -f2)
             if [[ "${COMP_STATUS}" -ne 200 ]]; then
               echo "❌ Failed to fetch composer.json from pimcore/${PV_REPO}@${PV_REF} (HTTP ${COMP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
               echo "$(echo "${COMP_RESP}" | sed '$d' | head -c 1000)" >> "$GITHUB_STEP_SUMMARY"
@@ -208,7 +208,7 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-            SHA_STATUS=$(echo "${SHA_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            SHA_STATUS=$(echo "${SHA_RESP}" | tail -n 1 | cut -d: -f2)
             if [[ "${SHA_STATUS}" -ne 200 ]]; then
               echo "⚠️ Skipping ${FULL_NAME}: branch ${BASE_BRANCH} not found (HTTP ${SHA_STATUS})" >> "$GITHUB_STEP_SUMMARY"
               SKIPPED="${SKIPPED}${FULL_NAME}\n"
@@ -295,10 +295,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    needs: [prepare, sync-ee]
+    needs: [prepare, sync-ee, resolve-shas]
     # Run whenever the sync did not fail (success or skipped); a skipped sync
-    # dependency must not cascade-skip validation.
-    if: ${{ !cancelled() && needs.sync-ee.result != 'failure' }}
+    # dependency must not cascade-skip validation. resolve-shas must succeed so
+    # validation runs against the exact commit release creation will tag.
+    if: ${{ !cancelled() && needs.sync-ee.result != 'failure' && needs.resolve-shas.result == 'success' }}
     strategy:
       fail-fast: true
       # Cap concurrency: each matrix job issues a GitHub code-search call, which
@@ -306,7 +307,7 @@ jobs:
       # a large release fan-out throttles and silently degrades to path-only.
       max-parallel: 5
       matrix:
-        target: ${{ fromJSON(needs.prepare.outputs.targets_json) }}
+        target: ${{ fromJSON(needs.resolve-shas.outputs.targets_json) }}
     steps:
       - name: Checkout workflow repo (for composite action)
         uses: actions/checkout@v5
@@ -316,6 +317,9 @@ jobs:
           owner: ${{ matrix.target.owner }}
           repo: ${{ matrix.target.repo }}
           base_branch: ${{ inputs.base_branch }}
+          # Validate the exact post-sync commit that will be tagged, resolved once
+          # by resolve-shas — not a fresh HEAD that may have advanced since.
+          sha: ${{ matrix.target.sha }}
           release_token: ${{ secrets.RELEASE_TOKEN }}
 
   sync-ee:
@@ -348,6 +352,89 @@ jobs:
           run_id: ${{ github.run_id }}
           run_attempt: ${{ github.run_attempt }}
 
+  resolve-shas:
+    name: Resolve post-sync SHAs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: [prepare, sync-ee]
+    # Resolve the commit each repo will be tagged at ONCE, after the sync has
+    # advanced any EE branches. validate-extjs and the release jobs all consume
+    # these SHAs, so the commit that is validated is exactly the commit that gets
+    # tagged — closing the window where a branch advancing mid-run would let a
+    # release tag an unvalidated commit. A skipped sync must not cascade-skip this.
+    if: ${{ !cancelled() && needs.sync-ee.result != 'failure' }}
+    env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      TARGETS_JSON: ${{ needs.prepare.outputs.targets_json }}
+      BASE_BRANCH: ${{ inputs.base_branch }}
+    outputs:
+      targets_json: ${{ steps.resolve.outputs.targets_json }}
+      targets_ee_json: ${{ steps.resolve.outputs.targets_ee_json }}
+      targets_ce_json: ${{ steps.resolve.outputs.targets_ce_json }}
+    steps:
+      - name: Resolve HEAD SHA for every target
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Resolve one repo@branch to its HEAD commit SHA; fail closed on any
+          # non-200 or empty SHA so we never proceed with an unresolved target.
+          resolve() {
+            local o="$1" r="$2" b="$3" resp status sha
+            resp=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+              "https://api.github.com/repos/${o}/${r}/commits/${b}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}")
+            status=$(echo "${resp}" | tail -n 1 | cut -d: -f2)
+            if [[ "${status}" -ne 200 ]]; then
+              echo "❌ Failed to resolve HEAD of ${o}/${r}@${b} (HTTP ${status})" >> "$GITHUB_STEP_SUMMARY"
+              return 1
+            fi
+            sha=$(echo "${resp}" | sed '$d' | jq -r '.sha // ""')
+            if [[ -z "${sha}" || "${sha}" == "null" ]]; then
+              echo "❌ Empty SHA for ${o}/${r}@${b}" >> "$GITHUB_STEP_SUMMARY"
+              return 1
+            fi
+            printf '%s' "${sha}"
+          }
+
+          ENRICHED='[]'
+          COUNT=$(jq 'length' <<< "${TARGETS_JSON}")
+          for ((i=0; i<COUNT; i++)); do
+            T=$(jq -c ".[$i]" <<< "${TARGETS_JSON}")
+            OWNER=$(jq -r '.owner' <<< "${T}")
+            REPO=$(jq -r '.repo' <<< "${T}")
+            CE_OWNER=$(jq -r '.ce_owner // ""' <<< "${T}")
+            CE_REPO=$(jq -r '.ce_repo // ""' <<< "${T}")
+
+            SHA=$(resolve "${OWNER}" "${REPO}" "${BASE_BRANCH}")
+            CE_SHA=""
+            if [[ -n "${CE_REPO}" ]]; then
+              # EE bundle with a CE counterpart: resolve CE HEAD for merged notes.
+              CE_SHA=$(resolve "${CE_OWNER}" "${CE_REPO}" "${BASE_BRANCH}")
+            fi
+
+            T=$(jq -c --arg s "${SHA}" --arg c "${CE_SHA}" '. + {sha: $s, ce_sha: $c}' <<< "${T}")
+            ENRICHED=$(jq -c --argjson t "${T}" '. + [$t]' <<< "${ENRICHED}")
+          done
+
+          EE_JSON=$(jq -c '[ .[] | select(.repo | startswith("ee-")) ]' <<< "${ENRICHED}")
+          CE_JSON=$(jq -c '[ .[] | select((.repo | startswith("ee-")) | not) ]' <<< "${ENRICHED}")
+
+          echo "targets_json=${ENRICHED}" >> "$GITHUB_OUTPUT"
+          echo "targets_ee_json=${EE_JSON}" >> "$GITHUB_OUTPUT"
+          echo "targets_ce_json=${CE_JSON}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Resolved post-sync SHAs (tagged commit == validated commit)"
+            echo '```'
+            jq -r '.[] | "\(.full_name // (.owner + "/" + .repo)) @ \(.sha)" + (if (.ce_sha // "") != "" then "  (CE " + .ce_sha + ")" else "" end)' <<< "${ENRICHED}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # EE bundles are released (tagged) first: create-releases-ce needs
   # create-releases-ee, so every EE tag exists before any CE release starts —
   # works for drafts and avoids the concurrency deadlock of tag-polling. Both
@@ -357,12 +444,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    needs: [prepare, validate-extjs, sync-ee]
-    if: ${{ !cancelled() && needs.sync-ee.result != 'failure' && needs.validate-extjs.result == 'success' && needs.prepare.outputs.targets_ee_json != '[]' }}
+    needs: [prepare, validate-extjs, sync-ee, resolve-shas]
+    if: ${{ !cancelled() && needs.sync-ee.result != 'failure' && needs.validate-extjs.result == 'success' && needs.resolve-shas.result == 'success' && needs.resolve-shas.outputs.targets_ee_json != '[]' }}
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.prepare.outputs.targets_ee_json) }}
+        target: ${{ fromJSON(needs.resolve-shas.outputs.targets_ee_json) }}
     steps:
       - name: Checkout workflow repo (for composite action)
         uses: actions/checkout@v5
@@ -372,6 +459,10 @@ jobs:
           owner: ${{ matrix.target.owner }}
           repo: ${{ matrix.target.repo }}
           base_branch: ${{ inputs.base_branch }}
+          # Tag the exact post-sync commit that validate-extjs checked (resolved
+          # once by resolve-shas), so the tagged and validated commits cannot differ.
+          sha: ${{ matrix.target.sha }}
+          ce_sha: ${{ matrix.target.ce_sha }}
           tag_name: ${{ needs.prepare.outputs.tag_name }}
           release_name: ${{ needs.prepare.outputs.release_name }}
           draft: ${{ inputs.draft }}
@@ -387,12 +478,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    needs: [prepare, validate-extjs, sync-ee, create-releases-ee]
-    if: ${{ !cancelled() && needs.create-releases-ee.result != 'failure' && needs.sync-ee.result != 'failure' && needs.validate-extjs.result == 'success' && needs.prepare.outputs.targets_ce_json != '[]' }}
+    needs: [prepare, validate-extjs, sync-ee, resolve-shas, create-releases-ee]
+    if: ${{ !cancelled() && needs.create-releases-ee.result != 'failure' && needs.sync-ee.result != 'failure' && needs.validate-extjs.result == 'success' && needs.resolve-shas.result == 'success' && needs.resolve-shas.outputs.targets_ce_json != '[]' }}
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.prepare.outputs.targets_ce_json) }}
+        target: ${{ fromJSON(needs.resolve-shas.outputs.targets_ce_json) }}
     steps:
       - name: Checkout workflow repo (for composite action)
         uses: actions/checkout@v5
@@ -402,6 +493,9 @@ jobs:
           owner: ${{ matrix.target.owner }}
           repo: ${{ matrix.target.repo }}
           base_branch: ${{ inputs.base_branch }}
+          # Tag the exact post-sync commit resolve-shas resolved for this repo.
+          sha: ${{ matrix.target.sha }}
+          ce_sha: ${{ matrix.target.ce_sha }}
           tag_name: ${{ needs.prepare.outputs.tag_name }}
           release_name: ${{ needs.prepare.outputs.release_name }}
           draft: ${{ inputs.draft }}
@@ -521,7 +615,7 @@ jobs:
                 -H "Authorization: Bearer ${RELEASE_TOKEN}" \
                 -d "$(jq -n --arg t "${TITLE}" '{title:$t}')")
 
-              CREATE_STATUS=$(echo "${CREATE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+              CREATE_STATUS=$(echo "${CREATE_RESP}" | tail -n 1 | cut -d: -f2)
               if [[ "${CREATE_STATUS}" -eq 201 ]]; then
                 NEW_NUM=$(echo "${CREATE_RESP}" | sed '$d' | jq -r '.number')
                 echo "Created milestone '${TITLE}' (#${NEW_NUM})" >> "$GITHUB_STEP_SUMMARY"
@@ -704,7 +798,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-          SHA_STATUS=$(echo "${SHA_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          SHA_STATUS=$(echo "${SHA_RESP}" | tail -n 1 | cut -d: -f2)
           if [[ "${SHA_STATUS}" -ne 200 ]]; then
             echo "⚠️ Branch '${CLONE_FROM}' not found on ${OWNER}/${REPO} (HTTP ${SHA_STATUS}); skipping" >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -723,7 +817,7 @@ jobs:
             -H "Authorization: Bearer ${RELEASE_TOKEN}" \
             -d "$(jq -n --arg ref "refs/heads/${CLONE_TO}" --arg sha "${SHA}" '{ref:$ref, sha:$sha}')")
 
-          CREATE_STATUS=$(echo "${CREATE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          CREATE_STATUS=$(echo "${CREATE_RESP}" | tail -n 1 | cut -d: -f2)
           if [[ "${CREATE_STATUS}" -eq 201 ]]; then
             echo "✅ Created branch '${CLONE_TO}' from '${CLONE_FROM}' on ${OWNER}/${REPO}" >> "$GITHUB_STEP_SUMMARY"
           elif [[ "${CREATE_STATUS}" -eq 422 ]]; then
@@ -735,7 +829,7 @@ jobs:
   summary:
     name: Release summary
     runs-on: ubuntu-latest
-    needs: [prepare, validate-extjs, sync-ee, create-releases-ee, create-releases-ce, milestone-automation, branch-automation]
+    needs: [prepare, sync-ee, resolve-shas, validate-extjs, create-releases-ee, create-releases-ce, milestone-automation, branch-automation]
     if: always()
     steps:
       - name: Generate summary

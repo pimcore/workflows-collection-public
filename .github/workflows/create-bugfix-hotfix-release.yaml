@@ -150,7 +150,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-          SHA_STATUS=$(echo "${SHA_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          SHA_STATUS=$(echo "${SHA_RESP}" | tail -n 1 | cut -d: -f2)
           if [[ "${SHA_STATUS}" -ne 200 ]]; then
             echo "Failed to fetch latest commit from ${OWNER}/${REPO}@${BASE}. HTTP ${SHA_STATUS}" >> "$GITHUB_STEP_SUMMARY"
             echo "$(echo "${SHA_RESP}" | head -c 2000)" >> "$GITHUB_STEP_SUMMARY"
@@ -193,10 +193,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    needs: [prepare, ee-ce-sync-check]
+    needs: [prepare, ee-ce-sync-check, resolve-sha]
     # Run whenever the sync gate did not fail (success or skipped); a skipped
-    # gate must not cascade-skip validation.
-    if: ${{ !cancelled() && needs.ee-ce-sync-check.result != 'failure' }}
+    # gate must not cascade-skip validation. resolve-sha must succeed so we
+    # validate the exact commit release creation will tag.
+    if: ${{ !cancelled() && needs.ee-ce-sync-check.result != 'failure' && needs.resolve-sha.result == 'success' }}
     steps:
       - name: Checkout workflow repo (for composite action)
         uses: actions/checkout@v5
@@ -206,6 +207,8 @@ jobs:
           owner: ${{ needs.prepare.outputs.owner }}
           repo: ${{ needs.prepare.outputs.repo }}
           base_branch: ${{ needs.prepare.outputs.base_branch }}
+          # Validate the exact post-sync commit that will be tagged.
+          sha: ${{ needs.resolve-sha.outputs.sha }}
           release_token: ${{ secrets.RELEASE_TOKEN }}
 
   ee-ce-sync-check:
@@ -319,15 +322,59 @@ jobs:
 
           echo "✅ EE counterpart ${OWNER}/${EE_REPO} already has a release for ${TAG_NAME}." >> "$GITHUB_STEP_SUMMARY"
 
+  resolve-sha:
+    name: Resolve post-sync SHA
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: [prepare, ee-ce-sync-check]
+    # Resolve the commit to tag ONCE, after the EE↔CE sync gate may have advanced
+    # the branch. validate-extjs and create-release both consume this SHA, so the
+    # validated commit is exactly the tagged commit even if the branch advances
+    # later in the run. A skipped gate must not cascade-skip this.
+    if: ${{ !cancelled() && needs.ee-ce-sync-check.result != 'failure' }}
+    env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      OWNER: ${{ needs.prepare.outputs.owner }}
+      REPO: ${{ needs.prepare.outputs.repo }}
+      BASE_BRANCH: ${{ needs.prepare.outputs.base_branch }}
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Resolve HEAD SHA
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+            "https://api.github.com/repos/${OWNER}/${REPO}/commits/${BASE_BRANCH}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}")
+          STATUS=$(echo "${RESP}" | tail -n 1 | cut -d: -f2)
+          if [[ "${STATUS}" -ne 200 ]]; then
+            echo "❌ Failed to resolve HEAD of ${OWNER}/${REPO}@${BASE_BRANCH} (HTTP ${STATUS})" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          SHA=$(echo "${RESP}" | sed '$d' | jq -r '.sha // ""')
+          if [[ -z "${SHA}" || "${SHA}" == "null" ]]; then
+            echo "❌ Empty SHA for ${OWNER}/${REPO}@${BASE_BRANCH}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "ℹ️ Post-sync release commit: ${OWNER}/${REPO}@${SHA} (tagged commit == validated commit)" >> "$GITHUB_STEP_SUMMARY"
+
   create-release:
     name: Create release
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    needs: [prepare, validate-milestone, validate-extjs, ee-ce-sync-check]
+    needs: [prepare, validate-milestone, validate-extjs, ee-ce-sync-check, resolve-sha]
     # Run only when the gate, ExtJS check, and milestone validation all passed;
-    # a skipped sync gate (bypass) must not cascade-skip the release.
-    if: ${{ !cancelled() && needs.ee-ce-sync-check.result != 'failure' && needs.validate-extjs.result == 'success' && needs.validate-milestone.result == 'success' }}
+    # a skipped sync gate (bypass) must not cascade-skip the release. resolve-sha
+    # must succeed so the tagged commit is the one that was validated.
+    if: ${{ !cancelled() && needs.ee-ce-sync-check.result != 'failure' && needs.validate-extjs.result == 'success' && needs.validate-milestone.result == 'success' && needs.resolve-sha.result == 'success' }}
     outputs:
       owner: ${{ needs.prepare.outputs.owner }}
       repo: ${{ needs.prepare.outputs.repo }}
@@ -342,6 +389,8 @@ jobs:
           owner: ${{ needs.prepare.outputs.owner }}
           repo: ${{ needs.prepare.outputs.repo }}
           base_branch: ${{ needs.prepare.outputs.base_branch }}
+          # Tag the exact post-sync commit that validate-extjs checked.
+          sha: ${{ needs.resolve-sha.outputs.sha }}
           tag_name: ${{ needs.prepare.outputs.tag_name }}
           release_name: ${{ needs.prepare.outputs.release_name }}
           draft: ${{ inputs.draft }}
@@ -396,7 +445,7 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-            MS_STATUS=$(echo "${MS_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            MS_STATUS=$(echo "${MS_RESP}" | tail -n 1 | cut -d: -f2)
             if [[ "${MS_STATUS}" -ne 200 ]]; then
               echo "⚠️ Failed to fetch milestones (page=${PAGE}, HTTP ${MS_STATUS})" >> "$GITHUB_STEP_SUMMARY"
               break
@@ -513,7 +562,7 @@ jobs:
               -H "Authorization: Bearer ${RELEASE_TOKEN}" \
               -d "$(jq -n --arg t "${TITLE}" '{title:$t}')")
 
-            CREATE_STATUS=$(echo "${CREATE_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            CREATE_STATUS=$(echo "${CREATE_RESP}" | tail -n 1 | cut -d: -f2)
             
             if [[ "${CREATE_STATUS}" -eq 201 ]]; then
               # Successfully created
@@ -590,7 +639,7 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
-            HTTP_STATUS=$(echo "${ISSUES_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+            HTTP_STATUS=$(echo "${ISSUES_RESP}" | tail -n 1 | cut -d: -f2)
             if [[ "${HTTP_STATUS}" -ne 200 ]]; then
               echo "⚠️ Failed to fetch issues from milestone #${FROM_NUM} (HTTP ${HTTP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
               echo "$(echo "${ISSUES_RESP}" | sed '$d' | head -c 500)" >> "$GITHUB_STEP_SUMMARY"
@@ -668,7 +717,7 @@ jobs:
   summary:
     name: Release summary
     runs-on: ubuntu-latest
-    needs: [prepare, validate-milestone, validate-extjs, ee-ce-sync-check, create-release, milestone-automation]
+    needs: [prepare, validate-milestone, validate-extjs, ee-ce-sync-check, resolve-sha, create-release, milestone-automation]
     if: always()
     steps:
       - name: Generate summary

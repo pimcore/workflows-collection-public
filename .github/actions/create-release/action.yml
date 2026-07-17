@@ -11,8 +11,21 @@ inputs:
   repo:
     required: true
   base_branch:
-    description: "Branch whose current HEAD is tagged (re-resolved at run time)"
+    description: "Branch whose current HEAD is tagged (used only when 'sha' is empty)"
     required: true
+  sha:
+    description: >
+      Exact commit to tag. When set, the release is cut from THIS commit instead
+      of re-resolving base_branch — pass the single post-sync SHA that ExtJS
+      validation checked, so the tagged commit cannot diverge from the validated
+      one if the branch advances mid-run. When empty, base_branch HEAD is resolved
+      at run time.
+    default: ""
+  ce_sha:
+    description: >
+      Exact CE commit to source merged notes from (EE bundles only). When empty
+      and ce_repo is set, the CE base_branch HEAD is resolved at run time.
+    default: ""
   tag_name:
     required: true
   release_name:
@@ -45,6 +58,8 @@ runs:
         BASE_BRANCH: ${{ inputs.base_branch }}
         CE_OWNER: ${{ inputs.ce_owner }}
         CE_REPO: ${{ inputs.ce_repo }}
+        INPUT_SHA: ${{ inputs.sha }}
+        INPUT_CE_SHA: ${{ inputs.ce_sha }}
       run: |
         set -euo pipefail
 
@@ -57,7 +72,7 @@ runs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}")
-          status=$(echo "${resp}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          status=$(echo "${resp}" | tail -n 1 | cut -d: -f2)
           if [[ "${status}" -ne 200 ]]; then
             echo "❌ Failed to resolve HEAD of ${o}/${r}@${b} (HTTP ${status})" >> "$GITHUB_STEP_SUMMARY"
             return 1
@@ -70,10 +85,21 @@ runs:
           printf '%s' "${sha}"
         }
 
-        LATEST_SHA=$(resolve "${OWNER}" "${REPO}" "${BASE_BRANCH}")
+        # Prefer a caller-provided immutable SHA so the tagged commit is exactly
+        # the one ExtJS validation checked; only resolve HEAD when none was passed.
+        if [[ -n "${INPUT_SHA}" ]]; then
+          LATEST_SHA="${INPUT_SHA}"
+        else
+          LATEST_SHA=$(resolve "${OWNER}" "${REPO}" "${BASE_BRANCH}")
+        fi
         echo "LATEST_SHA=${LATEST_SHA}" >> "$GITHUB_ENV"
+
         if [[ -n "${CE_REPO}" ]]; then
-          CE_SHA=$(resolve "${CE_OWNER}" "${CE_REPO}" "${BASE_BRANCH}")
+          if [[ -n "${INPUT_CE_SHA}" ]]; then
+            CE_SHA="${INPUT_CE_SHA}"
+          else
+            CE_SHA=$(resolve "${CE_OWNER}" "${CE_REPO}" "${BASE_BRANCH}")
+          fi
           echo "CE_SHA=${CE_SHA}" >> "$GITHUB_ENV"
         fi
 
@@ -96,50 +122,70 @@ runs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}"
         }
+        # HTTP status is always the final response line ("HTTP_STATUS:<code>"),
+        # so read it from the last line — a body that happens to contain the
+        # token would fool a whole-response grep.
+        http_status() { echo "$1" | tail -n 1 | cut -d: -f2; }
 
-        exists=false
+        # 1) An existing release (draft OR published) for this tag means there is
+        #    nothing to do. Scan the releases list, which includes drafts — a
+        #    draft creates no tag ref, so a tag-only check would miss it and a
+        #    re-run would create a duplicate draft. Any non-200 is a hard failure:
+        #    never fail *open* and risk a duplicate release on a transient error.
+        page=1
+        while :; do
+          REL_RESP=$(api "releases?per_page=100&page=${page}")
+          REL_STATUS=$(http_status "${REL_RESP}")
+          if [[ "${REL_STATUS}" -ne 200 ]]; then
+            echo "❌ Failed to list releases for ${OWNER}/${REPO} (HTTP ${REL_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          REL_BODY=$(echo "${REL_RESP}" | sed '$d')
+          if echo "${REL_BODY}" | jq -e --arg t "${TAG_NAME}" 'any(.[]; .tag_name == $t)' >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "⚠️ A release for ${TAG_NAME} already exists on ${OWNER}/${REPO}; skipping release creation" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          [[ "$(echo "${REL_BODY}" | jq 'length')" -lt 100 ]] && break
+          page=$((page + 1))
+        done
 
-        # 1) Published tag ref: 200 = exists, 404 = absent. Any other status
-        #    (401/403/5xx …) is a hard failure — never fail *open* and risk
-        #    creating a duplicate release on a transient API error.
-        REF_RESP=$(api "git/refs/tags/${TAG_NAME}")
-        REF_STATUS=$(echo "${REF_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
-        if [[ "${REF_STATUS}" -eq 200 ]]; then
-          exists=true
-        elif [[ "${REF_STATUS}" -ne 404 ]]; then
+        # 2) No release exists. If the tag ref itself exists, a new release would
+        #    attach to that tag's existing commit — so it must be the commit this
+        #    run validated and generated notes for, else we would publish an
+        #    unvalidated commit. Use the singular /git/ref/ endpoint for an exact
+        #    match (the plural /git/refs/ form prefix-matches, so tag "v1.2" would
+        #    spuriously match "v1.2.3").
+        REF_RESP=$(api "git/ref/tags/${TAG_NAME}")
+        REF_STATUS=$(http_status "${REF_RESP}")
+        if [[ "${REF_STATUS}" -eq 404 ]]; then
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        elif [[ "${REF_STATUS}" -ne 200 ]]; then
           echo "❌ Failed to check tag ${TAG_NAME} on ${OWNER}/${REPO} (HTTP ${REF_STATUS})" >> "$GITHUB_STEP_SUMMARY"
           exit 1
         fi
 
-        # 2) A draft release does not create a tag ref, so a tag-only check
-        #    would miss it and a re-run would create a duplicate draft. Scan the
-        #    releases list (which includes drafts) for this tag as well.
-        if [[ "${exists}" == "false" ]]; then
-          page=1
-          while :; do
-            REL_RESP=$(api "releases?per_page=100&page=${page}")
-            REL_STATUS=$(echo "${REL_RESP}" | awk -F: '/HTTP_STATUS:/ {print $2}')
-            if [[ "${REL_STATUS}" -ne 200 ]]; then
-              echo "❌ Failed to list releases for ${OWNER}/${REPO} (HTTP ${REL_STATUS})" >> "$GITHUB_STEP_SUMMARY"
-              exit 1
-            fi
-            REL_BODY=$(echo "${REL_RESP}" | sed '$d')
-            if echo "${REL_BODY}" | jq -e --arg t "${TAG_NAME}" 'any(.[]; .tag_name == $t)' >/dev/null; then
-              exists=true
-              break
-            fi
-            [[ "$(echo "${REL_BODY}" | jq 'length')" -lt 100 ]] && break
-            page=$((page + 1))
-          done
+        # Tag ref exists but has no release (a stuck state, e.g. a prior run that
+        # tagged then failed before creating the release). /commits/{ref} resolves
+        # an annotated tag to the commit it points at.
+        TAG_RESP=$(api "commits/${TAG_NAME}")
+        TAG_CSTATUS=$(http_status "${TAG_RESP}")
+        if [[ "${TAG_CSTATUS}" -ne 200 ]]; then
+          echo "❌ Failed to resolve tag ${TAG_NAME} on ${OWNER}/${REPO} (HTTP ${TAG_CSTATUS})" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
         fi
+        TAG_SHA=$(echo "${TAG_RESP}" | sed '$d' | jq -r '.sha // ""')
 
-        # If the tag/release already exists, skip creating it rather than
-        # failing — this lets a re-run create only the still-missing releases.
-        if [[ "${exists}" == "true" ]]; then
-          echo "exists=true" >> "$GITHUB_OUTPUT"
-          echo "⚠️ A release for ${TAG_NAME} already exists on ${OWNER}/${REPO}; skipping release creation" >> "$GITHUB_STEP_SUMMARY"
-        else
+        if [[ -n "${TAG_SHA}" && "${TAG_SHA}" == "${LATEST_SHA}" ]]; then
+          # Tag is already at the commit we validated — recover by creating the
+          # missing release rather than skipping (which would leave it stuck).
           echo "exists=false" >> "$GITHUB_OUTPUT"
+          echo "ℹ️ Tag ${TAG_NAME} exists at the release commit but has no release on ${OWNER}/${REPO}; will create release." >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "❌ Tag ${TAG_NAME} already exists on ${OWNER}/${REPO} at ${TAG_SHA:-<unresolved>}, but the branch head is ${LATEST_SHA}." >> "$GITHUB_STEP_SUMMARY"
+          echo "A release would attach to the existing tag's commit, which this run did not validate or generate notes for. Move or delete the tag before re-running." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
         fi
 
     - name: Create release
@@ -174,7 +220,7 @@ runs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}" \
             -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${CE_SHA}" '{tag_name:$tag, target_commitish:$target}')")
-          CE_STATUS=$(echo "${CE_GEN}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          CE_STATUS=$(echo "${CE_GEN}" | tail -n 1 | cut -d: -f2)
           if [[ "${CE_STATUS}" -eq 200 ]]; then
             CE_NOTES=$(echo "${CE_GEN}" | sed '$d' | jq -r '.body // ""')
           else
@@ -187,7 +233,7 @@ runs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}" \
             -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${LATEST_SHA}" '{tag_name:$tag, target_commitish:$target}')")
-          EE_STATUS=$(echo "${EE_GEN}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          EE_STATUS=$(echo "${EE_GEN}" | tail -n 1 | cut -d: -f2)
           if [[ "${EE_STATUS}" -eq 200 ]]; then
             RAW_EE=$(echo "${EE_GEN}" | sed '$d' | jq -r '.body // ""')
             # Strip sync-bot PRs (incl. this workflow's pre-release sync) and the
@@ -220,7 +266,7 @@ runs:
             -H "Authorization: Bearer ${RELEASE_TOKEN}" \
             -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${LATEST_SHA}" '{tag_name:$tag, target_commitish:$target}')")
 
-          GEN_STATUS=$(echo "${GEN_RESPONSE}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          GEN_STATUS=$(echo "${GEN_RESPONSE}" | tail -n 1 | cut -d: -f2)
           if [[ "${GEN_STATUS}" -eq 200 ]]; then
             GEN_NOTES=$(echo "${GEN_RESPONSE}" | sed '$d' | jq -r '.body // ""')
             FINAL_BODY="${GEN_NOTES}"$'\n\n---\n\n'"${CHANGELOG}"
@@ -270,16 +316,24 @@ runs:
           -H "Authorization: Bearer ${RELEASE_TOKEN}" \
           -d "${REQ_BODY}")
 
-        HTTP_STATUS=$(echo "${CREATE_RELEASE}" | awk -F: '/HTTP_STATUS:/ {print $2}')
-        if [[ "${HTTP_STATUS}" -ne 201 ]]; then
-          echo "❌ Failed to create release for ${OWNER}/${REPO} (HTTP ${HTTP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
-          echo "$(echo "${CREATE_RELEASE}" | sed '$d' | head -c 1500)" >> "$GITHUB_STEP_SUMMARY"
-          exit 1
-        fi
+        HTTP_STATUS=$(echo "${CREATE_RELEASE}" | tail -n 1 | cut -d: -f2)
+        RESPONSE_BODY=$(echo "${CREATE_RELEASE}" | sed '$d')
 
-        RELEASE_URL=$(echo "${CREATE_RELEASE}" | sed '$d' | jq -r '.html_url // ""')
-        if [[ "${DRAFT}" == "true" ]]; then
-          echo "✅ Draft release created for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+        if [[ "${HTTP_STATUS}" -eq 201 ]]; then
+          RELEASE_URL=$(echo "${RESPONSE_BODY}" | jq -r '.html_url // ""')
+          if [[ "${DRAFT}" == "true" ]]; then
+            echo "✅ Draft release created for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "✅ Release published for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        elif [[ "${HTTP_STATUS}" -eq 422 ]] && echo "${RESPONSE_BODY}" | jq -e '.errors[]? | select(.code == "already_exists")' >/dev/null 2>&1; then
+          # A release for this tag was created concurrently (e.g. two runs racing)
+          # between the existence check above and this POST. Treat as non-fatal:
+          # the release exists, but this run's notes/settings were NOT applied.
+          echo "⚠️ Release for tag ${TAG_NAME} was created concurrently on ${OWNER}/${REPO}; this run's release settings and notes were NOT applied. Verify the existing release." >> "$GITHUB_STEP_SUMMARY"
         else
-          echo "✅ Release published for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "❌ Failed to create release for ${OWNER}/${REPO} (HTTP ${HTTP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+          echo "${RESPONSE_BODY}" | head -c 1500 >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
         fi
