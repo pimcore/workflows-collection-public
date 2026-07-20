@@ -218,12 +218,18 @@ jobs:
       contents: read
     needs: prepare
     if: ${{ inputs.skip_sync_check != true }}
+    # Expose the CE counterpart (only when a real CE branch exists) so the release
+    # step can build merged CE+EE notes and strip pre-release sync noise.
+    outputs:
+      ce_owner: ${{ steps.ce_check.outputs.ce_owner_out }}
+      ce_repo: ${{ steps.ce_check.outputs.ce_repo_out }}
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       OWNER: ${{ needs.prepare.outputs.owner }}
       REPO: ${{ needs.prepare.outputs.repo }}
       BASE_BRANCH: ${{ needs.prepare.outputs.base_branch }}
       TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+      DRAFT: ${{ inputs.draft }}
     steps:
       - name: Checkout workflow repo (for composite action)
         if: ${{ startsWith(needs.prepare.outputs.repo, 'ee-') }}
@@ -255,6 +261,10 @@ jobs:
             exit 1
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
+            # A real CE counterpart branch exists: expose it so the release step
+            # builds merged CE+EE notes and filters the pre-release sync PR.
+            echo "ce_owner_out=${OWNER}" >> "$GITHUB_OUTPUT"
+            echo "ce_repo_out=${CE_REPO}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Sync CE → EE
@@ -281,7 +291,8 @@ jobs:
           # Releasing a CE bundle: per "always start from EE", if an EE
           # counterpart exists it must already have a release for this version.
           # Check the releases list (which includes drafts) rather than the tag,
-          # since a draft EE release does not create a tag.
+          # since a draft EE release does not create a tag. How strict we are
+          # depends on this CE run's draft flag (see the match logic below).
           EE_REPO="ee-${REPO}"
 
           # Gate on EE repo existence (not a branch): if the EE counterpart repo
@@ -312,11 +323,27 @@ jobs:
             exit 1
           fi
 
-          FOUND=$(echo "${REL}" | sed '$d' | jq -r --arg t "${TAG_NAME}" 'any(.[]; .tag_name == $t)')
+          # A draft EE release creates no tag. If this CE run publishes
+          # (draft=false), accepting a draft EE release would let CE publish+tag
+          # ahead of an untagged EE — breaking EE-first. So a publishing CE run
+          # requires the EE counterpart to be PUBLISHED; a draft CE run may
+          # proceed against a draft EE release.
+          REL_BODY=$(echo "${REL}" | sed '$d')
+          if [[ "${DRAFT}" == "true" ]]; then
+            FOUND=$(echo "${REL_BODY}" | jq -r --arg t "${TAG_NAME}" 'any(.[]; .tag_name == $t)')
+          else
+            FOUND=$(echo "${REL_BODY}" | jq -r --arg t "${TAG_NAME}" 'any(.[]; .tag_name == $t and .draft == false)')
+          fi
           if [[ "${FOUND}" != "true" ]]; then
-            echo "❌ EE counterpart ${OWNER}/${EE_REPO} has no release (draft or published) for ${TAG_NAME} yet." >> "$GITHUB_STEP_SUMMARY"
-            echo "Release EE first (start from EE), then run this workflow for CE," >> "$GITHUB_STEP_SUMMARY"
-            echo "or re-run with \`skip_sync_check: true\` to override." >> "$GITHUB_STEP_SUMMARY"
+            if [[ "${DRAFT}" != "true" ]] && echo "${REL_BODY}" | jq -e --arg t "${TAG_NAME}" 'any(.[]; .tag_name == $t and .draft == true)' >/dev/null; then
+              echo "❌ EE counterpart ${OWNER}/${EE_REPO} has only a DRAFT release for ${TAG_NAME}; a draft creates no tag, so publishing CE now would break EE-first." >> "$GITHUB_STEP_SUMMARY"
+              echo "Publish the EE release first, then run this workflow to publish CE," >> "$GITHUB_STEP_SUMMARY"
+              echo "or re-run with \`skip_sync_check: true\` to override." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "❌ EE counterpart ${OWNER}/${EE_REPO} has no release (draft or published) for ${TAG_NAME} yet." >> "$GITHUB_STEP_SUMMARY"
+              echo "Release EE first (start from EE), then run this workflow for CE," >> "$GITHUB_STEP_SUMMARY"
+              echo "or re-run with \`skip_sync_check: true\` to override." >> "$GITHUB_STEP_SUMMARY"
+            fi
             exit 1
           fi
 
@@ -397,6 +424,11 @@ jobs:
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           auto_changelog: ${{ needs.prepare.outputs.auto_changelog_norm }}
           changelog: ${{ inputs.changeLog }}
+          # For EE bundles with a CE counterpart, build merged CE+EE notes and
+          # strip pre-release sync noise. Empty for CE/EE-only bundles or when the
+          # sync gate was skipped → the action falls back to generic notes.
+          ce_owner: ${{ needs.ee-ce-sync-check.outputs.ce_owner }}
+          ce_repo: ${{ needs.ee-ce-sync-check.outputs.ce_repo }}
           release_token: ${{ secrets.RELEASE_TOKEN }}
 
   validate-milestone:
