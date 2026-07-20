@@ -160,7 +160,7 @@ jobs:
 
       - name: Auto merge PR 
         if: steps.diff-check.outputs.DIFF == 'true' && env.AUTO_MERGE == 'true'
-        continue-on-error: true
+        continue-on-error: false
         run: |
             # Auto merge PR
 
