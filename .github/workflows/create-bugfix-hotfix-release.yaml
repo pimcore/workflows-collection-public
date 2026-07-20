@@ -25,6 +25,11 @@ on:
         required: false
         default: false
         type: boolean
+      dry_run:
+        description: "Run all checks and assemble notes but do NOT create any release/tag (for testing against disposable repos)"
+        required: false
+        default: false
+        type: boolean
       autoChangelog:
         description: "Auto generated release notes"
         required: true
@@ -281,6 +286,8 @@ jobs:
           git_email: ${{ secrets.GIT_EMAIL }}
           run_id: ${{ github.run_id }}
           run_attempt: ${{ github.run_attempt }}
+          # In dry_run, verify sync without mutating: never open/merge a PR.
+          verify_only: ${{ inputs.dry_run }}
 
       - name: Verify EE counterpart released first (releasing a CE bundle)
         if: ${{ !startsWith(needs.prepare.outputs.repo, 'ee-') }}
@@ -421,6 +428,7 @@ jobs:
           tag_name: ${{ needs.prepare.outputs.tag_name }}
           release_name: ${{ needs.prepare.outputs.release_name }}
           draft: ${{ inputs.draft }}
+          dry_run: ${{ inputs.dry_run }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           auto_changelog: ${{ needs.prepare.outputs.auto_changelog_norm }}
           changelog: ${{ inputs.changeLog }}
@@ -525,7 +533,8 @@ jobs:
       issues: write
       contents: read
     needs: [create-release, validate-milestone]
-    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
+    # Never run in dry_run: no release was created, so there is nothing to automate.
+    if: ${{ !cancelled() && inputs.dry_run != true && needs.create-release.result == 'success' }}
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       OWNER: ${{ needs.create-release.outputs.owner }}

@@ -34,6 +34,11 @@ on:
         required: false
         default: false
         type: boolean
+      dry_run:
+        description: "Run all checks and assemble notes but do NOT create any release/tag (for testing against disposable repos)"
+        required: false
+        default: false
+        type: boolean
 
 env:
   BASE_BRANCH: ${{ inputs.base_branch }}
@@ -351,6 +356,8 @@ jobs:
           git_email: ${{ secrets.GIT_EMAIL }}
           run_id: ${{ github.run_id }}
           run_attempt: ${{ github.run_attempt }}
+          # In dry_run, verify sync without mutating: never open/merge a PR.
+          verify_only: ${{ inputs.dry_run }}
 
   resolve-shas:
     name: Resolve post-sync SHAs
@@ -466,6 +473,7 @@ jobs:
           tag_name: ${{ needs.prepare.outputs.tag_name }}
           release_name: ${{ needs.prepare.outputs.release_name }}
           draft: ${{ inputs.draft }}
+          dry_run: ${{ inputs.dry_run }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           auto_changelog: ${{ needs.prepare.outputs.auto_changelog_norm }}
           changelog: ${{ inputs.changeLog }}
@@ -499,6 +507,7 @@ jobs:
           tag_name: ${{ needs.prepare.outputs.tag_name }}
           release_name: ${{ needs.prepare.outputs.release_name }}
           draft: ${{ inputs.draft }}
+          dry_run: ${{ inputs.dry_run }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           auto_changelog: ${{ needs.prepare.outputs.auto_changelog_norm }}
           changelog: ${{ inputs.changeLog }}
@@ -517,8 +526,9 @@ jobs:
     # failed. Skipped release jobs (e.g. no EE or no CE targets) must not
     # cascade-skip milestone automation, but if BOTH are skipped — e.g. ExtJS
     # validation or sync failed, leaving nothing released — milestone automation
-    # must not run either.
-    if: ${{ !cancelled() && needs.create-releases-ee.result != 'failure' && needs.create-releases-ce.result != 'failure' && (needs.create-releases-ee.result == 'success' || needs.create-releases-ce.result == 'success') }}
+    # must not run either. Never run in dry_run: no release was created, so there
+    # is nothing to automate around.
+    if: ${{ !cancelled() && inputs.dry_run != true && needs.create-releases-ee.result != 'failure' && needs.create-releases-ce.result != 'failure' && (needs.create-releases-ee.result == 'success' || needs.create-releases-ce.result == 'success') }}
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       RELEASE_KIND: ${{ needs.prepare.outputs.release_kind }}
@@ -759,8 +769,8 @@ jobs:
     # Run only when at least one release group actually succeeded, and neither
     # failed. Skipped release jobs must not cascade-skip branch automation, but
     # if BOTH are skipped (e.g. ExtJS validation or sync failed, so nothing was
-    # released) no maintenance branch must be created.
-    if: ${{ !cancelled() && needs.create-releases-ee.result != 'failure' && needs.create-releases-ce.result != 'failure' && (needs.create-releases-ee.result == 'success' || needs.create-releases-ce.result == 'success') }}
+    # released) no maintenance branch must be created. Never run in dry_run.
+    if: ${{ !cancelled() && inputs.dry_run != true && needs.create-releases-ee.result != 'failure' && needs.create-releases-ce.result != 'failure' && (needs.create-releases-ee.result == 'success' || needs.create-releases-ce.result == 'success') }}
     strategy:
       fail-fast: false
       matrix:

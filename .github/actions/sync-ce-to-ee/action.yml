@@ -30,6 +30,13 @@ inputs:
   run_attempt:
     description: "github.run_attempt — a re-run gets a fresh, non-colliding sync branch"
     required: true
+  verify_only:
+    description: >
+      "true" checks whether EE is in sync but performs NO mutation: it never
+      opens or merges a PR. In sync → pass; behind → fail closed. Used by the
+      release workflows' dry_run mode, and the basis for a future assume-synced
+      verify mode once continuous CE → EE sync is universal.
+    default: "false"
 
 runs:
   using: composite
@@ -47,6 +54,7 @@ runs:
         EE_OWNER: ${{ inputs.ee_owner }}
         EE_REPO: ${{ inputs.ee_repo }}
         BASE_BRANCH: ${{ inputs.base_branch }}
+        VERIFY_ONLY: ${{ inputs.verify_only }}
       run: |
         set -euo pipefail
 
@@ -70,6 +78,15 @@ runs:
         if [[ "${AHEAD}" -eq 0 ]]; then
           echo "✅ ${EE_OWNER}/${EE_REPO} already in sync with ${CE_OWNER}/${CE_REPO} on ${BASE_BRANCH}; nothing to sync." >> "$GITHUB_STEP_SUMMARY"
           exit 0
+        fi
+
+        # Verify-only: report the drift and fail closed WITHOUT mutating anything
+        # (no branch push, no PR, no merge). A release must not proceed while EE
+        # is behind; bringing it into sync is a deliberate, separate action.
+        if [[ "${VERIFY_ONLY}" == "true" ]]; then
+          echo "❌ ${EE_OWNER}/${EE_REPO} is ${AHEAD} commit(s) behind ${CE_OWNER}/${CE_REPO} on ${BASE_BRANCH} (verify-only: no PR opened)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Bring EE in sync with CE first (or re-run without dry_run to open the sync PR)." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
         fi
 
         echo "🔁 ${CE_OWNER}/${CE_REPO} is ${AHEAD} commit(s) ahead of EE on ${BASE_BRANCH}; opening sync PR." >> "$GITHUB_STEP_SUMMARY"
