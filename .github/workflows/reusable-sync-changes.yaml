@@ -179,4 +179,5 @@ jobs:
 
             if [[ $SET_LABEL -ne 200 ]]; then
             echo "Failed to merge PR. Please try manually..."
+            exit 1
             fi
