@@ -159,6 +159,11 @@ jobs:
       - name: Determine version and tag
         id: version
         shell: bash
+        # Caller inputs are passed via env (not interpolated into the script) so
+        # a malicious caller of this public reusable workflow can't inject shell.
+        env:
+          TARGET_RELEASE: ${{ inputs.target-release }}
+          CANARY_TAG: ${{ inputs.canary-tag }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
@@ -169,10 +174,9 @@ jobs:
               TAG="latest"
             fi
           else
-            BASE="${{ inputs.target-release }}"
-            BASE="${BASE%%-*}"
+            BASE="${TARGET_RELEASE%%-*}"
             VERSION="${BASE}-canary.$(date +'%Y%m%d-%H%M%S')-$(git rev-parse --short=7 HEAD)"
-            TAG="${{ inputs.canary-tag }}"
+            TAG="${CANARY_TAG}"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -185,10 +189,14 @@ jobs:
 
       - name: Set package version
         working-directory: ${{ inputs.working-directory }}
-        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Publish to npm
         working-directory: ${{ inputs.working-directory }}
-        run: npx npm@${{ inputs.npm-cli-version }} publish --provenance --tag "${{ steps.version.outputs.tag }}" --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PUBLISH_TAG: ${{ steps.version.outputs.tag }}
+          NPM_CLI_VERSION: ${{ inputs.npm-cli-version }}
+        run: npx "npm@${NPM_CLI_VERSION}" publish --provenance --tag "$PUBLISH_TAG" --access public

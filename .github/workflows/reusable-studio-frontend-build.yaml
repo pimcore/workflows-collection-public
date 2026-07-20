@@ -435,6 +435,11 @@ jobs:
 
   # Read-only: runs the repo's test script after the build (and after any build
   # output has been committed). No write token here.
+  # NOTE: this job checks out the branch fresh and does NOT re-run the build. If
+  # the test script consumes build artifacts, enable commit-build-output so the
+  # output is committed first; otherwise (or on fork PRs, where commit-build is
+  # skipped) the checkout has no fresh build. studio-ui's jest runs against
+  # source, so it does not depend on the build output.
   test:
     needs:
       - build
