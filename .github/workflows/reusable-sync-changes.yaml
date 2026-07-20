@@ -160,7 +160,7 @@ jobs:
 
       - name: Auto merge PR 
         if: steps.diff-check.outputs.DIFF == 'true' && env.AUTO_MERGE == 'true'
-        continue-on-error: true
+        continue-on-error: false
         run: |
             # Auto merge PR
 
@@ -179,4 +179,5 @@ jobs:
 
             if [[ $SET_LABEL -ne 200 ]]; then
             echo "Failed to merge PR. Please try manually..."
+            exit 1
             fi

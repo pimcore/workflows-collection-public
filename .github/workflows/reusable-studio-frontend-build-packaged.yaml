@@ -1,4 +1,16 @@
-name: "Studio Frontend Build (reusable)"
+name: "Studio Frontend Build Packaged (reusable)"
+
+# Variant of reusable-studio-frontend-build.yaml that packages the compiled
+# build into an archive (e.g. build-dist/build-<id>.zip) after the production
+# build and commits only that archive — not the raw build output. The extractor
+# shipped by studio-ui-bundle reconstructs public/studio/build/ from the
+# archive at cache warmup.
+#
+# Diff vs reusable-studio-frontend-build.yaml:
+#   - build job runs the package script (default: `npm run package-build`)
+#     after the production build
+#   - commit step defaults to committing `./build-dist/` instead of the
+#     whole tree
 
 on:
   workflow_call:
@@ -38,13 +50,18 @@ on:
         required: false
         type: string
         default: "build"
+      package-script:
+        description: "NPM script to package the build into an archive"
+        required: false
+        type: string
+        default: "package-build"
       commit-lint-output:
         description: "Automatically commit lint fixes"
         required: false
         type: boolean
         default: true
       commit-build-output:
-        description: "Automatically commit build output"
+        description: "Automatically commit build archive"
         required: false
         type: boolean
         default: true
@@ -52,7 +69,7 @@ on:
         description: "Path (from repo root) to built assets to commit"
         required: false
         type: string
-        default: "."
+        default: "./build-dist/"
 
 # NOTE: Do NOT request `actions: write` here. The caller workflows grant only
 # `contents: write`, and a reusable workflow's permissions can only be reduced,
@@ -67,10 +84,11 @@ on:
 # SECURITY: jobs that execute repo-provided code (`npm ci` runs install hooks,
 # `npm run …` runs repo scripts) run with `contents: read` ONLY. The
 # `contents: write` token lives exclusively in the `commit-*` jobs, which never
-# run project code — they only apply a captured patch and commit it. Those
-# commit jobs are additionally gated to non-fork contexts, so a caller wiring
-# this into `pull_request_target` can never hand a fork's code a write-capable
-# token.
+# run project code — they only apply an artifact/patch and commit. Those commit
+# jobs are additionally gated to non-fork contexts (via the
+# `github.event.pull_request.head.repo.full_name` check in each `commit-*` job's
+# `if:`), so a caller wiring this into `pull_request_target` can never hand a
+# fork's code a write-capable token.
 permissions:
   contents: read
 
@@ -78,8 +96,8 @@ env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
 
 jobs:
-  # Read-only: executes repo-provided code (npm hooks + lint script). Captures
-  # any lint fixes as a patch artifact; the write token is NOT present here.
+  # Read-only: executes repo-provided code (npm hooks + lint script). Produces a
+  # patch of any lint fixes as an artifact; the write token is NOT present here.
   lint:
     if: ${{ inputs.lint && !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
@@ -92,9 +110,9 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          # This job runs repo-provided code (npm hooks + lint script). Keep no
-          # git credentials in .git/config while that code executes; nothing
-          # here needs authenticated git after checkout.
+          # This job runs repo-provided code (npm hooks + scripts). Keep no git
+          # credentials in .git/config while that code executes; nothing here
+          # needs authenticated git after checkout.
           persist-credentials: false
 
       - name: Set up Node.js
@@ -181,8 +199,9 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          # Runs repo-provided code (npm hooks + typecheck script); no
-          # authenticated git needed after checkout.
+          # This job runs repo-provided code (npm hooks + scripts). Keep no git
+          # credentials in .git/config while that code executes; nothing here
+          # needs authenticated git after checkout.
           persist-credentials: false
 
       - name: Set up Node.js
@@ -198,10 +217,8 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: npm run ${{ inputs.typecheck-script }}
 
-  # Read-only: executes repo-provided code (npm hooks + build script). Captures
-  # the build output as a patch artifact; the write token is NOT present here.
-  # (Patch, not a directory artifact, because build-output-path defaults to the
-  # whole tree.)
+  # Read-only: executes repo-provided code (npm hooks + build/package scripts).
+  # Uploads the packaged archive as an artifact; the write token is NOT here.
   build:
     # Depends on commit-lint so the checkout below already contains any pushed
     # lint fixes, matching the original sequential behaviour and avoiding a
@@ -216,8 +233,6 @@ jobs:
       - check-types
     if: ${{ always() && !startsWith(github.ref, 'refs/tags/') && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.commit-lint.result == 'success' || needs.commit-lint.result == 'skipped') && (needs.check-types.result == 'success' || needs.check-types.result == 'skipped') }}
     runs-on: ubuntu-latest
-    outputs:
-      has_changes: ${{ steps.capture.outputs.has_changes }}
 
     steps:
       - name: Checkout code
@@ -225,8 +240,9 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          # Runs repo-provided code (npm hooks + build script); no authenticated
-          # git needed after checkout.
+          # This job runs repo-provided code (npm hooks + scripts). Keep no git
+          # credentials in .git/config while that code executes; nothing here
+          # needs authenticated git after checkout.
           persist-credentials: false
 
       - name: Set up Node.js
@@ -242,43 +258,27 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: npm run ${{ inputs.build-script }}
 
-      - name: Capture build output as a patch
-        id: capture
-        if: ${{ inputs.commit-build-output }}
-        env:
-          BUILD_OUTPUT_PATH: ${{ inputs.build-output-path }}
-        run: |
-          set -euo pipefail
-          # Stage everything (adds, modifications AND deletions) so the patch is
-          # a faithful round-trip. `-N` (intent-to-add) would only mark additions
-          # and silently drop deletions from the unstaged diff, so we stage fully
-          # and diff --cached instead — this is what lets stale content-hashed
-          # bundles get removed from the committed publish dir.
-          git add -A
-          git diff --cached --binary -- "${BUILD_OUTPUT_PATH}" > "${RUNNER_TEMP}/build-output.patch"
-          if [[ -s "${RUNNER_TEMP}/build-output.patch" ]]; then
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Package frontend build into archive
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run ${{ inputs.package-script }}
 
-      - name: Upload build-output patch
-        if: ${{ inputs.commit-build-output && steps.capture.outputs.has_changes == 'true' }}
+      - name: Upload build archive
+        if: ${{ inputs.commit-build-output }}
         uses: actions/upload-artifact@v4
         with:
-          name: build-output-patch
-          path: ${{ runner.temp }}/build-output.patch
+          name: frontend-build-archive
+          path: ${{ inputs.build-output-path }}
           retention-days: 1
           if-no-files-found: error
           # v4 artifact names are immutable per run; allow re-running failed
           # jobs to re-upload instead of 409-ing on the second attempt.
           overwrite: true
 
-  # Write-capable, but runs NO repo-provided code: it only applies the build
-  # patch and commits it. Gated to non-fork contexts.
+  # Write-capable, but runs NO repo-provided code: it only downloads the build
+  # archive and commits it. Gated to non-fork contexts.
   commit-build:
     needs: build
-    if: ${{ inputs.commit-build-output && needs.build.outputs.has_changes == 'true' && (github.event.pull_request.head.repo.full_name == '' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ inputs.commit-build-output && (github.event.pull_request.head.repo.full_name == '' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -291,16 +291,35 @@ jobs:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.repository }}
 
-      - name: Download build-output patch
+      # Guard the destructive `git rm` below: build-output-path is a caller
+      # input, and a value of "." / "" / "/" / an absolute or parent path would
+      # stage the entire tracked tree for deletion. Reject those before removing
+      # anything. Input passed via env (not ${{ }} interpolation) since this
+      # runs in the token-bearing job.
+      - name: Validate build-output-path
+        env:
+          BUILD_OUTPUT_PATH: ${{ inputs.build-output-path }}
+        run: |
+          set -euo pipefail
+          case "${BUILD_OUTPUT_PATH}" in
+            ""|"."|"./"|"/"|".."|"../"*|/*)
+              echo "::error::build-output-path must be a repo-relative subdirectory, got '${BUILD_OUTPUT_PATH}'"
+              exit 1
+              ;;
+          esac
+
+      - name: Remove previously committed build archive
+        env:
+          BUILD_OUTPUT_PATH: ${{ inputs.build-output-path }}
+        run: git rm -r --ignore-unmatch -- "${BUILD_OUTPUT_PATH}"
+
+      - name: Download build archive
         uses: actions/download-artifact@v4
         with:
-          name: build-output-patch
-          path: ${{ runner.temp }}
+          name: frontend-build-archive
+          path: ${{ inputs.build-output-path }}
 
-      - name: Apply build output
-        run: git apply "${RUNNER_TEMP}/build-output.patch"
-
-      - name: Commit build output
+      - name: Commit build archive
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
