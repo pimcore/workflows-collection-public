@@ -11,11 +11,11 @@ on:
         required: true
         type: string
         description: "Release version without leading v (e.g. 12.4.0 for minor, 13.0.0 for major)"
-      publish_immediately:
+      draft:
         required: true
         default: false
         type: boolean
-        description: "Release directly (not recommended) by default releases are created as drafts"
+        description: "Create as draft release instead of publishing directly"
       autoChangelog:
         description: "Auto generated release notes"
         required: true
@@ -26,30 +26,27 @@ on:
         required: false
         type: string
       repositories_override:
-        description: "Optional override for repo list (comma-separated owner/repo). Leave empty to auto-discover from platform-version composer.json"
+        description: "Optional override for repo list (comma-separated repo names, e.g. data-hub,studio-ui-bundle). Leave empty to auto-discover from platform-version composer.json"
         required: false
         type: string
-      platform_version_repository:
-        description: "Repository containing composer.json with bundle list"
+      skip_sync_check:
+        description: "Skip the EE↔CE sync verification gate. Only use when you are certain EE and CE are already aligned"
         required: false
-        default: "pimcore/platform-version"
-        type: string
-      platform_version_ref:
-        description: "Branch/ref to read composer.json from. Leave empty to use base_branch"
+        default: false
+        type: boolean
+      dry_run:
+        description: "Run all checks and assemble notes but do NOT create any release/tag (for testing against disposable repos)"
         required: false
-        type: string
-      bundle_vendor_prefix:
-        description: "Vendor prefix for filtering composer.json dependencies"
-        required: false
-        default: "pimcore/"
-        type: string
+        default: false
+        type: boolean
 
 env:
   BASE_BRANCH: ${{ inputs.base_branch }}
   TO_TAG: ${{ inputs.to_tag }}
-  PUBLISH_IMMEDIATELY: ${{ inputs.publish_immediately }}
+  DRAFT: ${{ inputs.draft }}
   AUTO_CHANGELOG: ${{ inputs.autoChangelog }}
   CHANGELOG: ${{ inputs.changeLog }}
+  SKIP_SYNC_CHECK: ${{ inputs.skip_sync_check }}
 
 jobs:
   prepare:
@@ -60,9 +57,6 @@ jobs:
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       REPOSITORIES_OVERRIDE: ${{ inputs.repositories_override }}
-      PLATFORM_VERSION_REPOSITORY: ${{ inputs.platform_version_repository }}
-      PLATFORM_VERSION_REF: ${{ inputs.platform_version_ref }}
-      BUNDLE_VENDOR_PREFIX: ${{ inputs.bundle_vendor_prefix }}
     outputs:
       release_kind: ${{ steps.calc.outputs.release_kind }}
       tag_name: ${{ steps.calc.outputs.tag_name }}
@@ -70,6 +64,9 @@ jobs:
       prerelease: ${{ steps.calc.outputs.prerelease }}
       auto_changelog_norm: ${{ steps.calc.outputs.auto_changelog_norm }}
       targets_json: ${{ steps.resolve.outputs.targets_json }}
+      targets_ee_json: ${{ steps.resolve.outputs.targets_ee_json }}
+      targets_ce_json: ${{ steps.resolve.outputs.targets_ce_json }}
+      sync_pairs_json: ${{ steps.resolve.outputs.sync_pairs_json }}
       targets_count: ${{ steps.resolve.outputs.targets_count }}
       source: ${{ steps.resolve.outputs.source }}
     steps:
@@ -164,57 +161,51 @@ jobs:
             TARGETS_TEXT=$(echo "${REPOSITORIES_OVERRIDE}" | tr ', ' '\n' | sed '/^$/d' | awk '!seen[$0]++')
           else
             SOURCE="platform-version-composer"
-            PV_REPO="${PLATFORM_VERSION_REPOSITORY}"
-            PV_REF="${PLATFORM_VERSION_REF}"
-            if [[ -z "${PV_REF}" ]]; then
-              PV_REF="${BASE_BRANCH}"
-            fi
-
-            if ! [[ "${PV_REPO}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-              echo "❌ Invalid platform_version_repository format: ${PV_REPO}" >> "$GITHUB_STEP_SUMMARY"
-              exit 1
-            fi
+            PV_REPO="platform-version"
+            PV_REF="${BASE_BRANCH}"
 
             COMP_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
-              "https://api.github.com/repos/${PV_REPO}/contents/composer.json?ref=${PV_REF}" \
+              "https://api.github.com/repos/pimcore/${PV_REPO}/contents/composer.json?ref=${PV_REF}" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${RELEASE_TOKEN}")
 
             COMP_STATUS=$(echo "${COMP_RESP}" | tail -n 1 | cut -d: -f2)
             if [[ "${COMP_STATUS}" -ne 200 ]]; then
-              echo "❌ Failed to fetch composer.json from ${PV_REPO}@${PV_REF} (HTTP ${COMP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
+              echo "❌ Failed to fetch composer.json from pimcore/${PV_REPO}@${PV_REF} (HTTP ${COMP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
               echo "$(echo "${COMP_RESP}" | sed '$d' | head -c 1000)" >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
 
             CONTENT_B64=$(echo "${COMP_RESP}" | sed '$d' | jq -r '.content // ""' | tr -d '\n')
             if [[ -z "${CONTENT_B64}" ]]; then
-              echo "❌ composer.json content not found in ${PV_REPO}@${PV_REF}" >> "$GITHUB_STEP_SUMMARY"
+              echo "❌ composer.json content not found in pimcore/${PV_REPO}@${PV_REF}" >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
 
             COMP_JSON=$(echo "${CONTENT_B64}" | base64 -d)
-            TARGETS_TEXT=$(echo "${COMP_JSON}" | jq -r --arg p "${BUNDLE_VENDOR_PREFIX}" '
+            TARGETS_TEXT=$(echo "${COMP_JSON}" | jq -r '
               [(.require // {} | keys[]?), (."require-dev" // {} | keys[]?)]
               | .[]
-              | select(startswith($p))
-              | select(test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
+              | select(startswith("pimcore/"))
+              | ltrimstr("pimcore/")
+              | select(test("^[A-Za-z0-9_.-]+$"))
             ' | awk '!seen[$0]++')
           fi
 
           # Validate entries and resolve latest SHA per repo
           TARGETS_ARRAY="[]"
           SKIPPED=""
-          while IFS= read -r FULL_NAME; do
-            [[ -z "${FULL_NAME}" ]] && continue
-            if ! [[ "${FULL_NAME}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-              echo "❌ Invalid repository format in list: ${FULL_NAME}" >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r REPO_NAME; do
+            [[ -z "${REPO_NAME}" ]] && continue
+            if ! [[ "${REPO_NAME}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+              echo "❌ Invalid repository name: ${REPO_NAME}" >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
 
-            R_OWNER="${FULL_NAME%%/*}"
-            R_REPO="${FULL_NAME##*/}"
+            R_OWNER="pimcore"
+            R_REPO="${REPO_NAME}"
+            FULL_NAME="${R_OWNER}/${R_REPO}"
 
             SHA_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
               "https://api.github.com/repos/${R_OWNER}/${R_REPO}/commits/${BASE_BRANCH}" \
@@ -249,10 +240,32 @@ jobs:
               if ($t.repo | startswith("ee-")) then
                 ($t.repo | ltrimstr("ee-")) as $ce_repo |
                 (map(select(.owner == $t.owner and .repo == $ce_repo)) | first // null) as $ce |
-                if $ce then $t + {ce_owner: $ce.owner, ce_repo: $ce.repo, ce_sha: $ce.latest_sha}
+                if $ce then $t + {ce_owner: $ce.owner, ce_repo: $ce.repo}
                 else $t end
               else $t end
             ]' <<< "${TARGETS_JSON}")
+
+          # EE bundles that have a CE counterpart — the set the sync job acts on.
+          SYNC_PAIRS_JSON=$(jq -c '[ .[] | select((.repo | startswith("ee-")) and ((.ce_repo // "") != "")) ]' <<< "${TARGETS_JSON}")
+
+          # Fail closed: an EE bundle in the release set whose CE counterpart is
+          # NOT also a target gets no sync pair, so releasing it would silently
+          # skip the CE → EE sync. Unless the sync gate is explicitly skipped,
+          # block rather than release an unsynced EE bundle. (The auto-discovery
+          # path never yields EE targets, so this only guards manual
+          # repositories_override runs.)
+          if [[ "${SKIP_SYNC_CHECK}" != "true" ]]; then
+            UNPAIRED_EE=$(jq -r '[ .[] | select((.repo | startswith("ee-")) and ((.ce_repo // "") == "")) | .full_name ] | join(", ")' <<< "${TARGETS_JSON}")
+            if [[ -n "${UNPAIRED_EE}" ]]; then
+              echo "❌ EE bundle(s) selected without their CE counterpart: ${UNPAIRED_EE}" >> "$GITHUB_STEP_SUMMARY"
+              echo "Releasing these would skip the CE → EE sync. Add the matching CE repo(s) to the release set, or set skip_sync_check=true if EE and CE are already aligned." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          fi
+
+          # Split targets so EE bundles are released (tagged) before CE/standalone.
+          TARGETS_EE_JSON=$(jq -c '[ .[] | select(.repo | startswith("ee-")) ]' <<< "${TARGETS_JSON}")
+          TARGETS_CE_JSON=$(jq -c '[ .[] | select((.repo | startswith("ee-")) | not) ]' <<< "${TARGETS_JSON}")
 
           TARGETS_COUNT=$(jq -r 'length' <<< "${TARGETS_JSON}")
 
@@ -262,6 +275,9 @@ jobs:
           fi
 
           echo "targets_json=${TARGETS_JSON}" >> "$GITHUB_OUTPUT"
+          echo "targets_ee_json=${TARGETS_EE_JSON}" >> "$GITHUB_OUTPUT"
+          echo "targets_ce_json=${TARGETS_CE_JSON}" >> "$GITHUB_OUTPUT"
+          echo "sync_pairs_json=${SYNC_PAIRS_JSON}" >> "$GITHUB_OUTPUT"
           echo "targets_count=${TARGETS_COUNT}" >> "$GITHUB_OUTPUT"
           echo "source=${SOURCE}" >> "$GITHUB_OUTPUT"
 
@@ -284,307 +300,220 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    needs: [prepare, sync-ee, resolve-shas]
+    # Run whenever the sync did not fail (success or skipped); a skipped sync
+    # dependency must not cascade-skip validation. resolve-shas must succeed so
+    # validation runs against the exact commit release creation will tag.
+    if: ${{ !cancelled() && needs.sync-ee.result != 'failure' && needs.resolve-shas.result == 'success' }}
+    strategy:
+      fail-fast: true
+      # Cap concurrency: each matrix job issues a GitHub code-search call, which
+      # has a much stricter secondary rate limit than the core API. Without a cap
+      # a large release fan-out throttles and silently degrades to path-only.
+      max-parallel: 5
+      matrix:
+        target: ${{ fromJSON(needs.resolve-shas.outputs.targets_json) }}
+    steps:
+      - name: Checkout workflow repo (for composite action)
+        uses: actions/checkout@v5
+      - name: Validate no ExtJS
+        uses: ./.github/actions/validate-no-extjs
+        with:
+          owner: ${{ matrix.target.owner }}
+          repo: ${{ matrix.target.repo }}
+          base_branch: ${{ inputs.base_branch }}
+          # Validate the exact post-sync commit that will be tagged, resolved once
+          # by resolve-shas — not a fresh HEAD that may have advanced since.
+          sha: ${{ matrix.target.sha }}
+          release_token: ${{ secrets.RELEASE_TOKEN }}
+
+  sync-ee:
+    name: Sync CE → EE (${{ matrix.pair.repo }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: prepare
+    if: ${{ inputs.skip_sync_check != true && needs.prepare.outputs.sync_pairs_json != '[]' }}
     strategy:
       fail-fast: true
       matrix:
-        target: ${{ fromJSON(needs.prepare.outputs.targets_json) }}
+        pair: ${{ fromJSON(needs.prepare.outputs.sync_pairs_json) }}
+    steps:
+      - name: Checkout workflow repo (for composite action)
+        uses: actions/checkout@v5
+      # sync_pairs only contains EE bundles whose CE counterpart is itself a
+      # release target, so the CE base branch is guaranteed present.
+      - name: Sync CE → EE
+        uses: ./.github/actions/sync-ce-to-ee
+        with:
+          ce_owner: ${{ matrix.pair.ce_owner }}
+          ce_repo: ${{ matrix.pair.ce_repo }}
+          ee_owner: ${{ matrix.pair.owner }}
+          ee_repo: ${{ matrix.pair.repo }}
+          base_branch: ${{ inputs.base_branch }}
+          sync_token: ${{ secrets.SYNC_TOKEN }}
+          git_name: ${{ secrets.GIT_NAME }}
+          git_email: ${{ secrets.GIT_EMAIL }}
+          run_id: ${{ github.run_id }}
+          run_attempt: ${{ github.run_attempt }}
+          # In dry_run, verify sync without mutating: never open/merge a PR.
+          verify_only: ${{ inputs.dry_run }}
+
+  resolve-shas:
+    name: Resolve post-sync SHAs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: [prepare, sync-ee]
+    # Resolve the commit each repo will be tagged at ONCE, after the sync has
+    # advanced any EE branches. validate-extjs and the release jobs all consume
+    # these SHAs, so the commit that is validated is exactly the commit that gets
+    # tagged — closing the window where a branch advancing mid-run would let a
+    # release tag an unvalidated commit. A skipped sync must not cascade-skip this.
+    if: ${{ !cancelled() && needs.sync-ee.result != 'failure' }}
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-      OWNER: ${{ matrix.target.owner }}
-      REPO: ${{ matrix.target.repo }}
-      LATEST_SHA: ${{ matrix.target.latest_sha }}
+      TARGETS_JSON: ${{ needs.prepare.outputs.targets_json }}
+      BASE_BRANCH: ${{ inputs.base_branch }}
+    outputs:
+      targets_json: ${{ steps.resolve.outputs.targets_json }}
+      targets_ee_json: ${{ steps.resolve.outputs.targets_ee_json }}
+      targets_ce_json: ${{ steps.resolve.outputs.targets_ce_json }}
     steps:
-      - name: Check for ExtJS code
+      - name: Resolve HEAD SHA for every target
+        id: resolve
         shell: bash
         run: |
           set -euo pipefail
 
-          TREE_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
-            "https://api.github.com/repos/${OWNER}/${REPO}/git/trees/${LATEST_SHA}?recursive=1" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${RELEASE_TOKEN}")
-
-          TREE_STATUS=$(echo "${TREE_RESP}" | tail -n 1 | cut -d: -f2)
-          if [[ "${TREE_STATUS}" -ne 200 ]]; then
-            echo "⚠️ Cannot fetch file tree for ${OWNER}/${REPO} (HTTP ${TREE_STATUS}); skipping ExtJS check" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          TREE=$(echo "${TREE_RESP}" | sed '$d')
-
-          # Multi-layered path-based detection (see bugfix/hotfix workflow for full docs)
-          PATH_HITS=$(echo "${TREE}" | jq -r '.tree[] | select(.type == "blob" or .type == "tree") | .path' | \
-            grep -iE '(^|/)(\.sencha|extjs|ext-js|ext-[67]|senchatouch|sencha-touch)(/|$)|\b(ext-all(-debug|-rtl|-rtl-debug|-sandbox|-dev)?(\.min)?|ext(-debug|-foundation|-foundation-debug)?|ext-modern-all(-debug)?|sencha-touch(-all|-debug|-all-debug)?)\.js$|\bsencha\.cfg$|(^|/)node_modules/(@sencha/|extjs(/|$))|/ext/(src|packages|classic|modern|overrides)/|/(senchaextjs|sencha-generated)/' || true)
-
-          # Content search — only flag code/config files, not docs
-          SEARCH_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
-            "https://api.github.com/search/code?q=Sencha+Inc+repo:${OWNER}/${REPO}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${RELEASE_TOKEN}")
-
-          SEARCH_STATUS=$(echo "${SEARCH_RESP}" | tail -n 1 | cut -d: -f2)
-          CONTENT_HITS=""
-          if [[ "${SEARCH_STATUS}" -eq 200 ]]; then
-            TOTAL=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.total_count')
-            if [[ "${TOTAL}" -gt 0 ]]; then
-              CONTENT_HITS=$(echo "${SEARCH_RESP}" | sed '$d' | jq -r '.items[].path' | \
-                grep -iE '\.(js|ts|mjs|jsx|tsx|css|scss|less|html|htm|xml|json|cfg|properties)$' || true)
+          # Resolve one repo@branch to its HEAD commit SHA; fail closed on any
+          # non-200 or empty SHA so we never proceed with an unresolved target.
+          resolve() {
+            local o="$1" r="$2" b="$3" resp status sha
+            resp=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+              "https://api.github.com/repos/${o}/${r}/commits/${b}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}")
+            status=$(echo "${resp}" | tail -n 1 | cut -d: -f2)
+            if [[ "${status}" -ne 200 ]]; then
+              echo "❌ Failed to resolve HEAD of ${o}/${r}@${b} (HTTP ${status})" >> "$GITHUB_STEP_SUMMARY"
+              return 1
             fi
-          else
-            echo "⚠️ Sencha copyright content search failed for ${OWNER}/${REPO} (HTTP ${SEARCH_STATUS}); relying on path-based check only." >> "$GITHUB_STEP_SUMMARY"
-          fi
+            sha=$(echo "${resp}" | sed '$d' | jq -r '.sha // ""')
+            if [[ -z "${sha}" || "${sha}" == "null" ]]; then
+              echo "❌ Empty SHA for ${o}/${r}@${b}" >> "$GITHUB_STEP_SUMMARY"
+              return 1
+            fi
+            printf '%s' "${sha}"
+          }
 
-          if [[ -n "${PATH_HITS}" || -n "${CONTENT_HITS}" ]]; then
-            echo "❌ ExtJS/Sencha code detected in ${OWNER}/${REPO}. Release blocked." >> "$GITHUB_STEP_SUMMARY"
-            [[ -n "${PATH_HITS}" ]] && printf "Path matches:\n\`\`\`\n%s\n\`\`\`\n" "${PATH_HITS}" >> "$GITHUB_STEP_SUMMARY"
-            [[ -n "${CONTENT_HITS}" ]] && printf "Content matches:\n\`\`\`\n%s\n\`\`\`\n" "${CONTENT_HITS}" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          ENRICHED='[]'
+          COUNT=$(jq 'length' <<< "${TARGETS_JSON}")
+          for ((i=0; i<COUNT; i++)); do
+            T=$(jq -c ".[$i]" <<< "${TARGETS_JSON}")
+            OWNER=$(jq -r '.owner' <<< "${T}")
+            REPO=$(jq -r '.repo' <<< "${T}")
+            CE_OWNER=$(jq -r '.ce_owner // ""' <<< "${T}")
+            CE_REPO=$(jq -r '.ce_repo // ""' <<< "${T}")
 
-          echo "✅ No ExtJS in ${OWNER}/${REPO}" >> "$GITHUB_STEP_SUMMARY"
+            SHA=$(resolve "${OWNER}" "${REPO}" "${BASE_BRANCH}")
+            CE_SHA=""
+            if [[ -n "${CE_REPO}" ]]; then
+              # EE bundle with a CE counterpart: resolve CE HEAD for merged notes.
+              CE_SHA=$(resolve "${CE_OWNER}" "${CE_REPO}" "${BASE_BRANCH}")
+            fi
 
-  create-releases:
-    name: Release ${{ matrix.target.repo }}
+            T=$(jq -c --arg s "${SHA}" --arg c "${CE_SHA}" '. + {sha: $s, ce_sha: $c}' <<< "${T}")
+            ENRICHED=$(jq -c --argjson t "${T}" '. + [$t]' <<< "${ENRICHED}")
+          done
+
+          EE_JSON=$(jq -c '[ .[] | select(.repo | startswith("ee-")) ]' <<< "${ENRICHED}")
+          CE_JSON=$(jq -c '[ .[] | select((.repo | startswith("ee-")) | not) ]' <<< "${ENRICHED}")
+
+          echo "targets_json=${ENRICHED}" >> "$GITHUB_OUTPUT"
+          echo "targets_ee_json=${EE_JSON}" >> "$GITHUB_OUTPUT"
+          echo "targets_ce_json=${CE_JSON}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Resolved post-sync SHAs (tagged commit == validated commit)"
+            echo '```'
+            jq -r '.[] | "\(.full_name // (.owner + "/" + .repo)) @ \(.sha)" + (if (.ce_sha // "") != "" then "  (CE " + .ce_sha + ")" else "" end)' <<< "${ENRICHED}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # EE bundles are released (tagged) first: create-releases-ce needs
+  # create-releases-ee, so every EE tag exists before any CE release starts —
+  # works for drafts and avoids the concurrency deadlock of tag-polling. Both
+  # jobs call the shared composite action, so the release logic lives in one place.
+  create-releases-ee:
+    name: Release EE (${{ matrix.target.repo }})
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    needs: [prepare, validate-extjs]
+    needs: [prepare, validate-extjs, sync-ee, resolve-shas]
+    if: ${{ !cancelled() && needs.sync-ee.result != 'failure' && needs.validate-extjs.result == 'success' && needs.resolve-shas.result == 'success' && needs.resolve-shas.outputs.targets_ee_json != '[]' }}
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.prepare.outputs.targets_json) }}
-    env:
-      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-      OWNER: ${{ matrix.target.owner }}
-      REPO: ${{ matrix.target.repo }}
-      LATEST_SHA: ${{ matrix.target.latest_sha }}
-      CE_OWNER: ${{ matrix.target.ce_owner }}
-      CE_REPO: ${{ matrix.target.ce_repo }}
-      CE_SHA: ${{ matrix.target.ce_sha }}
-      TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
-      RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
-      DRAFT: ${{ inputs.publish_immediately == false }}
-      MAKE_LATEST: ${{ inputs.publish_immediately == true }}
-      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
-      AUTO_CHANGELOG: ${{ needs.prepare.outputs.auto_changelog_norm }}
+        target: ${{ fromJSON(needs.resolve-shas.outputs.targets_ee_json) }}
     steps:
-      - name: Ensure tag/release state is safe
-        id: tag_check
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # A published release for the tag means there is nothing to do.
-          REL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --location \
-            "https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/${TAG_NAME}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${RELEASE_TOKEN}")
-
-          if [[ "${REL_STATUS}" -eq 200 ]]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "ℹ️ Release for tag ${TAG_NAME} already exists on ${OWNER}/${REPO}; skipping." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          elif [[ "${REL_STATUS}" -ne 404 ]]; then
-            echo "❌ Failed to check release-by-tag for ${OWNER}/${REPO} (HTTP ${REL_STATUS})" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-          # /releases/tags/{tag} does not return drafts, so scan the newest
-          # releases for a draft with this tag_name to keep re-runs idempotent.
-          LIST_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
-            "https://api.github.com/repos/${OWNER}/${REPO}/releases?per_page=100" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${RELEASE_TOKEN}")
-
-          LIST_STATUS=$(echo "${LIST_RESP}" | tail -n 1 | cut -d: -f2)
-          if [[ "${LIST_STATUS}" -ne 200 ]]; then
-            echo "❌ Failed to list releases for ${OWNER}/${REPO} (HTTP ${LIST_STATUS})" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-          DRAFT_URL=$(echo "${LIST_RESP}" | sed '$d' | jq -r --arg t "${TAG_NAME}" \
-            'first(.[] | select(.draft == true and .tag_name == $t) | .html_url) // ""')
-          if [[ -n "${DRAFT_URL}" ]]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "ℹ️ Draft release for tag ${TAG_NAME} already exists on ${OWNER}/${REPO}; skipping: ${DRAFT_URL}" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          # No release exists. If the tag ref itself exists (exact match via the
-          # singular /git/ref/ endpoint — the plural form prefix-matches), a new
-          # release would attach to that tag's commit, so it must match the
-          # commit this run validated and generated notes for.
-          TAG_REF_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --location \
-            "https://api.github.com/repos/${OWNER}/${REPO}/git/ref/tags/${TAG_NAME}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${RELEASE_TOKEN}")
-
-          if [[ "${TAG_REF_STATUS}" -eq 404 ]]; then
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          elif [[ "${TAG_REF_STATUS}" -ne 200 ]]; then
-            echo "❌ Failed to check tag ref for ${OWNER}/${REPO} (HTTP ${TAG_REF_STATUS})" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-          # /commits/{ref} resolves annotated tags to the commit they point to.
-          TAG_SHA=$(curl -s --location \
-            "https://api.github.com/repos/${OWNER}/${REPO}/commits/${TAG_NAME}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${RELEASE_TOKEN}" | jq -r '.sha // ""')
-
-          if [[ "${TAG_SHA}" == "${LATEST_SHA}" ]]; then
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "ℹ️ Tag ${TAG_NAME} exists at the release commit but has no release on ${OWNER}/${REPO}; will create release." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "❌ Tag ${TAG_NAME} already exists on ${OWNER}/${REPO} at ${TAG_SHA:-<unresolved>}, but the branch head is ${LATEST_SHA}." >> "$GITHUB_STEP_SUMMARY"
-            echo "A release would attach to the existing tag commit, which this run did not validate or generate notes for. Move or delete the tag before re-running." >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
+      - name: Checkout workflow repo (for composite action)
+        uses: actions/checkout@v5
       - name: Create release
-        if: steps.tag_check.outputs.exists == 'false'
-        shell: bash
-        run: |
-          set -euo pipefail
+        uses: ./.github/actions/create-release
+        with:
+          owner: ${{ matrix.target.owner }}
+          repo: ${{ matrix.target.repo }}
+          base_branch: ${{ inputs.base_branch }}
+          # Tag the exact post-sync commit that validate-extjs checked (resolved
+          # once by resolve-shas), so the tagged and validated commits cannot differ.
+          sha: ${{ matrix.target.sha }}
+          ce_sha: ${{ matrix.target.ce_sha }}
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          release_name: ${{ needs.prepare.outputs.release_name }}
+          draft: ${{ inputs.draft }}
+          dry_run: ${{ inputs.dry_run }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          auto_changelog: ${{ needs.prepare.outputs.auto_changelog_norm }}
+          changelog: ${{ inputs.changeLog }}
+          ce_owner: ${{ matrix.target.ce_owner }}
+          ce_repo: ${{ matrix.target.ce_repo }}
+          release_token: ${{ secrets.RELEASE_TOKEN }}
 
-          FINAL_BODY="${CHANGELOG}"
-
-          # For EE bundles with a CE counterpart, build merged release notes
-          if [[ -n "${CE_REPO}" ]]; then
-            CE_NOTES=""
-            EE_NOTES=""
-
-            # Generate CE release notes
-            CE_GEN=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
-              "https://api.github.com/repos/${CE_OWNER}/${CE_REPO}/releases/generate-notes" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${RELEASE_TOKEN}" \
-              -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${CE_SHA}" '{tag_name:$tag, target_commitish:$target}')")
-            CE_STATUS=$(echo "${CE_GEN}" | tail -n 1 | cut -d: -f2)
-            if [[ "${CE_STATUS}" -eq 200 ]]; then
-              CE_NOTES=$(echo "${CE_GEN}" | sed '$d' | jq -r '.body // ""')
-            else
-              echo "⚠️ generate-notes failed for CE repo ${CE_OWNER}/${CE_REPO} (HTTP ${CE_STATUS})" >> "$GITHUB_STEP_SUMMARY"
-            fi
-
-            # Generate EE release notes and filter out sync bot noise
-            EE_GEN=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
-              "https://api.github.com/repos/${OWNER}/${REPO}/releases/generate-notes" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${RELEASE_TOKEN}" \
-              -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${LATEST_SHA}" '{tag_name:$tag, target_commitish:$target}')")
-            EE_STATUS=$(echo "${EE_GEN}" | tail -n 1 | cut -d: -f2)
-            if [[ "${EE_STATUS}" -eq 200 ]]; then
-              RAW_EE=$(echo "${EE_GEN}" | sed '$d' | jq -r '.body // ""')
-              # Strip sync-bot PRs and auto-generated full-changelog lines
-              EE_NOTES=$(echo "${RAW_EE}" | grep -Ev '@pimcore-deployments|Automated PR by|\*\*Full Changelog\*\*:' || true)
-              # Trim leading/trailing blank lines
-              EE_NOTES=$(echo "${EE_NOTES}" | sed -e '/./,$!d' -e :a -e '/^\s*$/{ $d; N; ba; }')
-            else
-              echo "⚠️ generate-notes failed for EE repo ${OWNER}/${REPO} (HTTP ${EE_STATUS})" >> "$GITHUB_STEP_SUMMARY"
-            fi
-
-            # Merge CE + filtered EE notes
-            MERGED=""
-            if [[ -n "${CE_NOTES}" ]]; then
-              MERGED="${CE_NOTES}"
-            fi
-            if [[ -n "${EE_NOTES}" ]]; then
-              [[ -n "${MERGED}" ]] && MERGED="${MERGED}"$'\n\n'
-              MERGED="${MERGED}### EE-specific changes"$'\n'"${EE_NOTES}"
-            fi
-            if [[ -n "${CHANGELOG}" ]]; then
-              [[ -n "${MERGED}" ]] && MERGED="${MERGED}"$'\n\n---\n\n'
-              MERGED="${MERGED}${CHANGELOG}"
-            fi
-            FINAL_BODY="${MERGED}"
-
-          elif [[ "${AUTO_CHANGELOG}" == "true" && -n "${CHANGELOG}" ]]; then
-            GEN_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
-              "https://api.github.com/repos/${OWNER}/${REPO}/releases/generate-notes" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${RELEASE_TOKEN}" \
-              -d "$(jq -n --arg tag "${TAG_NAME}" --arg target "${LATEST_SHA}" '{tag_name:$tag, target_commitish:$target}')")
-
-            GEN_STATUS=$(echo "${GEN_RESPONSE}" | tail -n 1 | cut -d: -f2)
-            if [[ "${GEN_STATUS}" -eq 200 ]]; then
-              GEN_NOTES=$(echo "${GEN_RESPONSE}" | sed '$d' | jq -r '.body // ""')
-              FINAL_BODY="${GEN_NOTES}"$'\n\n---\n\n'"${CHANGELOG}"
-            else
-              echo "⚠️ generate-notes failed for ${OWNER}/${REPO} (HTTP ${GEN_STATUS}); using custom notes only" >> "$GITHUB_STEP_SUMMARY"
-            fi
-          fi
-
-          MAKE_LATEST_STR="false"
-          if [[ "${MAKE_LATEST}" == "true" ]]; then
-            MAKE_LATEST_STR="true"
-          fi
-
-          # When a body is provided, attach it and disable auto-generated notes;
-          # otherwise let the API generate notes based on AUTO_CHANGELOG.
-          if [[ -n "${FINAL_BODY}" ]]; then
-            GEN_NOTES_FLAG=false
-            BODY_ARG=("--arg" "body" "${FINAL_BODY}")
-          else
-            GEN_NOTES_FLAG="${AUTO_CHANGELOG}"
-            BODY_ARG=()
-          fi
-
-          REQ_BODY=$(jq -n \
-            --arg target_commitish "${LATEST_SHA}" \
-            --arg name "${RELEASE_NAME}" \
-            --arg tag_name "${TAG_NAME}" \
-            --arg make_latest "${MAKE_LATEST_STR}" \
-            --argjson draft "${DRAFT}" \
-            --argjson prerelease "${PRERELEASE}" \
-            --argjson generate_release_notes "${GEN_NOTES_FLAG}" \
-            "${BODY_ARG[@]}" \
-            '{
-              target_commitish: $target_commitish,
-              name: $name,
-              draft: $draft,
-              make_latest: $make_latest,
-              prerelease: $prerelease,
-              tag_name: $tag_name,
-              generate_release_notes: $generate_release_notes
-            } + if $ARGS.named | has("body") then {body: $ARGS.named.body} else {} end')
-
-          CREATE_RELEASE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST --location \
-            "https://api.github.com/repos/${OWNER}/${REPO}/releases" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${RELEASE_TOKEN}" \
-            -d "${REQ_BODY}")
-
-          HTTP_STATUS=$(echo "${CREATE_RELEASE}" | tail -n 1 | cut -d: -f2)
-          RESPONSE_BODY=$(echo "${CREATE_RELEASE}" | sed '$d')
-
-          if [[ "${HTTP_STATUS}" -eq 201 ]]; then
-            RELEASE_URL=$(echo "${RESPONSE_BODY}" | jq -r '.html_url // ""')
-            if [[ "${DRAFT}" == "true" ]]; then
-              echo "✅ Draft release created for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "✅ Release published for ${OWNER}/${REPO}: ${RELEASE_URL}" >> "$GITHUB_STEP_SUMMARY"
-            fi
-          elif [[ "${HTTP_STATUS}" -eq 422 ]] && echo "${RESPONSE_BODY}" | jq -e '.errors[]? | select(.code == "already_exists")' >/dev/null 2>&1; then
-            echo "⚠️ Release for tag ${TAG_NAME} was created concurrently on ${OWNER}/${REPO}; this run's release settings and notes were NOT applied. Verify the existing release." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "❌ Failed to create release for ${OWNER}/${REPO} (HTTP ${HTTP_STATUS})" >> "$GITHUB_STEP_SUMMARY"
-            echo "${RESPONSE_BODY}" | head -c 1500 >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+  create-releases-ce:
+    name: Release CE (${{ matrix.target.repo }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs: [prepare, validate-extjs, sync-ee, resolve-shas, create-releases-ee]
+    if: ${{ !cancelled() && needs.create-releases-ee.result != 'failure' && needs.sync-ee.result != 'failure' && needs.validate-extjs.result == 'success' && needs.resolve-shas.result == 'success' && needs.resolve-shas.outputs.targets_ce_json != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.resolve-shas.outputs.targets_ce_json) }}
+    steps:
+      - name: Checkout workflow repo (for composite action)
+        uses: actions/checkout@v5
+      - name: Create release
+        uses: ./.github/actions/create-release
+        with:
+          owner: ${{ matrix.target.owner }}
+          repo: ${{ matrix.target.repo }}
+          base_branch: ${{ inputs.base_branch }}
+          # Tag the exact post-sync commit resolve-shas resolved for this repo.
+          sha: ${{ matrix.target.sha }}
+          ce_sha: ${{ matrix.target.ce_sha }}
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          release_name: ${{ needs.prepare.outputs.release_name }}
+          draft: ${{ inputs.draft }}
+          dry_run: ${{ inputs.dry_run }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          auto_changelog: ${{ needs.prepare.outputs.auto_changelog_norm }}
+          changelog: ${{ inputs.changeLog }}
+          ce_owner: ${{ matrix.target.ce_owner }}
+          ce_repo: ${{ matrix.target.ce_repo }}
+          release_token: ${{ secrets.RELEASE_TOKEN }}
 
   milestone-automation:
     name: Milestone automation
@@ -592,7 +521,14 @@ jobs:
     permissions:
       issues: write
       contents: read
-    needs: [prepare, create-releases]
+    needs: [prepare, create-releases-ee, create-releases-ce]
+    # Run only when at least one release group actually succeeded, and neither
+    # failed. Skipped release jobs (e.g. no EE or no CE targets) must not
+    # cascade-skip milestone automation, but if BOTH are skipped — e.g. ExtJS
+    # validation or sync failed, leaving nothing released — milestone automation
+    # must not run either. Never run in dry_run: no release was created, so there
+    # is nothing to automate around.
+    if: ${{ !cancelled() && inputs.dry_run != true && needs.create-releases-ee.result != 'failure' && needs.create-releases-ce.result != 'failure' && (needs.create-releases-ee.result == 'success' || needs.create-releases-ce.result == 'success') }}
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       RELEASE_KIND: ${{ needs.prepare.outputs.release_kind }}
@@ -829,7 +765,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    needs: [prepare, create-releases]
+    needs: [prepare, create-releases-ee, create-releases-ce]
+    # Run only when at least one release group actually succeeded, and neither
+    # failed. Skipped release jobs must not cascade-skip branch automation, but
+    # if BOTH are skipped (e.g. ExtJS validation or sync failed, so nothing was
+    # released) no maintenance branch must be created. Never run in dry_run.
+    if: ${{ !cancelled() && inputs.dry_run != true && needs.create-releases-ee.result != 'failure' && needs.create-releases-ce.result != 'failure' && (needs.create-releases-ee.result == 'success' || needs.create-releases-ce.result == 'success') }}
     strategy:
       fail-fast: false
       matrix:
@@ -898,7 +839,7 @@ jobs:
   summary:
     name: Release summary
     runs-on: ubuntu-latest
-    needs: [prepare, validate-extjs, create-releases, milestone-automation, branch-automation]
+    needs: [prepare, sync-ee, resolve-shas, validate-extjs, create-releases-ee, create-releases-ce, milestone-automation, branch-automation]
     if: always()
     steps:
       - name: Generate summary
@@ -909,15 +850,23 @@ jobs:
           echo "**Release Type**: ${{ needs.prepare.outputs.release_kind }}" >> "$GITHUB_STEP_SUMMARY"
           echo "**Target repos**: ${{ needs.prepare.outputs.targets_count }}" >> "$GITHUB_STEP_SUMMARY"
           echo "**Source**: ${{ needs.prepare.outputs.source }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Draft**: ${{ inputs.publish_immediately == false }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Draft**: ${{ inputs.draft }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "${{ needs.sync-ee.result }}" == "failure" ]]; then
+            echo "❌ CE → EE sync failed - releases not created (resolve the sync PR, then retry)" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "${{ needs.sync-ee.result }}" == "skipped" ]]; then
+            echo "⏭️ CE → EE sync skipped" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "✅ CE → EE sync completed" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           if [[ "${{ needs.validate-extjs.result }}" == "failure" ]]; then
             echo "❌ ExtJS validation failed - releases not created" >> "$GITHUB_STEP_SUMMARY"
-          elif [[ "${{ needs.create-releases.result }}" == "success" ]]; then
-            echo "✅ All releases created successfully" >> "$GITHUB_STEP_SUMMARY"
-          elif [[ "${{ needs.create-releases.result }}" == "failure" ]]; then
+          elif [[ "${{ needs.create-releases-ee.result }}" == "failure" || "${{ needs.create-releases-ce.result }}" == "failure" ]]; then
             echo "⚠️ Some releases failed - check individual job logs" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "${{ needs.create-releases-ee.result }}" == "success" || "${{ needs.create-releases-ce.result }}" == "success" ]]; then
+            echo "✅ Releases created (EE first, then CE)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "⏭️ Releases skipped" >> "$GITHUB_STEP_SUMMARY"
           fi
