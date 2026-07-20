@@ -324,7 +324,10 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASE_TOKEN}")
-          REL_STATUS=$(echo "${REL}" | awk -F: '/HTTP_STATUS:/ {print $2}')
+          # Read the status from the last response line only; a body containing
+          # "HTTP_STATUS:" must not fool a whole-response grep (consistent with
+          # every other status parse in these workflows).
+          REL_STATUS=$(echo "${REL}" | tail -n 1 | cut -d: -f2)
           if [[ "${REL_STATUS}" -ne 200 ]]; then
             echo "❌ Could not list releases for ${OWNER}/${EE_REPO} (HTTP ${REL_STATUS}); failing closed." >> "$GITHUB_STEP_SUMMARY"
             exit 1

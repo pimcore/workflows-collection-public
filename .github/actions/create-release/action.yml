@@ -37,9 +37,11 @@ inputs:
     description: >
       "true" runs every check and assembles the release notes but does NOT create
       the GitHub release (no POST /releases, no tag). For end-to-end testing
-      against disposable repos, or a no-mutation production dry-run. Note: the
-      CE → EE sync step lives in the caller and is unaffected — pair with
-      skip_sync_check if you also want to avoid mutating EE.
+      against disposable repos, or a no-mutation production dry-run. Both release
+      workflows wire this into the CE → EE sync step's verify_only, so a dry run is
+      already fully non-mutating end to end (the sync only verifies, never opens a
+      PR) — no extra flag is needed. skip_sync_check is separate: it bypasses the
+      sync/EE-first gate entirely, which a dry run should normally keep enabled.
     default: "false"
   prerelease:
     default: "false"
