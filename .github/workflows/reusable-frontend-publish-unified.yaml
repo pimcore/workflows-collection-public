@@ -42,6 +42,26 @@ on:
         required: false
         type: string
         default: "build"
+      api-client:
+        description: "Regenerate the API client (before lint/typecheck/build) and commit it"
+        required: false
+        type: boolean
+        default: false
+      api-client-script:
+        description: "NPM script to run for API client generation"
+        required: false
+        type: string
+        default: "build-api-client"
+      test:
+        description: "Run tests after build"
+        required: false
+        type: boolean
+        default: false
+      test-script:
+        description: "NPM script to run for tests"
+        required: false
+        type: string
+        default: "test"
       commit-lint-output:
         description: "Automatically commit lint fixes"
         required: false
@@ -67,6 +87,16 @@ on:
         required: false
         type: string
         default: ""
+      canary-tag:
+        description: "npm dist-tag for canary publishes (e.g. 'canary' or a per-branch 'canary-2026.2')"
+        required: false
+        type: string
+        default: "canary"
+      npm-cli-version:
+        description: "npm CLI version used for `npx npm@<version> publish` (e.g. 'latest' or '11')"
+        required: false
+        type: string
+        default: "latest"
     secrets:
       NPM_TOKEN:
         required: false
@@ -92,6 +122,10 @@ jobs:
       lint-script: ${{ inputs.lint-script }}
       typecheck-script: ${{ inputs.typecheck-script }}
       build-script: ${{ inputs.build-script }}
+      api-client: ${{ inputs.api-client }}
+      api-client-script: ${{ inputs.api-client-script }}
+      test: ${{ inputs.test }}
+      test-script: ${{ inputs.test-script }}
       commit-lint-output: ${{ inputs.commit-lint-output }}
       commit-build-output: ${{ inputs.commit-build-output }}
       build-output-path: ${{ inputs.build-output-path }}
@@ -125,6 +159,11 @@ jobs:
       - name: Determine version and tag
         id: version
         shell: bash
+        # Caller inputs are passed via env (not interpolated into the script) so
+        # a malicious caller of this public reusable workflow can't inject shell.
+        env:
+          TARGET_RELEASE: ${{ inputs.target-release }}
+          CANARY_TAG: ${{ inputs.canary-tag }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
@@ -135,10 +174,9 @@ jobs:
               TAG="latest"
             fi
           else
-            BASE="${{ inputs.target-release }}"
-            BASE="${BASE%%-*}"
+            BASE="${TARGET_RELEASE%%-*}"
             VERSION="${BASE}-canary.$(date +'%Y%m%d-%H%M%S')-$(git rev-parse --short=7 HEAD)"
-            TAG="canary"
+            TAG="${CANARY_TAG}"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -151,10 +189,14 @@ jobs:
 
       - name: Set package version
         working-directory: ${{ inputs.working-directory }}
-        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Publish to npm
         working-directory: ${{ inputs.working-directory }}
-        run: npx npm@latest publish --provenance --tag "${{ steps.version.outputs.tag }}" --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PUBLISH_TAG: ${{ steps.version.outputs.tag }}
+          NPM_CLI_VERSION: ${{ inputs.npm-cli-version }}
+        run: npx "npm@${NPM_CLI_VERSION}" publish --provenance --tag "$PUBLISH_TAG" --access public

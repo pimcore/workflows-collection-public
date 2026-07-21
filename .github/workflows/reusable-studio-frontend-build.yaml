@@ -38,6 +38,26 @@ on:
         required: false
         type: string
         default: "build"
+      api-client:
+        description: "Regenerate the API client (before lint/typecheck/build) and commit it"
+        required: false
+        type: boolean
+        default: false
+      api-client-script:
+        description: "NPM script to run for API client generation"
+        required: false
+        type: string
+        default: "build-api-client"
+      test:
+        description: "Run tests after build"
+        required: false
+        type: boolean
+        default: false
+      test-script:
+        description: "NPM script to run for tests"
+        required: false
+        type: string
+        default: "test"
       commit-lint-output:
         description: "Automatically commit lint fixes"
         required: false
@@ -78,10 +98,111 @@ env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
 
 jobs:
+  # Read-only: regenerates the API client and captures it as a patch. No write
+  # token here. On fork PRs commit-api-client is skipped, so the patch is never
+  # committed and lint/typecheck/build/test validate the committed (possibly
+  # stale) client; the next non-fork run regenerates and commits it.
+  api-client:
+    if: ${{ inputs.api-client && !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.capture.outputs.has_changes }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.BRANCH_NAME }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          # Runs repo-provided code (npm hooks + api-client script); no
+          # authenticated git needed after checkout.
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+
+      - name: Regenerate API client
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run ${{ inputs.api-client-script }}
+
+      - name: Capture API client changes as a patch
+        id: capture
+        run: |
+          set -euo pipefail
+          # Stage everything (adds, modifications AND deletions) so the patch is
+          # a faithful round-trip, then diff --cached.
+          git add -A
+          git diff --cached --binary > "${RUNNER_TEMP}/api-client.patch"
+          if [[ -s "${RUNNER_TEMP}/api-client.patch" ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload API client patch
+        if: ${{ steps.capture.outputs.has_changes == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-client-patch
+          path: ${{ runner.temp }}/api-client.patch
+          retention-days: 1
+          if-no-files-found: error
+          # v4 artifact names are immutable per run; allow re-running failed
+          # jobs to re-upload instead of 409-ing on the second attempt.
+          overwrite: true
+
+  # Write-capable, but runs NO repo-provided code: it only applies the API client
+  # patch and commits it. Gated to non-fork contexts.
+  commit-api-client:
+    needs: api-client
+    if: ${{ inputs.api-client && needs.api-client.outputs.has_changes == 'true' && (github.event.pull_request.head.repo.full_name == '' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.BRANCH_NAME }}
+          repository: ${{ github.repository }}
+
+      - name: Download API client patch
+        uses: actions/download-artifact@v4
+        with:
+          name: api-client-patch
+          path: ${{ runner.temp }}
+
+      - name: Apply API client changes
+        run: git apply "${RUNNER_TEMP}/api-client.patch"
+
+      - name: Commit API client changes
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          branch: ${{ env.BRANCH_NAME }}
+          # Rebase onto the remote tip before pushing so a concurrent push to the
+          # same branch doesn't fail this with a non-fast-forward rejection.
+          pull: "--rebase --autostash"
+          commit_message: Apply latest automatic api client updates
+
   # Read-only: executes repo-provided code (npm hooks + lint script). Captures
   # any lint fixes as a patch artifact; the write token is NOT present here.
   lint:
-    if: ${{ inputs.lint && !startsWith(github.ref, 'refs/tags/') }}
+    # Ordered after commit-api-client so the checkout includes the freshly
+    # committed client; api-client is also listed so a generation failure blocks
+    # lint rather than letting it run against a stale client. Both default to
+    # `skipped` (api-client off), leaving existing consumers unaffected.
+    needs:
+      - api-client
+      - commit-api-client
+    if: ${{ !cancelled() && inputs.lint && !startsWith(github.ref, 'refs/tags/') && (needs.api-client.result == 'success' || needs.api-client.result == 'skipped') && (needs.commit-api-client.result == 'success' || needs.commit-api-client.result == 'skipped') }}
     runs-on: ubuntu-latest
     outputs:
       has_changes: ${{ steps.capture.outputs.has_changes }}
@@ -169,10 +290,19 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
+          # Rebase onto the remote tip before pushing so a concurrent push to the
+          # same branch doesn't fail this with a non-fast-forward rejection.
+          pull: "--rebase --autostash"
           commit_message: Apply eslint-fixer changes
 
   check-types:
-    if: ${{ inputs.typecheck && !startsWith(github.ref, 'refs/tags/') }}
+    # See lint: ordered after the API client regeneration so type checks run
+    # against the freshly committed client. Skipped deps => no-op when api-client
+    # is off.
+    needs:
+      - api-client
+      - commit-api-client
+    if: ${{ !cancelled() && inputs.typecheck && !startsWith(github.ref, 'refs/tags/') && (needs.api-client.result == 'success' || needs.api-client.result == 'skipped') && (needs.commit-api-client.result == 'success' || needs.commit-api-client.result == 'skipped') }}
     runs-on: ubuntu-latest
 
     steps:
@@ -211,10 +341,12 @@ jobs:
     # AND when lint failed, so it can't distinguish the two — a direct check on
     # lint.result is what actually blocks the build on a lint failure.
     needs:
+      - api-client
+      - commit-api-client
       - lint
       - commit-lint
       - check-types
-    if: ${{ always() && !startsWith(github.ref, 'refs/tags/') && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.commit-lint.result == 'success' || needs.commit-lint.result == 'skipped') && (needs.check-types.result == 'success' || needs.check-types.result == 'skipped') }}
+    if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/') && (needs.api-client.result == 'success' || needs.api-client.result == 'skipped') && (needs.commit-api-client.result == 'success' || needs.commit-api-client.result == 'skipped') && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.commit-lint.result == 'success' || needs.commit-lint.result == 'skipped') && (needs.check-types.result == 'success' || needs.check-types.result == 'skipped') }}
     runs-on: ubuntu-latest
     outputs:
       has_changes: ${{ steps.capture.outputs.has_changes }}
@@ -305,4 +437,44 @@ jobs:
         with:
           branch: ${{ env.BRANCH_NAME }}
           file_pattern: ${{ inputs.build-output-path }}
+          # Rebase onto the remote tip before pushing so a concurrent push to the
+          # same branch doesn't fail this with a non-fast-forward rejection.
+          pull: "--rebase --autostash"
           commit_message: Automatic frontend build
+
+  # Read-only: runs the repo's test script after the build (and after any build
+  # output has been committed). No write token here.
+  # NOTE: this job checks out the branch fresh and does NOT re-run the build. If
+  # the test script consumes build artifacts, enable commit-build-output so the
+  # output is committed first; otherwise (or on fork PRs, where commit-build is
+  # skipped) the checkout has no fresh build. studio-ui's jest runs against
+  # source, so it does not depend on the build output.
+  test:
+    needs:
+      - build
+      - commit-build
+    if: ${{ !cancelled() && inputs.test && !startsWith(github.ref, 'refs/tags/') && needs.build.result == 'success' && (needs.commit-build.result == 'success' || needs.commit-build.result == 'skipped') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.BRANCH_NAME }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          # Runs repo-provided code (npm hooks + test script); no authenticated
+          # git needed after checkout.
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+
+      - name: Run tests
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run ${{ inputs.test-script }}
