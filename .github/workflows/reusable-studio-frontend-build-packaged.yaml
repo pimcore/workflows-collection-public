@@ -161,7 +161,9 @@ jobs:
   # produced above and commits it. Gated to non-fork contexts.
   commit-lint:
     needs: lint
-    if: ${{ inputs.commit-lint-output && needs.lint.outputs.has_changes == 'true' && (github.event.pull_request.head.repo.full_name == '' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    # `!cancelled()` is REQUIRED: skipped upstream jobs otherwise cascade their
+    # `skipped` onto this job even though `lint` succeeded. Do NOT remove it.
+    if: ${{ !cancelled() && needs.lint.result == 'success' && inputs.commit-lint-output && needs.lint.outputs.has_changes == 'true' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -278,7 +280,10 @@ jobs:
   # archive and commits it. Gated to non-fork contexts.
   commit-build:
     needs: build
-    if: ${{ inputs.commit-build-output && (github.event.pull_request.head.repo.full_name == '' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    # `!cancelled()` is REQUIRED: `build`'s skipped upstreams otherwise cascade
+    # their `skipped` onto this job even though `build` succeeded — which
+    # silently prevents the build archive from being committed. Do NOT remove it.
+    if: ${{ !cancelled() && needs.build.result == 'success' && inputs.commit-build-output && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     permissions:
