@@ -187,6 +187,9 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
+          # Rebase onto the remote tip before pushing so a concurrent push to the
+          # same branch doesn't fail this with a non-fast-forward rejection.
+          pull: "--rebase --autostash"
           commit_message: Apply latest automatic api client updates
 
   # Read-only: executes repo-provided code (npm hooks + lint script). Captures
@@ -287,6 +290,9 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
+          # Rebase onto the remote tip before pushing so a concurrent push to the
+          # same branch doesn't fail this with a non-fast-forward rejection.
+          pull: "--rebase --autostash"
           commit_message: Apply eslint-fixer changes
 
   check-types:
@@ -431,6 +437,9 @@ jobs:
         with:
           branch: ${{ env.BRANCH_NAME }}
           file_pattern: ${{ inputs.build-output-path }}
+          # Rebase onto the remote tip before pushing so a concurrent push to the
+          # same branch doesn't fail this with a non-fast-forward rejection.
+          pull: "--rebase --autostash"
           commit_message: Automatic frontend build
 
   # Read-only: runs the repo's test script after the build (and after any build
