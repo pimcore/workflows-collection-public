@@ -98,10 +98,10 @@ env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
 
 jobs:
-  # Read-only: regenerates the API client (repo-provided code) from the committed
-  # OpenAPI spec and captures the result as a patch artifact. Runs before
-  # lint/typecheck/build so those operate on the freshly generated client. The
-  # write token is NOT present here.
+  # Read-only: regenerates the API client and captures it as a patch. No write
+  # token here. On fork PRs commit-api-client is skipped, so the patch is never
+  # committed and lint/typecheck/build/test validate the committed (possibly
+  # stale) client; the next non-fork run regenerates and commits it.
   api-client:
     if: ${{ inputs.api-client && !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
