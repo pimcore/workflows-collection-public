@@ -161,7 +161,7 @@ jobs:
   # produced above and commits it. Gated to non-fork contexts.
   commit-lint:
     needs: lint
-    if: ${{ inputs.commit-lint-output && needs.lint.outputs.has_changes == 'true' && ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ inputs.commit-lint-output && needs.lint.outputs.has_changes == 'true' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -278,7 +278,7 @@ jobs:
   # archive and commits it. Gated to non-fork contexts.
   commit-build:
     needs: build
-    if: ${{ inputs.commit-build-output && ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ inputs.commit-build-output && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     permissions:
