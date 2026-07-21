@@ -193,7 +193,10 @@ jobs:
           branch: ${{ env.BRANCH_NAME }}
           # Rebase onto the remote tip before pushing so a concurrent push to the
           # same branch doesn't fail this with a non-fast-forward rejection.
-          pull: "--rebase --autostash"
+          # NB: `pull:` is not a valid input on git-auto-commit-action@v7 (it was
+          # silently ignored, emitting an "Unexpected input(s) 'pull'" warning);
+          # v7's `before_push_hook` is the supported way to do this.
+          before_push_hook: git pull --rebase --autostash origin ${{ env.BRANCH_NAME }}
           commit_message: Apply latest automatic api client updates
 
   # Read-only: executes repo-provided code (npm hooks + lint script). Captures
@@ -299,7 +302,10 @@ jobs:
           branch: ${{ env.BRANCH_NAME }}
           # Rebase onto the remote tip before pushing so a concurrent push to the
           # same branch doesn't fail this with a non-fast-forward rejection.
-          pull: "--rebase --autostash"
+          # NB: `pull:` is not a valid input on git-auto-commit-action@v7 (it was
+          # silently ignored, emitting an "Unexpected input(s) 'pull'" warning);
+          # v7's `before_push_hook` is the supported way to do this.
+          before_push_hook: git pull --rebase --autostash origin ${{ env.BRANCH_NAME }}
           commit_message: Apply eslint-fixer changes
 
   check-types:
@@ -451,7 +457,10 @@ jobs:
           file_pattern: ${{ inputs.build-output-path }}
           # Rebase onto the remote tip before pushing so a concurrent push to the
           # same branch doesn't fail this with a non-fast-forward rejection.
-          pull: "--rebase --autostash"
+          # NB: `pull:` is not a valid input on git-auto-commit-action@v7 (it was
+          # silently ignored, emitting an "Unexpected input(s) 'pull'" warning);
+          # v7's `before_push_hook` is the supported way to do this.
+          before_push_hook: git pull --rebase --autostash origin ${{ env.BRANCH_NAME }}
           commit_message: Automatic frontend build
 
   # Read-only: runs the repo's test script after the build (and after any build
