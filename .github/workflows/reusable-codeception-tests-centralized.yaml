@@ -164,6 +164,9 @@ jobs:
           # caller gates this job behind reusable-fork-pr-security-gate and passes
           # allow_fork_pr_checkout: true only on the gate-approved path. Defaults false.
           allow-unsafe-pr-checkout: ${{ inputs.allow_fork_pr_checkout }}
+          # Fork code runs with secrets in scope; don't leave the base-repo GITHUB_TOKEN
+          # in .git/config for it to read. This job never pushes, so it needs no credentials.
+          persist-credentials: false
 
       - name: "Get target branch information"
         id: branch-info
