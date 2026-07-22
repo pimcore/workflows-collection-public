@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       allow_fork_pr_checkout:
-        description: "Enable actions/checkout allow-unsafe-pr-checkout. Set true ONLY when the caller has run the fork-PR security gate (reusable-fork-pr-security-gate) before this job."
+        description: "Enable actions/checkout allow-unsafe-pr-checkout, which checks out untrusted fork-PR head code with this job's secrets in scope. Set true ONLY from a caller job that both (1) declares needs on reusable-fork-pr-security-gate and (2) runs only when the gate verdict is not a rejection. A bare true without that gating exposes the job secrets to fork code."
         required: false
         type: boolean
         default: false
