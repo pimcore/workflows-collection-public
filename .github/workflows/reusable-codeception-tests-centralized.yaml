@@ -3,6 +3,11 @@ name: "Codeception tests"
 on:
   workflow_call:
     inputs:
+      allow_fork_pr_checkout:
+        description: "Enable actions/checkout allow-unsafe-pr-checkout. Set true ONLY when the caller has run the fork-PR security gate (reusable-fork-pr-security-gate) before this job."
+        required: false
+        type: boolean
+        default: false
       APP_ENV:
         required: true
         type: string
@@ -155,6 +160,10 @@ jobs:
         uses: "actions/checkout@v5"
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Re-enables the intentionally-blocked fork-PR checkout. Safe ONLY because the
+          # caller gates this job behind reusable-fork-pr-security-gate and passes
+          # allow_fork_pr_checkout: true only on the gate-approved path. Defaults false.
+          allow-unsafe-pr-checkout: ${{ inputs.allow_fork_pr_checkout }}
 
       - name: "Get target branch information"
         id: branch-info
