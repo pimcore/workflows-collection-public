@@ -1,0 +1,231 @@
+// @ts-check
+// Note: type annotations allow type checking and IDEs autocompletion
+import { themes } from "prism-react-renderer";
+
+const {baseUrl, platformVersions} = require('./versionConfiguration.js');
+
+const lightCodeTheme = themes.github;
+const darkCodeTheme = themes.dracula;
+
+/** @type {import('@docusaurus/types').Config} */
+const config = {
+  title: 'Pimcore Development Documentation',
+  tagline: 'Own the digital world',
+  url: 'https://pimcore.com/',
+  baseUrl: baseUrl,
+  onBrokenLinks: 'throw',
+  onBrokenMarkdownLinks: 'throw',
+  favicon: 'img/favicon.png',
+
+  // GitHub pages deployment config.
+  // If you aren't using GitHub pages, you don't need these.
+  organizationName: 'pimcore', // Usually your GitHub org/user name.
+  projectName: 'pimcore', // Usually your repo name.
+
+  // Even if you don't use internalization, you can use this field to set useful
+  // metadata like html lang. For example, if your site is Chinese, you may want
+  // to replace "en" with "zh-Hans".
+  i18n: {
+    defaultLocale: 'en',
+    locales: ['en'],
+  },
+
+  presets: [
+    [
+      'classic',
+      /** @type {import('@docusaurus/preset-classic').Options} */
+      ({
+        docs: {
+		  routeBasePath: '/',
+          sidebarPath: require.resolve('./sidebars.js'),
+          // showLastUpdateAuthor: true,
+          // showLastUpdateTime: true,
+          editUrl: ({version, docPath}) => {
+              if(version === 'current'){
+                  for(const versionName of Object.keys(platformVersions)) {
+                      if (!platformVersions[versionName].isVersion) {
+                          version = versionName;
+                          break;
+                      }
+                  }
+              }
+
+              let splitDocPath = docPath.split('/');
+              const repoTargetDir = splitDocPath.shift();
+
+              const repos = platformVersions[version].repos;
+              let newDocPath = '';
+              for(const repoName of Object.keys(repos)) {
+                  if(repos[repoName].targetDirectory === repoTargetDir) {
+
+                      if(repos[repoName].enterprise === true) {
+                          return;
+                      }
+
+                      newDocPath = splitDocPath.join('/');
+
+                      const branch = repos[repoName].readmeEditBranch || repos[repoName].branch;
+
+                      if(splitDocPath.length === 1 && newDocPath === 'README.md') {
+                          return `https://github.com/${repoName}/edit/${branch}/${newDocPath}`;
+                      }
+                      return `https://github.com/${repoName}/edit/${branch}/doc/${newDocPath}`;
+                  }
+              }
+          }
+        },
+		blog: false,
+        theme: {
+          customCss: [
+              require.resolve('./src/css/custom.css'),
+          ],
+        },
+        googleTagManager: {
+          containerId: 'GTM-MRTR3TR',
+        },
+      }),
+    ],
+  ],
+
+  themeConfig:
+    /** @type {import('@docusaurus/preset-classic').ThemeConfig} */
+    ({
+      navbar: {
+        //title: 'Pimcore Documentation',
+        logo: {
+          alt: 'Pimcore Logo',
+          src: 'img/logo.svg',
+          srcDark: 'img/logo-white.svg',
+        },
+        items: [
+          {
+            type: 'docsVersion',
+            position: 'left',
+            label: 'Pimcore Documentation',
+          },
+          {
+            href: 'https://pimcore.com/docs/pimcore/10.6',
+            label: 'Documentation for old Pimcore Versions',
+          },
+          {
+            href: 'https://pimcore.com/en/developers/academy',
+            label: 'Academy',
+          },
+          // {
+          //   href: 'https://pimcore.com/academy',
+          //   label: 'User Group',
+          // },
+          {
+            href: 'https://github.com/pimcore/pimcore/discussions',
+            label: 'Forums',
+          },
+          {
+            href: 'https://pimcore.com/en/contact-us',
+            label: 'Contact Us',
+          },
+          {
+            type: 'docsVersionDropdown',
+            position: 'right',
+            //dropdownItemsAfter: [{to: '/versions', label: 'All versions'}],
+            dropdownActiveClassDisabled: true,
+          }
+        ]
+      },
+	  docs: {
+	    sidebar: {
+			hideable: true,
+			autoCollapseCategories: true,
+		}
+	  },
+      footer: {
+        style: 'dark',
+        links: [
+          {
+            title: 'Learning Center',
+            items: [
+              {
+                label: 'Pimcore Academy',
+                href: 'https://pimcore.com/en/developers/academy',
+              },
+              {
+                label: 'Pimcore 10 Documentation',
+                href: 'https://pimcore.com/docs/pimcore/10.6',
+              },
+              {
+                label: 'Pimcore Demo',
+                href: 'https://demo.pimcore.com',
+              },
+            ],
+          },
+          {
+            title: 'Community',
+            items: [
+              {
+                label: 'Pimcore User Group',
+                href: 'https://pimcore.com',
+              },
+              {
+                label: 'GitHub',
+                href: 'https://github.com/pimcore',
+              },
+              {
+                label: 'Forums',
+                href: 'https://github.com/pimcore/pimcore/discussions',
+              },
+              {
+                label: 'Gitter',
+                href: 'https://gitter.im/pimcore/pimcore',
+              },
+            ],
+          },
+          {
+            title: 'Download',
+            items: [
+              {
+                label: 'Pimcore Download Page',
+                href: 'https://pimcore.com/en/platform/community-edition',
+              },
+              {
+                label: 'Download Pimcore Demo',
+                href: 'https://github.com/pimcore/demo',
+              },
+              {
+                label: 'Download Pimcore Skeleton',
+                href: 'https://github.com/pimcore/skeleton',
+              },
+            ],
+          },
+        ],
+        copyright: `Copyright © ${new Date().getFullYear()} Pimcore GmbH, build with Docusaurus`
+      },
+      prism: {
+        theme: lightCodeTheme,
+        darkTheme: darkCodeTheme,
+        additionalLanguages: ['php', 'twig', 'markup-templating']
+      },
+      algolia: {
+        // The application ID provided by Algolia
+        appId: 'MICNWB0JJI',
+  
+        // Public API key: it is safe to commit it
+        apiKey: 'bf6a5b8264efa836166865878e91769a',
+  
+        indexName: 'pimcore',
+        contextualSearch: true,
+      },
+    }),
+	
+  plugins: [
+    [
+      require.resolve('@docusaurus/plugin-ideal-image'),
+      {
+
+      },
+    ]
+  ],
+  clientModules: [
+    './src/clientModules/enterpriseBadge.js'
+  ],
+};
+
+module.exports = config;

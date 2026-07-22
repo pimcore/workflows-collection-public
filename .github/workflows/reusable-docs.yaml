@@ -23,14 +23,10 @@ on:
         type: string
         default: ""
       docs_generator_ref:
-        description: "Ref (branch/tag/SHA) for pimcore/docs-generator"
+        description: "Ref (branch/tag/SHA) of pimcore/workflows-collection-public providing the docs-generator tooling"
         required: false
         type: string
         default: "main"
-    secrets:
-      DOCS_GENERATOR_ACCESS_TOKEN:
-        description: "Token to access pimcore/docs-generator"
-        required: true
 
 permissions:
   contents: read
@@ -53,13 +49,13 @@ jobs:
                 || github.sha)
             }}
 
-      - name: "Checkout Docs Generator"
+      - name: "Checkout Docs Generator (tooling, public)"
         uses: actions/checkout@v5
         with:
-          repository: "pimcore/docs-generator"
+          repository: "pimcore/workflows-collection-public"
           ref: ${{ inputs.docs_generator_ref }}
-          path: "./docs-generator"
-          token: ${{ secrets.DOCS_GENERATOR_ACCESS_TOKEN }}
+          path: "./_docs_tool"
+          sparse-checkout: docs-generator
 
       - name: "Install Node"
         uses: actions/setup-node@v5
@@ -68,11 +64,11 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: "Prepare Docs"
-        working-directory: "./docs-generator"
+        working-directory: "./_docs_tool/docs-generator"
         run: |
           mkdir docs
-          # copy docs to working directory
-          cp -r ../${{ inputs.docs_path }} ./docs/
+          # copy the caller repo's docs (workspace root) into the tooling working dir
+          cp -r ../../${{ inputs.docs_path }} ./docs/
           
           # copy index page
           cp bin/resources/00_index_empty.md ./docs/00_index.md
@@ -81,7 +77,7 @@ jobs:
           mv docusaurus.config.js.repos-tests docusaurus.config.js
 
       - name: "Build Docs"
-        working-directory: "./docs-generator"
+        working-directory: "./_docs_tool/docs-generator"
         run: |
           npm install
           npm run build

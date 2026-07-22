@@ -1,0 +1,94 @@
+.heroBannerRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 2rem 0;
+}
+
+.heroBannerRow > .heroBanner {
+  margin: 0;
+  flex: 1 1 480px;
+  min-width: 480px;
+}
+
+.heroBanner {
+  padding: 4rem 0;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  margin: 2rem 0;
+}
+
+.heroBanner::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(101, 40, 180, 0.3);
+  z-index: 1;
+  pointer-events: none;
+}
+
+.heroBanner > :global(.container) {
+  position: relative;
+  z-index: 2;
+}
+
+.heroTitle,
+.heroSubtitle {
+  color: white;
+  text-shadow: 3px 2px 3px rgba(0, 0, 0, 0.4);
+}
+
+.heroTitle {
+  margin-bottom: 0.5rem;
+}
+
+.heroSubtitle {
+  margin-top: 0;
+  margin-bottom: 1.5rem;
+  font-size: 1.25rem;
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.heroButton {
+  color: white;
+  background: linear-gradient(90deg, #ff8042, #f25c92);
+  border: none;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.heroButton:hover {
+  color: white;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(255, 128, 66, 0.4);
+}
+
+@media screen and (max-width: 996px) {
+  .heroBanner {
+    padding: 2rem;
+  }
+
+  .heroTitle {
+    font-size: 2rem;
+  }
+
+  .heroSubtitle {
+    font-size: 1rem;
+  }
+
+  .heroButton {
+    font-size: 0.875rem;
+    padding: 0.5rem 1rem;
+  }
+}
