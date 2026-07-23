@@ -39,7 +39,7 @@ jobs:
 
     steps:
       - name: Checkout target branch
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
         with:
             ref: ${{ inputs.base_ref }}
             token: ${{ secrets.SYNC_TOKEN }}

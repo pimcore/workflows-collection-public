@@ -205,7 +205,7 @@ jobs:
     if: ${{ !cancelled() && needs.ee-ce-sync-check.result != 'failure' && needs.resolve-sha.result == 'success' }}
     steps:
       - name: Checkout workflow repo (for composite action)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
       - name: Validate no ExtJS
         uses: ./.github/actions/validate-no-extjs
         with:
@@ -238,7 +238,7 @@ jobs:
     steps:
       - name: Checkout workflow repo (for composite action)
         if: ${{ startsWith(needs.prepare.outputs.repo, 'ee-') }}
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
 
       - name: Check CE counterpart exists (releasing an EE bundle)
         id: ce_check
@@ -419,7 +419,7 @@ jobs:
       tag: ${{ needs.prepare.outputs.release_name }}
     steps:
       - name: Checkout workflow repo (for composite action)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
       - name: Create release
         uses: ./.github/actions/create-release
         with:

@@ -315,7 +315,7 @@ jobs:
         target: ${{ fromJSON(needs.resolve-shas.outputs.targets_json) }}
     steps:
       - name: Checkout workflow repo (for composite action)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
       - name: Validate no ExtJS
         uses: ./.github/actions/validate-no-extjs
         with:
@@ -340,7 +340,7 @@ jobs:
         pair: ${{ fromJSON(needs.prepare.outputs.sync_pairs_json) }}
     steps:
       - name: Checkout workflow repo (for composite action)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
       # sync_pairs only contains EE bundles whose CE counterpart is itself a
       # release target, so the CE base branch is guaranteed present.
       - name: Sync CE → EE
@@ -459,7 +459,7 @@ jobs:
         target: ${{ fromJSON(needs.resolve-shas.outputs.targets_ee_json) }}
     steps:
       - name: Checkout workflow repo (for composite action)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
       - name: Create release
         uses: ./.github/actions/create-release
         with:
@@ -494,7 +494,7 @@ jobs:
         target: ${{ fromJSON(needs.resolve-shas.outputs.targets_ce_json) }}
     steps:
       - name: Checkout workflow repo (for composite action)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
       - name: Create release
         uses: ./.github/actions/create-release
         with:
