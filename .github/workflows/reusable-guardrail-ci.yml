@@ -5,7 +5,9 @@ name: "Reusable Guardrail: CI & merge readiness"
 # checks or the mergeability computation are still in progress the guardrail stays
 # neutral (it does not draft). On a definitive failure the PR is converted to
 # draft with an explanatory comment. The guardrail ignores its own "Guardrail:"
-# checks to avoid self-deadlock. Runs on PR events and on check_suite completion.
+# checks to avoid self-deadlock. Runs on PR events and POLLS the head commit until
+# CI is decisive — it does NOT rely on check_suite completion, which GitHub does not
+# re-deliver for check suites created by GitHub Actions (Pimcore CI is Actions-based).
 #
 # Called by parent-pr-guardrails.yml in the caller's event context.
 
@@ -114,45 +116,67 @@ jobs:
                 pendingReasons.push('mergeability is still being computed by GitHub');
               }
 
-              // 2) CI check runs. octokit's paginate already flattens this
-              // endpoint's { total_count, check_runs } response into a plain array
-              // of check runs (no map function — with one, response.data is the
-              // already-normalized array, so .check_runs would be undefined).
-              // A SHA accumulates a check run per (re-)run, so keep only the LATEST
-              // run per check name (highest id) — otherwise a stale failure that was
-              // later re-run green would still count. Then drop our own guardrail checks.
-              const allChecks = await github.paginate(github.rest.checks.listForRef, {
-                ...context.repo, ref: headSha, per_page: 100,
-              });
-              const latestByName = new Map();
-              for (const c of allChecks) {
-                const prev = latestByName.get(c.name);
-                if (!prev || c.id > prev.id) latestByName.set(c.name, c);
-              }
-              const others = [...latestByName.values()].filter((c) => !isGuardrailCheck(c.name));
-              const pendingChecks = others.filter((c) => c.status !== 'completed');
-              const failedChecks = others.filter(
-                (c) => c.status === 'completed' && !['success', 'neutral', 'skipped'].includes(c.conclusion),
-              );
+              // 2) & 3) CI check runs + legacy commit statuses on the head commit.
+              // IMPORTANT: we must not rely on a later `check_suite: completed` event
+              // to re-evaluate CI — GitHub does NOT re-deliver check_suite for suites
+              // created by GitHub Actions (recursion prevention), and Pimcore CI is
+              // Actions-based. So we POLL the head commit here until every check/status
+              // has completed (or a timeout), then decide definitively. A merge conflict
+              // (found above) is already terminal, so skip the CI wait in that case.
+              if (failures.length === 0) {
+                const POLL_INTERVAL_MS = 30000;
+                const POLL_DEADLINE = Date.now() + 45 * 60 * 1000; // 45 min cap, then stay neutral
+                const isFinalConclusion = (c) => ['success', 'neutral', 'skipped'].includes(c);
+                // eslint-disable-next-line no-constant-condition
+                while (true) {
+                  // Latest run per check name (highest id); drop our own guardrail checks.
+                  const allChecks = await github.paginate(github.rest.checks.listForRef, {
+                    ...context.repo, ref: headSha, per_page: 100,
+                  });
+                  const latestByName = new Map();
+                  for (const c of allChecks) {
+                    const prev = latestByName.get(c.name);
+                    if (!prev || c.id > prev.id) latestByName.set(c.name, c);
+                  }
+                  const others = [...latestByName.values()].filter((c) => !isGuardrailCheck(c.name));
+                  const pendingChecks = others.filter((c) => c.status !== 'completed');
+                  const failedChecks = others.filter(
+                    (c) => c.status === 'completed' && !isFinalConclusion(c.conclusion),
+                  );
 
-              // 3) Legacy commit statuses. Dedupe by context (keep the latest by id)
-              // so an earlier failure does not linger after a later success.
-              const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
-                ...context.repo, ref: headSha,
-              });
-              const latestStatusByContext = new Map();
-              for (const s of combined.statuses) {
-                const prev = latestStatusByContext.get(s.context);
-                if (!prev || s.id > prev.id) latestStatusByContext.set(s.context, s);
-              }
-              const statuses = [...latestStatusByContext.values()];
-              const failedStatuses = statuses.filter((s) => s.state === 'failure' || s.state === 'error');
-              const pendingStatuses = statuses.filter((s) => s.state === 'pending');
+                  // Legacy commit statuses, deduped by context (latest by id).
+                  const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
+                    ...context.repo, ref: headSha,
+                  });
+                  const latestStatusByContext = new Map();
+                  for (const s of combined.statuses) {
+                    const prev = latestStatusByContext.get(s.context);
+                    if (!prev || s.id > prev.id) latestStatusByContext.set(s.context, s);
+                  }
+                  const statuses = [...latestStatusByContext.values()];
+                  const failedStatuses = statuses.filter((s) => s.state === 'failure' || s.state === 'error');
+                  const pendingStatuses = statuses.filter((s) => s.state === 'pending');
 
-              failedChecks.forEach((c) => failures.push(`CI check not successful: \`${c.name}\` (${c.conclusion}).`));
-              failedStatuses.forEach((s) => failures.push(`CI status not successful: \`${s.context}\` (${s.state}).`));
-              pendingChecks.forEach((c) => pendingReasons.push(`check \`${c.name}\` still running`));
-              pendingStatuses.forEach((s) => pendingReasons.push(`status \`${s.context}\` still pending`));
+                  // A definitive failure ends the wait immediately; otherwise wait out
+                  // still-running checks so we never pass a PR whose CI later fails.
+                  if (failedChecks.length > 0 || failedStatuses.length > 0) {
+                    failedChecks.forEach((c) => failures.push(`CI check not successful: \`${c.name}\` (${c.conclusion}).`));
+                    failedStatuses.forEach((s) => failures.push(`CI status not successful: \`${s.context}\` (${s.state}).`));
+                    break;
+                  }
+                  if (pendingChecks.length === 0 && pendingStatuses.length === 0) {
+                    break; // everything completed successfully
+                  }
+                  if (Date.now() >= POLL_DEADLINE) {
+                    pendingChecks.forEach((c) => pendingReasons.push(`check \`${c.name}\` still running`));
+                    pendingStatuses.forEach((s) => pendingReasons.push(`status \`${s.context}\` still pending`));
+                    core.warning('CI did not reach a definitive result within the poll window; staying neutral.');
+                    break;
+                  }
+                  core.info(`Waiting for CI to finish (${pendingChecks.length} checks, ${pendingStatuses.length} statuses still pending)…`);
+                  await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+                }
+              }
 
               if (failures.length > 0) {
                 if (!pr.draft) {
