@@ -3,6 +3,11 @@ name: "Codeception tests"
 on:
   workflow_call:
     inputs:
+      allow_fork_pr_checkout:
+        description: "Enable actions/checkout allow-unsafe-pr-checkout, which checks out untrusted fork-PR head code with this job's secrets in scope. Set true ONLY from a caller job that both (1) declares needs on reusable-fork-pr-security-gate and (2) runs only when the gate verdict is not a rejection. A bare true without that gating exposes the job secrets to fork code."
+        required: false
+        type: boolean
+        default: false
       APP_ENV:
         required: true
         type: string
@@ -155,6 +160,13 @@ jobs:
         uses: "actions/checkout@v5.0.1"
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Re-enables the intentionally-blocked fork-PR checkout. Safe ONLY because the
+          # caller gates this job behind reusable-fork-pr-security-gate and passes
+          # allow_fork_pr_checkout: true only on the gate-approved path. Defaults false.
+          allow-unsafe-pr-checkout: ${{ inputs.allow_fork_pr_checkout }}
+          # Fork code runs with secrets in scope; don't leave the base-repo GITHUB_TOKEN
+          # in .git/config for it to read. This job never pushes, so it needs no credentials.
+          persist-credentials: false
 
       - name: "Get target branch information"
         id: branch-info
