@@ -8,7 +8,8 @@ name: "PR Guardrails pipeline"
 # Pipeline:
 #   membership  (all events) ─► outputs.bypass
 #   issue-link  (PR events, only when not bypassed)   needs: membership
-#   ci          (PR + check_suite events, only when not bypassed)   needs: membership
+#   ci          (PR events, only when not bypassed; polls CI to a definitive result
+#               rather than relying on check_suite, which Actions does not re-deliver)   needs: membership
 #
 # Each stage that fails converts the PR to draft and comments. Stages run
 # independently and report individually (a failure does not cancel later stages).
