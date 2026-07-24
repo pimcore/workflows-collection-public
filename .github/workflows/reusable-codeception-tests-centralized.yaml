@@ -133,6 +133,7 @@ jobs:
           OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
           discovery.type: "single-node"
           DISABLE_SECURITY_PLUGIN: true
+          cluster.routing.allocation.disk.threshold_enabled: false
 
       elastic:
         image: ${{ inputs.ENABLE_ELASTICSEARCH && format('elasticsearch:{0}', inputs.PIMCORE_ELASTIC_SEARCH_VERSION) || 'nginx:alpine' }}
