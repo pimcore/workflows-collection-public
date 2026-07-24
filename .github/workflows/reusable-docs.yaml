@@ -39,7 +39,7 @@ jobs:
     
     steps:
       - name: "Checkout code"
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
         with:
           ref: >-
             ${{
@@ -49,8 +49,8 @@ jobs:
                 || github.sha)
             }}
 
-      - name: "Checkout Docs Generator (tooling, public)"
-        uses: actions/checkout@v5
+      - name: "Checkout Docs Generator"
+        uses: actions/checkout@v5.0.1
         with:
           repository: "pimcore/workflows-collection-public"
           ref: ${{ inputs.docs_generator_ref }}

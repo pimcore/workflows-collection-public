@@ -110,7 +110,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
@@ -173,7 +173,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.repository }}
@@ -216,7 +216,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
@@ -282,7 +282,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.repository }}
@@ -320,7 +320,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
@@ -366,7 +366,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
@@ -436,7 +436,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.repository }}
@@ -479,7 +479,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v5.0.1
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
