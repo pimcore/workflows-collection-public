@@ -16,7 +16,6 @@ group:
       pimcore/asset-metadata-class-definitions
       pimcore/backend-power-tools-bundle
       pimcore/copilot-bundle
-      pimcore/customer-management-framework-bundle
       pimcore/data-hub
       pimcore/data-hub-file-export
       pimcore/data-hub-productsup
@@ -25,13 +24,11 @@ group:
       pimcore/data-importer
       pimcore/data-quality-management-bundle
       pimcore/direct-edit
-      pimcore/ecommerce-framework-bundle
-      pimcore/frontend-permission-toolkit-bundle
+      pimcore/frontend-permission-toolkit
       pimcore/generic-data-index-bundle
       pimcore/headless-documents
       pimcore/object-merger
       pimcore/openid-connect
-      pimcore/personalization-bundle
       pimcore/pimcore
       pimcore/portal-engine
       pimcore/quill-bundle
@@ -42,6 +39,5 @@ group:
       pimcore/studio-ui-bundle
       pimcore/tinymce-bundle
       pimcore/translations-provider-interfaces
-      pimcore/web-to-print-bundle
       pimcore/workflow-automation-integration-bundle
       pimcore/workflow-designer
