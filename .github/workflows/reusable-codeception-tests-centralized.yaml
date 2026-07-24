@@ -139,7 +139,7 @@ jobs:
         image: ${{ inputs.ENABLE_ELASTICSEARCH && format('elasticsearch:{0}', inputs.PIMCORE_ELASTIC_SEARCH_VERSION) || 'nginx:alpine' }}
         ports:
           - ${{ inputs.ENABLE_ELASTICSEARCH && inputs.PIMCORE_ELASTIC_SEARCH_HOST || '0' }}:9200
-        env: ${{ inputs.ENABLE_ELASTICSEARCH && fromJSON('{"discovery.type":"single-node","ES_JAVA_OPTS":"-Xms512m -Xmx512m","xpack.security.enabled":"true","xpack.security.authc.anonymous.roles":"superuser"}') || fromJSON('{}') }}
+        env: ${{ inputs.ENABLE_ELASTICSEARCH && fromJSON('{"discovery.type":"single-node","ES_JAVA_OPTS":"-Xms512m -Xmx512m","xpack.security.enabled":"true","xpack.security.authc.anonymous.roles":"superuser","cluster.routing.allocation.disk.threshold_enabled":"false"}') || fromJSON('{}') }}
 
       gotenberg:
         image: gotenberg/gotenberg:8
@@ -152,6 +152,16 @@ jobs:
           - 63379:6379
 
     steps:
+      # Hosted runners regularly start with <10% free disk, which pushed the OpenSearch and
+      # Elasticsearch service containers over their disk watermarks (create-index blocks,
+      # unassignable primary shards) and failed the tracking tests. Drop the large preinstalled
+      # toolchains we never use so the whole job runs with comfortable headroom.
+      - name: "Free disk space on runner"
+        run: |
+          echo "Disk before cleanup:"; df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          echo "Disk after cleanup:"; df -h /
+
       - name: "Checkout code"
         uses: "actions/checkout@v5.0.1"
         with:
