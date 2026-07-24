@@ -200,14 +200,14 @@ export default function VersionTimeline(): JSX.Element {
                 const activeWidth = activeEndX - activeStartX;
 
                 const activeEndVal = parseYearMonth(v.activeEnd, true);
-                const isActiveExpired = activeEndVal < today;
+                const isActiveExpired = activeEndVal <= today;
 
                 let ltsStartX = 0, ltsWidth = 0, isLtsExpired = false;
                 if (v.lts && v.ltsEnd) {
                     ltsStartX = activeEndX;
                     const ltsEndX = clamp(xPos(parseYearMonth(v.ltsEnd, true)));
                     ltsWidth = ltsEndX - ltsStartX;
-                    isLtsExpired = parseYearMonth(v.ltsEnd, true) < today;
+                    isLtsExpired = parseYearMonth(v.ltsEnd, true) <= today;
                 }
 
                 return (

@@ -27,6 +27,13 @@ on:
         required: false
         type: string
         default: "main"
+    secrets:
+      # Deprecated and unused: the docs are now built from public vendored tooling,
+      # so no token is needed. Kept declared as optional for one migration cycle so
+      # existing callers that still pass it at @main don't fail secret validation.
+      # Remove once all consumer repos have dropped it.
+      DOCS_GENERATOR_ACCESS_TOKEN:
+        required: false
 
 permissions:
   contents: read

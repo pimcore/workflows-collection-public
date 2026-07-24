@@ -8,7 +8,7 @@
 .heroBannerRow > .heroBanner {
   margin: 0;
   flex: 1 1 480px;
-  min-width: 480px;
+  min-width: min(100%, 480px);
 }
 
 .heroBanner {
