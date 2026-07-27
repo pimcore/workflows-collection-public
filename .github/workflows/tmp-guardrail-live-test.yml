@@ -1,0 +1,26 @@
+name: "TMP: guardrail poll live test"
+
+# Throwaway trigger to live-test PR #136's polling CI guardrail on a real PR.
+# Calls the CI guardrail directly — the membership stage is skipped on purpose
+# so a member-authored test PR still exercises the CI gate.
+# Delete together with the test/guardrail-poll-live* branches after the test.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [test/guardrail-poll-live]
+
+permissions:
+  contents: read
+  checks: read
+  statuses: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  ci:
+    uses: ./.github/workflows/reusable-guardrail-ci.yml
+    with:
+      bypassed_prs: "[]"
+    secrets:
+      CI_GUARD_TOKEN: ${{ secrets.CI_GUARD_TOKEN || secrets.GITHUB_TOKEN }}
