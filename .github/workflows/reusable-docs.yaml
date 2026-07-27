@@ -63,13 +63,36 @@ jobs:
           # nothing here runs git afterwards. Don't leave a token on disk.
           persist-credentials: false
 
+      # Pin the tooling to the same commit as this workflow file so it can't
+      # drift from the workflow that calls it. job_workflow_sha is empty for
+      # branch-ref calls (observed live), so fall back to the ref parsed from
+      # job_workflow_ref, then to main.
+      - name: "Resolve docs-generator ref"
+        id: tooling
+        env:
+          INPUT_REF: ${{ inputs.docs_generator_ref }}
+          JOB_WORKFLOW_SHA: ${{ github.job_workflow_sha }}
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
+        run: |
+          if [ -n "$INPUT_REF" ]; then
+            REF="$INPUT_REF"
+          elif [ -n "$JOB_WORKFLOW_SHA" ]; then
+            REF="$JOB_WORKFLOW_SHA"
+          else
+            # job_workflow_ref: owner/repo/.github/workflows/x.yaml@refs/heads/branch
+            REF="${JOB_WORKFLOW_REF##*@}"
+            REF="${REF#refs/heads/}"
+            REF="${REF#refs/tags/}"
+            [ -n "$REF" ] || REF="main"
+          fi
+          echo "docs-generator tooling ref: $REF"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
       - name: "Checkout Docs Generator"
         uses: actions/checkout@v5.0.1
         with:
           repository: "pimcore/workflows-collection-public"
-          # job_workflow_sha is the commit of this reusable workflow file, so
-          # the tooling can't drift away from the workflow that calls it.
-          ref: ${{ inputs.docs_generator_ref != '' && inputs.docs_generator_ref || github.job_workflow_sha }}
+          ref: ${{ steps.tooling.outputs.ref }}
           path: "./_docs_tool"
           sparse-checkout: docs-generator
           persist-credentials: false
