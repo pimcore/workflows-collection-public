@@ -107,6 +107,13 @@ permissions:
 
 env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+  # Ref for the publish checkout. Fork PRs: the fork can be private (partner
+  # orgs), and this repo's GITHUB_TOKEN cannot read it — fetching the fork
+  # directly fails with "Repository not found". Fetch the PR head as mirrored
+  # into the BASE repo (refs/pull/<n>/head) instead; that ref exists for every
+  # PR regardless of fork visibility. Non-PR runs (push, tags, dispatch) keep
+  # using the branch/tag name as before.
+  CHECKOUT_REF: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && format('refs/pull/{0}/head', github.event.pull_request.number) || github.head_ref || github.ref_name }}
 
 jobs:
   canary-build:
@@ -141,8 +148,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5.0.1
         with:
-          ref: ${{ env.BRANCH_NAME }}
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.CHECKOUT_REF }}
 
       # No node_modules caching here: `npm ci` deletes node_modules before
       # installing, so a restored cache was discarded anyway — and cache saves
