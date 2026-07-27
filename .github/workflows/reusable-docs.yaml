@@ -25,9 +25,10 @@ on:
       docs_generator_ref:
         description: >
           Ref (branch/tag/SHA) of pimcore/workflows-collection-public providing
-          the docs-generator tooling. If empty, the tooling is taken from the
-          same commit as this workflow file, so pinning the workflow also pins
-          the tooling.
+          the docs-generator tooling. If empty, the tooling is taken from main
+          (github.job_workflow_sha/_ref are not populated for branch-ref calls,
+          so commit-level self-pinning is not available). Set this to test a
+          tooling branch or to pin a specific commit.
         required: false
         type: string
         default: ""
@@ -63,10 +64,13 @@ jobs:
           # nothing here runs git afterwards. Don't leave a token on disk.
           persist-credentials: false
 
-      # Pin the tooling to the same commit as this workflow file so it can't
-      # drift from the workflow that calls it. job_workflow_sha is empty for
-      # branch-ref calls (observed live), so fall back to the ref parsed from
-      # job_workflow_ref, then to main.
+      # Ideally the tooling would be pinned to this workflow file's own commit,
+      # but github.job_workflow_sha AND github.job_workflow_ref were both
+      # observed empty on branch-ref calls (data-hub runs 30266105938,
+      # 30266364924), so in practice the tooling comes from `main` — the same
+      # convention as the guardrails' lib.js checkout. Callers can pin or test
+      # a branch via the docs_generator_ref input. The context lookups stay in
+      # the chain so pinning self-heals if GitHub populates them.
       - name: "Resolve docs-generator ref"
         id: tooling
         env:
