@@ -1,12 +1,17 @@
 name: "TMP: guardrail poll live test"
 
-# Throwaway trigger to live-test PR #136's polling CI guardrail on a real PR.
-# Calls the CI guardrail directly — the membership stage is skipped on purpose
-# so a member-authored test PR still exercises the CI gate.
+# Throwaway harness to live-test PR #136's polling CI guardrail on a real PR.
+# Uses a plain pull_request trigger (runs from the PR merge ref, so no change
+# to main is needed — pull_request_target would only run from the default
+# branch). Scoped to PRs targeting test/guardrail-poll-live only.
+# The membership stage is skipped on purpose so a member-authored test PR
+# still exercises the CI gate. The event context differs from production
+# (pull_request vs pull_request_target) but the polled decision logic —
+# what #136 changes — is identical.
 # Delete together with the test/guardrail-poll-live* branches after the test.
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [test/guardrail-poll-live]
 
@@ -19,8 +24,7 @@ permissions:
 
 jobs:
   ci:
-    uses: ./.github/workflows/reusable-guardrail-ci.yml
+    uses: pimcore/workflows-collection-public/.github/workflows/reusable-guardrail-ci.yml@fix/ci-guardrail-poll-not-check-suite
     with:
       bypassed_prs: "[]"
-    secrets:
-      CI_GUARD_TOKEN: ${{ secrets.CI_GUARD_TOKEN || secrets.GITHUB_TOKEN }}
+    secrets: inherit
