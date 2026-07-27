@@ -23,10 +23,14 @@ on:
         type: string
         default: ""
       docs_generator_ref:
-        description: "Ref (branch/tag/SHA) of pimcore/workflows-collection-public providing the docs-generator tooling"
+        description: >
+          Ref (branch/tag/SHA) of pimcore/workflows-collection-public providing
+          the docs-generator tooling. If empty, the tooling is taken from the
+          same commit as this workflow file, so pinning the workflow also pins
+          the tooling.
         required: false
         type: string
-        default: "main"
+        default: ""
     secrets:
       # Deprecated and unused: the docs are now built from public vendored tooling,
       # so no token is needed. Kept declared as optional for one migration cycle so
@@ -55,14 +59,20 @@ jobs:
                 && github.event.pull_request.head.sha
                 || github.sha)
             }}
+          # This may be untrusted fork content under pull_request_target, and
+          # nothing here runs git afterwards. Don't leave a token on disk.
+          persist-credentials: false
 
       - name: "Checkout Docs Generator"
         uses: actions/checkout@v5.0.1
         with:
           repository: "pimcore/workflows-collection-public"
-          ref: ${{ inputs.docs_generator_ref }}
+          # job_workflow_sha is the commit of this reusable workflow file, so
+          # the tooling can't drift away from the workflow that calls it.
+          ref: ${{ inputs.docs_generator_ref != '' && inputs.docs_generator_ref || github.job_workflow_sha }}
           path: "./_docs_tool"
           sparse-checkout: docs-generator
+          persist-credentials: false
 
       - name: "Install Node"
         uses: actions/setup-node@v5
@@ -72,10 +82,12 @@ jobs:
 
       - name: "Prepare Docs"
         working-directory: "./_docs_tool/docs-generator"
+        env:
+          DOCS_PATH: ${{ inputs.docs_path }}
         run: |
           mkdir docs
           # copy the caller repo's docs (workspace root) into the tooling working dir
-          cp -r ../../${{ inputs.docs_path }} ./docs/
+          cp -r "../../$DOCS_PATH" ./docs/
 
           # copy index page
           cp bin/resources/00_index_empty.md ./docs/00_index.md
@@ -83,5 +95,5 @@ jobs:
       - name: "Build Docs"
         working-directory: "./_docs_tool/docs-generator"
         run: |
-          npm install
+          npm ci
           npm run build

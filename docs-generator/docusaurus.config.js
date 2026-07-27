@@ -14,6 +14,8 @@ const config = {
   tagline: 'Own the digital world',
   url: 'https://pimcore.com/',
   baseUrl: '/',
+  // Load-bearing: 'throw' is the entire point of the per-repo CI build. The
+  // private repo's same-named site config uses 'warn' — never sync that over.
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'throw',
   favicon: 'img/favicon.png',
