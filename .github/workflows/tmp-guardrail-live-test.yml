@@ -1,0 +1,28 @@
+name: "TMP: guardrail poll live test"
+
+# Throwaway trigger to live-test PR #136's polling CI guardrail on a real PR.
+# pull_request_target only runs from the default branch, so this must live on
+# main — but it is scoped to PRs targeting test/guardrail-poll-live only, and
+# it calls the guardrail at the PR #136 branch ref. The membership stage is
+# skipped on purpose so a member-authored test PR still exercises the CI gate.
+# REVERT this file (and delete the test/guardrail-poll-live* branches) after
+# the test.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [test/guardrail-poll-live]
+
+permissions:
+  contents: read
+  checks: read
+  statuses: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  ci:
+    uses: pimcore/workflows-collection-public/.github/workflows/reusable-guardrail-ci.yml@fix/ci-guardrail-poll-not-check-suite
+    with:
+      bypassed_prs: "[]"
+    secrets: inherit
