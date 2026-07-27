@@ -23,14 +23,22 @@ on:
         type: string
         default: ""
       docs_generator_ref:
-        description: "Ref (branch/tag/SHA) for pimcore/docs-generator"
+        description: >
+          Ref (branch/tag/SHA) of pimcore/workflows-collection-public providing
+          the docs-generator tooling. If empty, the tooling is taken from main
+          (github.job_workflow_sha/_ref are not populated for branch-ref calls,
+          so commit-level self-pinning is not available). Set this to test a
+          tooling branch or to pin a specific commit.
         required: false
         type: string
-        default: "main"
+        default: ""
     secrets:
+      # Deprecated and unused: the docs are now built from public vendored tooling,
+      # so no token is needed. Kept declared as optional for one migration cycle so
+      # existing callers that still pass it at @main don't fail secret validation.
+      # Remove once all consumer repos have dropped it.
       DOCS_GENERATOR_ACCESS_TOKEN:
-        description: "Token to access pimcore/docs-generator"
-        required: true
+        required: false
 
 permissions:
   contents: read
@@ -52,14 +60,46 @@ jobs:
                 && github.event.pull_request.head.sha
                 || github.sha)
             }}
+          # This may be untrusted fork content under pull_request_target, and
+          # nothing here runs git afterwards. Don't leave a token on disk.
+          persist-credentials: false
+
+      # Ideally the tooling would be pinned to this workflow file's own commit,
+      # but github.job_workflow_sha AND github.job_workflow_ref were both
+      # observed empty on branch-ref calls (data-hub runs 30266105938,
+      # 30266364924), so in practice the tooling comes from `main` — the same
+      # convention as the guardrails' lib.js checkout. Callers can pin or test
+      # a branch via the docs_generator_ref input. The context lookups stay in
+      # the chain so pinning self-heals if GitHub populates them.
+      - name: "Resolve docs-generator ref"
+        id: tooling
+        env:
+          INPUT_REF: ${{ inputs.docs_generator_ref }}
+          JOB_WORKFLOW_SHA: ${{ github.job_workflow_sha }}
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
+        run: |
+          if [ -n "$INPUT_REF" ]; then
+            REF="$INPUT_REF"
+          elif [ -n "$JOB_WORKFLOW_SHA" ]; then
+            REF="$JOB_WORKFLOW_SHA"
+          else
+            # job_workflow_ref: owner/repo/.github/workflows/x.yaml@refs/heads/branch
+            REF="${JOB_WORKFLOW_REF##*@}"
+            REF="${REF#refs/heads/}"
+            REF="${REF#refs/tags/}"
+            [ -n "$REF" ] || REF="main"
+          fi
+          echo "docs-generator tooling ref: $REF"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
 
       - name: "Checkout Docs Generator"
         uses: actions/checkout@v5.0.1
         with:
-          repository: "pimcore/docs-generator"
-          ref: ${{ inputs.docs_generator_ref }}
-          path: "./docs-generator"
-          token: ${{ secrets.DOCS_GENERATOR_ACCESS_TOKEN }}
+          repository: "pimcore/workflows-collection-public"
+          ref: ${{ steps.tooling.outputs.ref }}
+          path: "./_docs_tool"
+          sparse-checkout: docs-generator
+          persist-credentials: false
 
       - name: "Install Node"
         uses: actions/setup-node@v5
@@ -68,20 +108,19 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: "Prepare Docs"
-        working-directory: "./docs-generator"
+        working-directory: "./_docs_tool/docs-generator"
+        env:
+          DOCS_PATH: ${{ inputs.docs_path }}
         run: |
           mkdir docs
-          # copy docs to working directory
-          cp -r ../${{ inputs.docs_path }} ./docs/
-          
+          # copy the caller repo's docs (workspace root) into the tooling working dir
+          cp -r "../../$DOCS_PATH" ./docs/
+
           # copy index page
           cp bin/resources/00_index_empty.md ./docs/00_index.md
-          
-          # use special docusaurus config (to exclude search plugin) and check for broken links
-          mv docusaurus.config.js.repos-tests docusaurus.config.js
 
       - name: "Build Docs"
-        working-directory: "./docs-generator"
+        working-directory: "./_docs_tool/docs-generator"
         run: |
-          npm install
+          npm ci
           npm run build

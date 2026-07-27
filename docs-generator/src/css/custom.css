@@ -1,0 +1,240 @@
+/**
+ * Any CSS included here will be global. The classic template
+ * bundles Infima by default. Infima is a CSS framework designed to
+ * work well for content-centric websites.
+ */
+
+/* You can override the default Infima variables here. */
+:root {
+  --ifm-color-primary: #6428b4;
+  --ifm-color-primary-dark: #5a24a2;
+  --ifm-color-primary-darker: #552299;
+  --ifm-color-primary-darkest: #461c7e;
+  --ifm-color-primary-light: #6e2cc6;
+  --ifm-color-primary-lighter: #732ecf;
+  --ifm-color-primary-lightest: #8548d6;
+  --ifm-font-family-base: "Open Sans Semibold", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+
+  --ifm-font-size-base: 95%;
+  --ifm-code-font-size: 85%;
+
+  --ifm-h1-font-size: 2rem;
+  --ifm-h2-font-size: 1.8rem;
+  --ifm-h3-font-size: 1.6rem;
+  --ifm-h4-font-size: 1.4rem;
+  --ifm-h5-font-size: 1.3rem;
+  --ifm-h6-font-size: 1.2rem;
+
+
+
+  --ifm-font-weight-light: 200;
+  --ifm-font-weight-normal: 300;
+  --ifm-font-weight-semibold: 400;
+  --ifm-font-weight-bold: 500;
+}
+
+.markdown h1:first-child {
+  --ifm-h1-font-size: 2rem;
+  font-weight: var(--ifm-font-weight-bold);
+}
+
+.markdown > h2 {
+  --ifm-h2-font-size: 1.8rem;
+}
+.markdown > h3 {
+  --ifm-h3-font-size: 1.6rem;
+}
+.markdown > h4 {
+  --ifm-h4-font-size: 1.4rem;
+}
+.markdown > h5 {
+  --ifm-h5-font-size: 1.3rem;
+}
+.markdown > h6 {
+  --ifm-h6-font-size: 1.2rem;
+}
+
+.pagination-nav__sublabel {
+  font-size: 0.9rem;
+}
+
+.pagination-nav__label {
+  font-size: 1rem;
+}
+
+
+  /* For readability concerns, you should choose a lighter palette in dark mode. */
+[data-theme='dark'],
+body[data-theme='dark'] {
+  --ifm-color-primary: #7eaef6;
+  --ifm-color-primary-dark: #5b98f4;
+  --ifm-color-primary-darker: #4a8df2;
+  --ifm-color-primary-darkest: #166cef;
+  --ifm-color-primary-light: #a1c4f8;
+  --ifm-color-primary-lighter: #b2cffa;
+  --ifm-color-primary-lightest: #e6f0fd;
+  --ifm-background-color: #000000;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+  --aa-input-border-color-rgb: #e3e3e3;
+}
+
+[data-theme='dark'] .aa-Autocomplete,
+[data-theme='dark'] .aa-DetachedSearchButton,
+[data-theme='dark'] .aa-DetachedSearchButtonIcon,
+[data-theme='dark'] .aa-Label svg,
+[data-theme='dark'] .aa-LoadingIndicator svg,
+[data-theme='dark'] .aa-ClearButton
+{
+  color: var(--ifm-color-primary);
+}
+
+[data-theme='dark'] .aa-Input {
+  color: var(--ifm-font-color-base);
+}
+
+[data-theme='dark'] .aa-Input::placeholder {
+  color: rgba(var(--ifm-font-color-base), 0.7);
+}
+
+
+
+
+.lightbox-image .lightbox {
+  /* Default to hidden */
+  display: none;
+
+  /* Overlay entire screen */
+  position: fixed;
+  z-index: 999;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+
+  /* A bit of padding around image */
+  padding: 1em;
+
+  /* Translucent background */
+  background: rgba(0, 0, 0, 0.8);
+}
+
+/* Unhide the lightbox when it's the target */
+.lightbox-image .lightbox:target {
+  display: block;
+}
+
+.lightbox-image .lightbox img {
+  width: 100%;
+  height: 100%;
+  object-fit: scale-down;
+}
+
+.lightbox-image {
+  display: none;
+}
+
+.image-as-lightbox + p > span > span.lightbox-image {
+  display: block;
+}
+
+.lightbox-image img.lightbox-thumbnail,
+.image-as-lightbox + p > span > span.lightbox-image > img.lightbox-thumbnail {
+  max-width: 50%;
+  max-height: 350px;
+}
+
+
+.image-as-lightbox + p > span > span.image > img {
+  display: none;
+}
+
+.enterprise-extension .ribbon-box {
+  position: relative;
+}
+
+.enterprise-extension .ribbon {
+  position: absolute;
+  right: -5px;
+  top: -5px;
+  z-index: 1;
+  overflow: hidden;
+  width: 75px; height: 75px;
+  text-align: right;
+}
+.enterprise-extension.professional .ribbon {
+  height: 100px;
+  right: -6px;
+  top: -7px;
+  width: 100px;
+}
+
+.enterprise-extension .ribbon span {
+  font-size: 10px;
+  font-weight: bold;
+  color: #FFF;
+  text-transform: uppercase;
+  text-align: center;
+  line-height: 20px;
+  transform: rotate(45deg);
+  -webkit-transform: rotate(45deg);
+  width: 100px;
+  display: block;
+  background: #79A70A;
+  background: linear-gradient(#5520A6 0%, #22075E 100%);
+  box-shadow: 0 3px 10px -5px rgba(0, 0, 0, 1);
+  position: absolute;
+  top: 19px; right: -21px;
+}
+.enterprise-extension.professional .ribbon span {
+  line-height: 15px;
+  right: -30px;
+  top: 20px;
+  width: 130px;
+  background: linear-gradient(#64DAF5 0%,#1e5799 100%);
+  padding: 2px 0 2px 0;
+}
+
+.enterprise-extension .ribbon span::before {
+  content: "";
+  position: absolute; left: 0px; top: 100%;
+  z-index: -1;
+  border-left: 3px solid #5520A6;
+  border-right: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  border-top: 3px solid #5520A6;
+}
+.enterprise-extension.professional .ribbon span::before {
+  border-left: 3px solid #1e5799;
+  border-top: 3px solid #1e5799;
+}
+.enterprise-extension .ribbon span::after {
+  content: "";
+  position: absolute; right: 0px; top: 100%;
+  z-index: -1;
+  border-left: 3px solid transparent;
+  border-right: 3px solid #5520A6;
+  border-bottom: 3px solid transparent;
+  border-top: 3px solid #5520A6;
+}
+.enterprise-extension.professional .ribbon span::after {
+  border-right: 3px solid #1e5799;
+  border-top: 3px solid #1e5799;
+}
+
+
+.sidebar-section-divider {
+  margin-top: 1rem;
+}
+.sidebar-section-divider .sidebar-section-header {
+  padding: var(--ifm-menu-link-padding-vertical) var(--ifm-menu-link-padding-horizontal);
+  color: var(--ifm-menu-color);
+  font-weight: 600;
+  display: block;
+}
+
+nav .theme-doc-sidebar-item-link-level-2,
+nav .theme-doc-sidebar-item-category-level-2
+{
+  font-size: 0.85rem;
+}
