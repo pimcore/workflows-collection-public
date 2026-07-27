@@ -1,0 +1,19 @@
+name: "TMP: dummy CI"
+
+# Throwaway CI for the guardrail poll live test. Outcome is controlled by
+# tmp-ci-outcome.txt so the same job can be flipped from fail to pass.
+
+on:
+  pull_request:
+    branches: [test/guardrail-poll-live]
+
+jobs:
+  dummy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Simulate CI (delayed, outcome from tmp-ci-outcome.txt)
+        run: |
+          sleep 60
+          echo "outcome: $(cat tmp-ci-outcome.txt)"
+          grep -q pass tmp-ci-outcome.txt
