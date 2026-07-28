@@ -26,7 +26,7 @@ on:
       TRANSLATIONS_GITHUB_TOKEN:
         description: "Bot PAT: contents:write on the calling repo, read on pimcore/claude-code, pull-requests:write"
         required: true
-      ANTHROPIC_API_KEY:
+      ANTHROPIC_TRANSLATIONS_API_KEY:
         required: true
 
 jobs:
@@ -280,7 +280,7 @@ jobs:
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_TRANSLATIONS_API_KEY: ${{ secrets.ANTHROPIC_TRANSLATIONS_API_KEY }}
           github_token: ${{ github.token }}
           prompt: |
             Non-interactive CI run. Read .translation-skill/SKILL.md first and follow
