@@ -291,6 +291,89 @@ jobs:
 
           cat "$RUNNER_TEMP/stale.json"
 
+          # Second RUNNER_TEMP script, generated here but deliberately NOT run here: it judges
+          # the model's output, so it only means anything after the translate step, which runs
+          # it. Same reasoning as stale_check.py for why it lives in RUNNER_TEMP — outside the
+          # workspace, so the model (workspace-scoped write rules, Bash limited to one exact
+          # command) cannot edit the check that judges it.
+          #
+          # Why it exists: error counts alone can no longer prove this PR's delta was applied.
+          # Now that the model also repairs the pre-existing backlog, a legacy error it fixed
+          # offsets an added key it skipped — the totals stay within the baseline and the job
+          # would go green with the PR's own keys still missing. So the delta is asserted
+          # directly, per key and per language, instead of inferred from arithmetic.
+          #
+          # delta.changed is deliberately NOT checked here. A changed English key whose
+          # existing translation legitimately still fits (an English-only typo fix) must stay
+          # green, and no mechanical test can tell that from a translation the model wrongly
+          # skipped — those pairs stay human-enforced, via the PR comment's "existing
+          # translations kept (verify these)" section.
+          cat > "$RUNNER_TEMP/delta_check.py" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import yaml
+
+          dir_path = Path(os.environ["DIR"])
+          temp = Path(os.environ["RUNNER_TEMP"])
+
+          delta = json.loads((temp / "delta.json").read_text(encoding="utf-8"))
+          added = delta.get("added") or {}
+          removed = delta.get("removed") or []
+          # key_diff.py emits added as a mapping and removed as a list; accept either shape
+          # for both rather than depending on that.
+          added_keys = list(added.keys()) if isinstance(added, dict) else list(added)
+          removed_keys = list(removed.keys()) if isinstance(removed, dict) else list(removed)
+
+          MISSING = object()
+
+
+          def load(text):
+              """Parse translation YAML; missing, empty, or malformed files are empty mappings.
+
+              A malformed file makes every added key read as missing, which is the right
+              answer here: the delta was not applied to it.
+              """
+              if not text:
+                  return {}
+              try:
+                  return yaml.safe_load(text) or {}
+              except yaml.YAMLError:
+                  return {}
+
+
+          def lookup(doc, key):
+              """Resolve a key stored either flat ("a.b: x") or nested (a: {b: x})."""
+              if isinstance(doc, dict) and key in doc:
+                  return doc[key]
+              node = doc
+              for part in key.split("."):
+                  if not isinstance(node, dict) or part not in node:
+                      return MISSING
+                  node = node[part]
+              return node
+
+
+          violations = 0
+          for path in sorted(dir_path.glob("studio.*.yaml")):
+              if path.name == "studio.en.yaml":
+                  continue
+              lang = path.name[len("studio."):-len(".yaml")]
+              now = load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+              for key in added_keys:
+                  if lookup(now, key) is MISSING:
+                      print(f"MISSING {key} [{lang}]")
+                      violations += 1
+              for key in removed_keys:
+                  if lookup(now, key) is not MISSING:
+                      print(f"STILL PRESENT {key} [{lang}]")
+                      violations += 1
+
+          print(f"Delta violations: {violations}")
+          raise SystemExit(1 if violations else 0)
+          PY
+
           STALE_EMPTY=$(jq -r 'if . == {} then "true" else "false" end' "$RUNNER_TEMP/stale.json")
           DELTA_EMPTY=$(jq -r 'if .added == {} and .changed == {} and .removed == [] then "true" else "false" end' "$RUNNER_TEMP/delta.json")
 
@@ -320,8 +403,11 @@ jobs:
         env:
           CURRENT_ERRORS: ${{ steps.scan.outputs.current_errors }}
         run: |
-          # "In sync" is only true at zero errors. With a pre-existing backlog the honest
-          # claim is the narrower one: this PR had no translation work to do.
+          # "In sync" is only true at zero errors. The other branch must describe THIS RUN, not
+          # the PR: now that any validation error invokes the model, the only way to reach it
+          # with errors outstanding is the circuit breaker — the re-run of the workflow's own
+          # sync commit — where the PR itself may well have changed English keys, and where
+          # the remaining errors are simply what the previous run did not get to.
           if [ "$CURRENT_ERRORS" -eq 0 ]; then
             {
               echo "### ✅ Translations in sync"
@@ -330,12 +416,13 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           else
             {
-              echo "### ✅ No translation work for this PR"
+              echo "### ✅ No translation work triggered for this run"
               echo ""
-              echo "This PR adds, changes, or removes no English keys, so there is nothing to"
-              echo "translate. ${CURRENT_ERRORS} pre-existing validation error(s) remain in the"
-              echo "translation files (not caused by this PR) — clearing them needs a separate"
-              echo "full backfill run."
+              echo "Nothing invoked the translation step here — either there were no key changes"
+              echo "and no stale translations to refresh, or this run is the re-run of the"
+              echo "workflow's own sync commit. ${CURRENT_ERRORS} validation error(s) remain in the"
+              echo "translation files. They are not blocking this PR; a later run will keep"
+              echo "working through them."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -558,14 +645,12 @@ jobs:
           echo "final_errors=$FINAL_ERRORS" >> "$GITHUB_OUTPUT"
           echo "Validation errors after translating: $FINAL_ERRORS (merge base baseline: $BASELINE_ERRORS)"
 
-          # Mostly self-enforcing: an added key the model failed to translate is itself a new
-          # error in every target language, so "no worse than the baseline" normally forces
-          # the delta to be handled without a separate "was the delta applied?" check.
-          # Caveat, now that the model also repairs the backlog: it can pay for an unhandled
-          # delta key with pre-existing errors it cleared elsewhere, and the counts cancel.
-          # The gate's guarantee is exactly "the repo is not worse than it was"; that the
-          # delta itself was done is asserted in the prompt and reviewed by a human on the
-          # PR (which lists every key the model was asked to touch).
+          # Two independent gates, in this order. This first one is the count comparison, and
+          # it answers exactly one question: did this run leave the repo worse than it found
+          # it? It cannot answer "was this PR's delta applied?" — with backlog cleanup active,
+          # a legacy error the model fixed offsets an added key it skipped and the two cancel
+          # out. That second question is answered directly by delta_check.py below, per key
+          # and per language, so the delta guarantee is enforced rather than inferred.
           if [ "$FINAL_ERRORS" -gt "$BASELINE_ERRORS" ]; then
             {
               echo "### ❌ Generated translations failed validation — nothing committed"
@@ -582,6 +667,34 @@ jobs:
 
           if [ "$FINAL_ERRORS" -gt 0 ]; then
             echo "::warning::${FINAL_ERRORS} validation error(s) remain, all pre-existing at the merge base — not introduced by this PR, and not blocking it"
+          fi
+
+          # Second gate: the delta itself, asserted per key and per language. Generated in the
+          # scan step (see the rationale there); reads DIR and RUNNER_TEMP from this step's
+          # environment. Runs after the count comparison has passed, and three steps before
+          # anything is committed — "Detect changes", "Comment on PR" and "Configure push
+          # credentials" all sit between here and the commit action, and a failure here aborts
+          # the job before any of them, so nothing is pushed and no comment is posted.
+          set +e
+          python3 "$RUNNER_TEMP/delta_check.py" > "$RUNNER_TEMP/delta-violations.txt" 2>&1
+          DELTA_EXIT=$?
+          set -e
+          cat "$RUNNER_TEMP/delta-violations.txt"
+          if [ "$DELTA_EXIT" -ne 0 ]; then
+            {
+              echo "### ❌ This PR's key changes were not applied to every language — nothing committed"
+              echo ""
+              echo "Total validation errors are within the merge-base baseline, but this PR's own"
+              echo "added keys are still missing, or its removed keys are still present, in the"
+              echo "language files listed below. Backlog cleanup elsewhere in the same run can hide"
+              echo "that in the totals, so the key changes are checked directly."
+              echo ""
+              echo '```'
+              cat "$RUNNER_TEMP/delta-violations.txt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::the model did not apply this PR's key changes to every language"
+            exit 1
           fi
 
       - name: Detect changes
