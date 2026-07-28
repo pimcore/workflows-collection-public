@@ -388,7 +388,7 @@ jobs:
               try:
                   data = yaml.safe_load(languages_file.read_text(encoding="utf-8")) or {}
                   codes = [str(t["code"]) for t in (data.get("targets") or [])]
-              except (OSError, yaml.YAMLError, TypeError, KeyError, IndexError):
+              except (OSError, yaml.YAMLError, AttributeError, TypeError, KeyError, IndexError):
                   codes = []
               if codes:
                   return codes
