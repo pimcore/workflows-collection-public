@@ -77,6 +77,7 @@ jobs:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
           token: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
+          persist-credentials: false # the PAT never lands in .git/config; push creds are injected after the Claude step
 
       - name: Checkout pimcore/claude-code (skill + scripts)
         if: steps.gate.outputs.run == 'true'
@@ -372,15 +373,45 @@ jobs:
             if (fs.existsSync(reportPath)) {
               body += `\n#### ⚠️ Ambiguous keys (review carefully)\n\n${fs.readFileSync(reportPath, 'utf8').trim()}\n`;
             }
-            const { data: comments } = await github.rest.issues.listComments({
+            // Scope the upsert to our own comment: a marker planted by another user must
+            // neither be hijacked (we would edit their comment) nor block us (we would
+            // never post). Paginate — the marker can sit past the first page on busy PRs.
+            let me = null;
+            try {
+              me = (await github.rest.users.getAuthenticated()).data.login;
+            } catch (e) {
+              core.warning('Could not resolve token identity: ' + e.message);
+            }
+            const comments = await github.paginate(github.rest.issues.listComments, {
               ...context.repo, issue_number: context.issue.number, per_page: 100,
             });
-            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            const existing = comments.find(
+              (c) => c.body && c.body.includes(marker) && (!me || c.user?.login === me),
+            );
+            let updated = false;
             if (existing) {
-              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
-            } else {
+              try {
+                await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+                updated = true;
+              } catch (e) {
+                core.warning('Could not update existing comment, creating a new one: ' + e.message);
+              }
+            }
+            if (!updated) {
               await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
             }
+
+      - name: Configure push credentials
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        env:
+          TOKEN: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # claude-code-action's agent mode strips checkout's auth header and rewires
+          # origin to its own (read-only) token — restore a push-capable remote here,
+          # after the model has run and just before the commit step needs it.
+          git config --unset-all "http.https://github.com/.extraheader" 2>/dev/null || true
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
 
       - name: Commit generated translations
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
