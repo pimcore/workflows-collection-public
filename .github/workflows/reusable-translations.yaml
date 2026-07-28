@@ -9,7 +9,7 @@ on:
   workflow_call:
     inputs:
       translations_dir:
-        description: "Translations directory relative to the repo root (e.g. translations or src/Resources/translations)"
+        description: "Translations directory relative to the repo root (e.g. translations or src/Resources/translations). Must not contain spaces or commas."
         required: true
         type: string
       claude_code_ref:
@@ -73,6 +73,7 @@ jobs:
           ref: ${{ inputs.claude_code_ref }}
           token: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
           path: .claude-code
+          persist-credentials: false # nothing pushes here; keeps the PAT out of this checkout's git config
 
       - name: Setup Python
         if: steps.gate.outputs.run == 'true'
@@ -82,7 +83,7 @@ jobs:
 
       - name: Install PyYAML
         if: steps.gate.outputs.run == 'true'
-        run: pip install pyyaml
+        run: pip install pyyaml==6.0.2
 
       - name: Scan translations (key delta + validation)
         id: scan
@@ -92,9 +93,14 @@ jobs:
           DIR: ${{ inputs.translations_dir }}
           BASE_REF: ${{ github.base_ref }}
         run: |
+          # Delta vs the merge base, not the base tip: English changes that landed on the
+          # base branch after this PR forked are not this PR's work and must stay out.
+          MERGE_BASE=$(git merge-base "origin/$BASE_REF" HEAD)
+          echo "Merge base with origin/$BASE_REF: $MERGE_BASE"
+
           python3 "$SKILL_PATH/scripts/key_diff.py" \
             --path "$DIR/studio.en.yaml" \
-            --base-ref "origin/$BASE_REF" > "$RUNNER_TEMP/delta.json"
+            --base-ref "$MERGE_BASE" > "$RUNNER_TEMP/delta.json"
 
           set +e
           python3 "$SKILL_PATH/scripts/validate_translations.py" --dir "$DIR" \
@@ -107,8 +113,85 @@ jobs:
             exit 1
           fi
 
-          DELTA_EMPTY=$(jq -r 'if .added == {} and .changed == {} and .removed == [] then "true" else "false" end' "$RUNNER_TEMP/delta.json")
-          if [ "$VALIDATE_EXIT" -eq 0 ] && [ "$DELTA_EMPTY" = "true" ]; then
+          # A changed English key is "stale" for a language while that language's value is
+          # still exactly the value it had at the merge base. The bot's own commit rewrites
+          # those values, so the run that commit triggers finds nothing stale and no-ops —
+          # that, plus validation owning added/removed keys, is the termination argument.
+          MERGE_BASE="$MERGE_BASE" python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          import yaml
+
+          dir_path = Path(os.environ["DIR"])
+          merge_base = os.environ["MERGE_BASE"]
+          temp = Path(os.environ["RUNNER_TEMP"])
+
+          delta = json.loads((temp / "delta.json").read_text(encoding="utf-8"))
+          changed = delta.get("changed") or {}
+          candidates = list(changed.keys()) if isinstance(changed, dict) else list(changed)
+
+          MISSING = object()
+
+
+          def load(text):
+              """Parse translation YAML; a missing or empty file is an empty mapping."""
+              if not text:
+                  return {}
+              return yaml.safe_load(text) or {}
+
+
+          def lookup(doc, key):
+              """Resolve a key stored either flat ("a.b: x") or nested (a: {b: x})."""
+              if isinstance(doc, dict) and key in doc:
+                  return doc[key]
+              node = doc
+              for part in key.split("."):
+                  if not isinstance(node, dict) or part not in node:
+                      return MISSING
+                  node = node[part]
+              return node
+
+
+          def at_merge_base(rel_path):
+              shown = subprocess.run(
+                  ["git", "show", f"{merge_base}:{rel_path}"],
+                  capture_output=True,
+                  text=True,
+                  check=False,
+              )
+              return load(shown.stdout) if shown.returncode == 0 else {}
+
+
+          stale = {}
+          for path in sorted(dir_path.glob("studio.*.yaml")):
+              if path.name == "studio.en.yaml":
+                  continue
+              lang = path.name[len("studio."):-len(".yaml")]
+              now = load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+              before = at_merge_base(Path(os.path.normpath(path)).as_posix())
+              for key in candidates:
+                  new_value = lookup(now, key)
+                  old_value = lookup(before, key)
+                  # Missing on either side counts as "differs": validation owns missing keys.
+                  if new_value is MISSING or old_value is MISSING:
+                      continue
+                  if new_value == old_value:
+                      stale.setdefault(key, []).append(lang)
+
+          payload = {key: stale[key] for key in sorted(stale)}
+          (temp / "stale.json").write_text(
+              json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+          )
+          print(f"Stale changed keys: {len(payload)}")
+          PY
+
+          cat "$RUNNER_TEMP/stale.json"
+
+          STALE_EMPTY=$(jq -r 'if . == {} then "true" else "false" end' "$RUNNER_TEMP/stale.json")
+          if [ "$VALIDATE_EXIT" -eq 0 ] && [ "$STALE_EMPTY" = "true" ]; then
             echo "needs_translation=false" >> "$GITHUB_OUTPUT"
           else
             echo "needs_translation=true" >> "$GITHUB_OUTPUT"
@@ -146,26 +229,33 @@ jobs:
 
             The deterministic scan already ran:
             - Key delta (added/changed/removed): read ${{ runner.temp }}/delta.json
+            - Stale changed keys: read ${{ runner.temp }}/stale.json — a
+              {"key": ["lang", ...]} map of the changed-key/language pairs whose
+              translation is still the pre-change one. These are the ONLY `changed`
+              entries to re-translate, and only into the languages listed for them;
+              changed keys absent from stale.json are already up to date.
             - Validation report: read ${{ runner.temp }}/validation.txt
 
-            Fix exactly these findings: translate added/changed keys into every target
-            language per the skill's guidelines and glossary, remove removed keys from
-            all language files, and repair every validation ERROR. Insert each key at
-            the same position it has in studio.en.yaml.
+            Fix exactly these findings: translate added keys into every target language
+            per the skill's guidelines and glossary, re-translate the stale changed-key /
+            language pairs, remove removed keys from all language files, and repair every
+            validation ERROR. Insert each key at the same position it has in studio.en.yaml.
 
             Rules for this CI run:
             - Edit ONLY studio.{locale}.yaml language files in
               "${{ inputs.translations_dir }}". Never touch studio.en.yaml.
             - Do not run git commands; do not create commits, branches, or PRs.
             - There is no user to ask: for ambiguous keys apply the skill's guideline
-              default and list them in your final summary.
+              default and write a short markdown section listing them (key, chosen
+              reading, alternative) to .translation-report.md in the repo root. Create
+              that file only if there were ambiguous keys.
             - Before finishing, re-run validate_translations.py
               (allowed via Bash) and fix every remaining ERROR.
           claude_args: |
             --max-turns 50
             ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
-            --allowedTools "Skill,Read,Glob,Grep,TodoWrite,Edit(${{ inputs.translations_dir }}/**),Write(${{ inputs.translations_dir }}/**),Bash(python3 .claude/skills/pimcore-studio-ui-i18n-translation-workflow/scripts/key_diff.py:*),Bash(python3 .claude/skills/pimcore-studio-ui-i18n-translation-workflow/scripts/validate_translations.py:*)"
-            --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Write(${{ inputs.translations_dir }}/studio.en.yaml)"
+            --allowedTools "Skill,Read,Glob,Grep,TodoWrite,Edit(${{ inputs.translations_dir }}/**),Write(${{ inputs.translations_dir }}/**),Write(.translation-report.md),Bash(python3 .claude/skills/pimcore-studio-ui-i18n-translation-workflow/scripts/key_diff.py:*),Bash(python3 .claude/skills/pimcore-studio-ui-i18n-translation-workflow/scripts/validate_translations.py:*)"
+            --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Write(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**),Write(.git/**)"
 
       - name: Guard — English base untouched
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
@@ -195,16 +285,24 @@ jobs:
             exit 1
           fi
 
-      - name: Commit generated translations
-        id: autocommit
+      - name: Detect changes
+        id: changes
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
-        uses: stefanzweifel/git-auto-commit-action@v7
-        with:
-          commit_message: "Sync translations with studio.en.yaml [automated]"
-          file_pattern: "${{ inputs.translations_dir }}/studio.*.yaml"
+        shell: bash
+        env:
+          DIR: ${{ inputs.translations_dir }}
+        run: |
+          # --porcelain, not `git diff`: a newly created language file is untracked.
+          if [ -n "$(git status --porcelain -- "$DIR")" ]; then
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          fi
 
+      # Comment BEFORE pushing: the bot commit re-enters the caller's per-PR concurrency
+      # group with cancel-in-progress, which can cancel this run before a later step runs.
       - name: Comment on PR
-        if: steps.gate.outputs.run == 'true' && steps.autocommit.outputs.changes_detected == 'true'
+        if: steps.gate.outputs.run == 'true' && steps.changes.outputs.any == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
@@ -213,9 +311,9 @@ jobs:
             const marker = '<!-- translations-workflow -->';
             const delta = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/delta.json`, 'utf8'));
             const section = (title, keys) => keys.length
-              ? `**${title} (${keys.length}):**\n${keys.map((k) => `- \`${k}\``).join('\n')}\n\n`
+              ? `**${title} (${keys.length}):**\n${keys.map((k) => `- \`${k.replace(/`/g, '')}\``).join('\n')}\n\n`
               : '';
-            const body = [
+            let body = [
               marker,
               '### 🌐 Translations synced automatically',
               '',
@@ -227,6 +325,10 @@ jobs:
                 + section('Re-translated (English value changed)', Object.keys(delta.changed))
                 + section('Removed', delta.removed),
             ].join('\n');
+            const reportPath = `${process.env.GITHUB_WORKSPACE}/.translation-report.md`;
+            if (fs.existsSync(reportPath)) {
+              body += `\n#### ⚠️ Ambiguous keys (review carefully)\n\n${fs.readFileSync(reportPath, 'utf8').trim()}\n`;
+            }
             const { data: comments } = await github.rest.issues.listComments({
               ...context.repo, issue_number: context.issue.number, per_page: 100,
             });
@@ -237,10 +339,18 @@ jobs:
               await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
             }
 
+      - name: Commit generated translations
+        id: autocommit
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          commit_message: "Sync translations with studio.en.yaml [automated]"
+          file_pattern: "${{ inputs.translations_dir }}/studio.*.yaml"
+
       - name: Summary — translated
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
         env:
-          CHANGES: ${{ steps.autocommit.outputs.changes_detected }}
+          CHANGES: ${{ steps.changes.outputs.any }}
         run: |
           if [ "$CHANGES" = "true" ]; then
             {
