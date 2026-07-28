@@ -1,0 +1,39 @@
+# Example caller for the reusable translations workflow.
+#
+# Copy to .github/workflows/translations.yaml in your bundle repo and adjust
+# `paths` + `translations_dir` to your bundle's translations directory
+# ("translations" or "src/Resources/translations" — see data/bundles.yaml in
+# the pimcore-studio-ui-i18n-translation-workflow skill).
+#
+# Required secrets (repo or org level):
+#   TRANSLATIONS_GITHUB_TOKEN  bot PAT with contents:write on this repo,
+#                              read access to pimcore/claude-code, and
+#                              pull-requests:write (PR comments)
+#   ANTHROPIC_API_KEY          org-level secret (already used by claude.yml)
+#
+# Behavior: on PRs touching the translations dir, missing/changed keys are
+# auto-translated, committed back to the PR branch, and summarized in one PR
+# comment. In-sync PRs are a green no-op. Fork PRs skip green (no secrets).
+
+name: Translations
+
+on:
+  pull_request:
+    paths:
+      - "translations/**"
+
+concurrency:
+  group: translations-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  translations:
+    uses: pimcore/workflows-collection-public/.github/workflows/reusable-translations.yaml@main
+    with:
+      translations_dir: translations
+    secrets:
+      TRANSLATIONS_GITHUB_TOKEN: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
