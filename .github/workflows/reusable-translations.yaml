@@ -245,8 +245,13 @@ jobs:
       - name: Install translation skill into workspace
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
         run: |
-          mkdir -p .claude/skills
-          cp -r "$SKILL_PATH" .claude/skills/
+          # claude-code-action restores .claude/ from the base branch before the CLI
+          # starts (defense against PR-injected config), so anything we put there is
+          # wiped. Install the skill at a neutral workspace path instead.
+          rm -rf .translation-skill
+          cp -r "$SKILL_PATH" .translation-skill
+          # A report file already on the branch must not masquerade as this run's output.
+          rm -f .translation-report.md
 
           # Scan artifacts must live in the workspace: RUNNER_TEMP is outside it, and
           # read-only tools are auto-approved only inside the working directory.
@@ -262,9 +267,12 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
           prompt: |
-            Non-interactive CI run. Use the pimcore-studio-ui-i18n-translation-workflow
-            skill (installed in .claude/skills/) to bring the translation files in
-            "${{ inputs.translations_dir }}" in sync with studio.en.yaml.
+            Non-interactive CI run. Read .translation-skill/SKILL.md first and follow
+            its workflow to bring the translation files in
+            "${{ inputs.translations_dir }}" in sync with studio.en.yaml. Its
+            scripts/, data/, and references/ directories sit alongside it, at
+            .translation-skill/scripts/, .translation-skill/data/, and
+            .translation-skill/references/.
 
             The deterministic scan already ran:
             - Key delta (added/changed/removed): read .translation-scan/delta.json
@@ -288,12 +296,12 @@ jobs:
               default and write a short markdown section listing them (key, chosen
               reading, alternative) to .translation-report.md in the repo root. Create
               that file only if there were ambiguous keys.
-            - Before finishing, re-run validate_translations.py
+            - Before finishing, re-run .translation-skill/scripts/validate_translations.py
               (allowed via Bash) and fix every remaining ERROR.
           claude_args: |
             --max-turns 50
             ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
-            --allowedTools "Skill,Read,Glob,Grep,TodoWrite,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .claude/skills/pimcore-studio-ui-i18n-translation-workflow/scripts/key_diff.py:*),Bash(python3 .claude/skills/pimcore-studio-ui-i18n-translation-workflow/scripts/validate_translations.py:*)"
+            --allowedTools "Read,Glob,Grep,TodoWrite,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .translation-skill/scripts/key_diff.py:*),Bash(python3 .translation-skill/scripts/validate_translations.py:*)"
             --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**)"
 
       - name: Guard — English base untouched
@@ -397,9 +405,9 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, {
               ...context.repo, issue_number: context.issue.number, per_page: 100,
             });
-            const existing = comments.find(
-              (c) => c.body && c.body.includes(marker) && (!me || c.user?.login === me),
-            );
+            const existing = me
+              ? comments.find((c) => c.body && c.body.includes(marker) && c.user?.login === me)
+              : null;
             let updated = false;
             if (existing) {
               try {
