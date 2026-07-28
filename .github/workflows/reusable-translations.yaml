@@ -114,6 +114,8 @@ jobs:
           # base branch after this PR forked are not this PR's work and must stay out.
           MERGE_BASE=$(git merge-base "origin/$BASE_REF" HEAD)
           echo "Merge base with origin/$BASE_REF: $MERGE_BASE"
+          # Later steps recompute staleness against the same comparison point.
+          echo "merge_base=$MERGE_BASE" >> "$GITHUB_OUTPUT"
 
           python3 "$SKILL_PATH/scripts/key_diff.py" \
             --path "$DIR/studio.en.yaml" \
@@ -134,7 +136,12 @@ jobs:
           # still exactly the value it had at the merge base. The bot's own commit rewrites
           # those values, so the run that commit triggers finds nothing stale and no-ops —
           # that, plus validation owning added/removed keys, is the termination argument.
-          MERGE_BASE="$MERGE_BASE" python3 - <<'PY'
+          # Written to a file rather than piped as a heredoc so the "Detect changes" step
+          # can re-run the identical check after the model has edited the files. RUNNER_TEMP
+          # persists across steps within the job and is outside the workspace, so the model
+          # (workspace-scoped write rules, Bash limited to the two skill scripts) cannot
+          # touch this script.
+          cat > "$RUNNER_TEMP/stale_check.py" <<'PY'
           import json
           import os
           import subprocess
@@ -145,6 +152,7 @@ jobs:
           dir_path = Path(os.environ["DIR"])
           merge_base = os.environ["MERGE_BASE"]
           temp = Path(os.environ["RUNNER_TEMP"])
+          stale_out = Path(os.environ["STALE_OUT"])
 
           delta = json.loads((temp / "delta.json").read_text(encoding="utf-8"))
           changed = delta.get("changed") or {}
@@ -206,11 +214,14 @@ jobs:
                       stale.setdefault(key, []).append(lang)
 
           payload = {key: stale[key] for key in sorted(stale)}
-          (temp / "stale.json").write_text(
+          stale_out.write_text(
               json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
           )
           print(f"Stale changed keys: {len(payload)}")
           PY
+
+          MERGE_BASE="$MERGE_BASE" STALE_OUT="$RUNNER_TEMP/stale.json" \
+            python3 "$RUNNER_TEMP/stale_check.py"
 
           cat "$RUNNER_TEMP/stale.json"
 
@@ -250,8 +261,13 @@ jobs:
           # wiped. Install the skill at a neutral workspace path instead.
           rm -rf .translation-skill
           cp -r "$SKILL_PATH" .translation-skill
-          # A report file already on the branch must not masquerade as this run's output.
-          rm -f .translation-report.md
+          # The private checkout must not be on disk while the model runs; the skill
+          # copy above is the only piece it needs.
+          rm -rf .claude-code
+          # Pre-create the ambiguity report empty: the model only ever appends to it, so
+          # no create-permission semantics are involved, and content a prior run (or the
+          # branch) left behind cannot masquerade as this run's output.
+          : > .translation-report.md
 
           # Scan artifacts must live in the workspace: RUNNER_TEMP is outside it, and
           # read-only tools are auto-approved only inside the working directory.
@@ -293,9 +309,10 @@ jobs:
               "${{ inputs.translations_dir }}". Never touch studio.en.yaml.
             - Do not run git commands; do not create commits, branches, or PRs.
             - There is no user to ask: for ambiguous keys apply the skill's guideline
-              default and write a short markdown section listing them (key, chosen
-              reading, alternative) to .translation-report.md in the repo root. Create
-              that file only if there were ambiguous keys.
+              default. The file .translation-report.md in the repo root already exists
+              and is empty: if there were ambiguous keys, append a short markdown section
+              listing them (key, chosen reading, alternative) to it. If there were none,
+              leave it empty.
             - Before finishing, re-run .translation-skill/scripts/validate_translations.py
               (allowed via Bash) and fix every remaining ERROR.
           claude_args: |
@@ -320,7 +337,10 @@ jobs:
         env:
           DIR: ${{ inputs.translations_dir }}
         run: |
-          if ! python3 "$SKILL_PATH/scripts/validate_translations.py" --dir "$DIR" | tee "$RUNNER_TEMP/revalidation.txt"; then
+          # Runs the copied scripts in .translation-skill/: the private checkout is gone
+          # by now (deleted before the model step), and the model's write rules cover only
+          # the studio.*.yaml files and the report file, so the copy is unmodified.
+          if ! python3 .translation-skill/scripts/validate_translations.py --dir "$DIR" | tee "$RUNNER_TEMP/revalidation.txt"; then
             {
               echo "### ❌ Generated translations failed validation — nothing committed"
               echo ""
@@ -338,6 +358,8 @@ jobs:
         shell: bash
         env:
           DIR: ${{ inputs.translations_dir }}
+          MERGE_BASE: ${{ steps.scan.outputs.merge_base }}
+          STALE_OUT: ${{ runner.temp }}/stale-after.json
         run: |
           # --porcelain, not `git diff`: a newly created language file is untracked.
           if [ -n "$(git status --porcelain -- "$DIR/studio.*.yaml")" ]; then
@@ -345,6 +367,14 @@ jobs:
           else
             echo "any=false" >> "$GITHUB_OUTPUT"
           fi
+
+          # Recompute staleness with the same script, now against the model's output. What
+          # survives is a changed-in-English key whose existing translation the model kept.
+          # Reporting only: the bot-commit circuit breaker makes the follow-up run green
+          # either way, so these pairs go into the PR comment for human review instead of
+          # failing the job.
+          python3 "$RUNNER_TEMP/stale_check.py"
+          cat "$STALE_OUT"
 
       # Comment BEFORE pushing: the bot commit re-enters the caller's per-PR concurrency
       # group with cancel-in-progress, which can cancel this run before a later step runs.
@@ -368,6 +398,18 @@ jobs:
                 core.warning(`Could not parse stale.json: ${err.message}`);
               }
             }
+            // Recomputed after the model ran: pairs still stale are existing translations
+            // the model chose to keep. The circuit breaker makes the follow-up run green
+            // regardless, so surface them here rather than letting them pass unmentioned.
+            let keptStale = {};
+            const staleAfterPath = `${process.env.RUNNER_TEMP}/stale-after.json`;
+            if (fs.existsSync(staleAfterPath)) {
+              try {
+                keptStale = JSON.parse(fs.readFileSync(staleAfterPath, 'utf8')) ?? {};
+              } catch (err) {
+                core.warning(`Could not parse stale-after.json: ${err.message}`);
+              }
+            }
             const clean = (k) => String(k).replace(/`/g, '');
             const section = (title, items) => items.length
               ? `**${title} (${items.length}):**\n${items.join('\n')}\n\n`
@@ -389,9 +431,22 @@ jobs:
                 + section('Re-translated (English value changed)', staleItems)
                 + section('Removed', keyItems(delta.removed ?? [])),
             ].join('\n');
+            const keptItems = Object.entries(keptStale)
+              .map(([k, langs]) => `- \`${clean(k)}\` (${(langs ?? []).join(', ')})`);
+            if (keptItems.length) {
+              body += `\n#### ♻️ Existing translations kept (verify these)\n\n`
+                + `These keys changed in English but kept their existing translations —`
+                + ` confirm they still fit the new English wording.\n\n`
+                + `${keptItems.join('\n')}\n`;
+            }
+            // The file is pre-created empty, so existence proves nothing: only non-blank
+            // content means the model actually reported ambiguous keys.
             const reportPath = `${process.env.GITHUB_WORKSPACE}/.translation-report.md`;
-            if (fs.existsSync(reportPath)) {
-              body += `\n#### ⚠️ Ambiguous keys (review carefully)\n\n${fs.readFileSync(reportPath, 'utf8').trim()}\n`;
+            const report = fs.existsSync(reportPath)
+              ? fs.readFileSync(reportPath, 'utf8').trim()
+              : '';
+            if (report) {
+              body += `\n#### ⚠️ Ambiguous keys (review carefully)\n\n${report}\n`;
             }
             // Scope the upsert to our own comment: a marker planted by another user must
             // neither be hijacked (we would edit their comment) nor block us (we would
