@@ -1,0 +1,579 @@
+name: "Translations Sync"
+
+# Keeps a bundle's studio.{locale}.yaml files in sync with studio.en.yaml on PRs.
+# Deterministic scripts (from pimcore/claude-code) decide IF work is needed and
+# whether generated output is acceptable; a tool-restricted Claude step translates.
+# Issue: pimcore/product-management#1316
+
+on:
+  workflow_call:
+    inputs:
+      translations_dir:
+        description: "Translations directory relative to the repo root (e.g. translations or src/Resources/translations). Must not contain spaces or commas."
+        required: true
+        type: string
+      claude_code_ref:
+        description: "Ref of pimcore/claude-code to check out (translation skill + scripts)"
+        required: false
+        type: string
+        default: "main"
+      model:
+        description: "Model passed to claude-code-action (empty = action default)"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      TRANSLATIONS_GITHUB_TOKEN:
+        description: "Bot PAT: contents:write on the calling repo, read on pimcore/claude-code, pull-requests:write"
+        required: true
+      ANTHROPIC_TRANSLATIONS_API_KEY:
+        required: true
+
+jobs:
+  translations:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read # pushes and comments use the PAT, never GITHUB_TOKEN
+    env:
+      SKILL_PATH: .claude-code/plugins/pimcore-studio/skills/pimcore-studio-ui-i18n-translation-workflow
+    steps:
+      # Fork PRs get no secrets, and even validation needs the private
+      # pimcore/claude-code checkout -> skip green with an explanatory summary.
+      # (secrets context is not available in `if:` -> compare head repo instead.)
+      - name: Gate — same-repo PRs only
+        id: gate
+        shell: bash
+        env:
+          DIR: ${{ inputs.translations_dir }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          # Inputs are interpolated into shell/CLI strings downstream — reject anything
+          # that is not a plain path / model identifier before it gets there.
+          if ! [[ "$DIR" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::translations_dir contains unsupported characters"; exit 1
+          fi
+          if [[ "$DIR" = /* ]] || [[ "$DIR" =~ (^|/)\.\.(/|$) ]]; then
+            echo "::error::translations_dir must be a relative path inside the repository"; exit 1
+          fi
+          if [ -n "$MODEL" ] && ! [[ "$MODEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::model contains unsupported characters"; exit 1
+          fi
+
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Translations sync skipped"
+              echo ""
+              echo "Automated translation sync is unavailable for fork PRs (it requires org secrets)."
+              echo "A maintainer must verify translations before/after merge."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Checkout PR head
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v5.0.1
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          token: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
+          persist-credentials: false # the PAT never lands in .git/config; push creds are injected after the Claude step
+
+      - name: Clear private checkout path
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          # A PR that commits .claude-code (as a symlink or a directory) would make
+          # the next checkout materialize the private repo somewhere else — and the
+          # later `rm -rf .claude-code` would then remove only the link, leaving
+          # private content on disk while the model runs. Clear the path first.
+          if [ -e .claude-code ] || [ -L .claude-code ]; then
+            echo "::warning::removing a pre-existing .claude-code path committed by this branch"
+            rm -rf .claude-code
+          fi
+
+      - name: Checkout pimcore/claude-code (skill + scripts)
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v5.0.1
+        with:
+          repository: pimcore/claude-code
+          ref: ${{ inputs.claude_code_ref }}
+          token: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
+          path: .claude-code
+          persist-credentials: false # nothing pushes here; keeps the PAT out of this checkout's git config
+
+      - name: Setup Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        if: steps.gate.outputs.run == 'true'
+        run: pip install pyyaml==6.0.2
+
+      - name: Scan translations (key delta + validation)
+        id: scan
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        env:
+          DIR: ${{ inputs.translations_dir }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          DIR="${DIR%/}"
+
+          # The lexical input checks cannot see filesystem tricks: a PR could commit the
+          # translations dir or a studio.*.yaml as a symlink, making the scanners below
+          # read arbitrary paths (the private pimcore/claude-code checkout is still on
+          # disk at this point). Resolve and reject before anything opens a file.
+          if [ "$(realpath -e "$DIR" 2>/dev/null)" != "$GITHUB_WORKSPACE/$DIR" ]; then
+            echo "::error::translations_dir does not resolve to a real directory inside the workspace (missing, symlinked, or escaping)"
+            exit 1
+          fi
+          SYMLINKS=$(find "$DIR" -type l)
+          if [ -n "$SYMLINKS" ]; then
+            echo "::error::symlinks are not allowed inside the translations directory:"
+            echo "$SYMLINKS"
+            exit 1
+          fi
+
+          # Delta vs the merge base, not the base tip: English changes that landed on the
+          # base branch after this PR forked are not this PR's work and must stay out.
+          MERGE_BASE=$(git merge-base "origin/$BASE_REF" HEAD)
+          echo "Merge base with origin/$BASE_REF: $MERGE_BASE"
+          # Later steps recompute staleness against the same comparison point.
+          echo "merge_base=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+
+          python3 "$SKILL_PATH/scripts/key_diff.py" \
+            --path "$DIR/studio.en.yaml" \
+            --base-ref "$MERGE_BASE" > "$RUNNER_TEMP/delta.json"
+
+          set +e
+          python3 "$SKILL_PATH/scripts/validate_translations.py" --dir "$DIR" \
+            > "$RUNNER_TEMP/validation.txt" 2>&1
+          VALIDATE_EXIT=$?
+          set -e
+          cat "$RUNNER_TEMP/validation.txt"
+          if [ "$VALIDATE_EXIT" -ge 2 ]; then
+            echo "::error::validate_translations.py failed with a usage/IO error (exit $VALIDATE_EXIT) — check translations_dir"
+            exit 1
+          fi
+
+          # A changed English key is "stale" for a language while that language's value is
+          # still exactly the value it had at the merge base. The bot's own commit rewrites
+          # those values, so the run that commit triggers finds nothing stale and no-ops —
+          # that, plus validation owning added/removed keys, is the termination argument.
+          # Written to a file rather than piped as a heredoc so the "Detect changes" step
+          # can re-run the identical check after the model has edited the files. RUNNER_TEMP
+          # persists across steps within the job and is outside the workspace, so the model
+          # (workspace-scoped write rules, Bash limited to the two skill scripts) cannot
+          # touch this script.
+          cat > "$RUNNER_TEMP/stale_check.py" <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          import yaml
+
+          dir_path = Path(os.environ["DIR"])
+          merge_base = os.environ["MERGE_BASE"]
+          temp = Path(os.environ["RUNNER_TEMP"])
+          stale_out = Path(os.environ["STALE_OUT"])
+
+          delta = json.loads((temp / "delta.json").read_text(encoding="utf-8"))
+          changed = delta.get("changed") or {}
+          candidates = list(changed.keys()) if isinstance(changed, dict) else list(changed)
+
+          MISSING = object()
+
+
+          def load(text):
+              """Parse translation YAML; missing, empty, or malformed files are empty mappings.
+
+              Malformed files are validation's problem (exit 1 routes to the repair arm);
+              staleness must not crash before that arm can run.
+              """
+              if not text:
+                  return {}
+              try:
+                  return yaml.safe_load(text) or {}
+              except yaml.YAMLError:
+                  return {}
+
+
+          def lookup(doc, key):
+              """Resolve a key stored either flat ("a.b: x") or nested (a: {b: x})."""
+              if isinstance(doc, dict) and key in doc:
+                  return doc[key]
+              node = doc
+              for part in key.split("."):
+                  if not isinstance(node, dict) or part not in node:
+                      return MISSING
+                  node = node[part]
+              return node
+
+
+          def at_merge_base(rel_path):
+              shown = subprocess.run(
+                  ["git", "show", f"{merge_base}:{rel_path}"],
+                  capture_output=True,
+                  text=True,
+                  check=False,
+              )
+              return load(shown.stdout) if shown.returncode == 0 else {}
+
+
+          stale = {}
+          for path in sorted(dir_path.glob("studio.*.yaml")):
+              if path.name == "studio.en.yaml":
+                  continue
+              lang = path.name[len("studio."):-len(".yaml")]
+              now = load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+              before = at_merge_base(Path(os.path.normpath(path)).as_posix())
+              for key in candidates:
+                  new_value = lookup(now, key)
+                  old_value = lookup(before, key)
+                  # Missing on either side counts as "differs": validation owns missing keys.
+                  if new_value is MISSING or old_value is MISSING:
+                      continue
+                  if new_value == old_value:
+                      stale.setdefault(key, []).append(lang)
+
+          payload = {key: stale[key] for key in sorted(stale)}
+          stale_out.write_text(
+              json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+          )
+          print(f"Stale changed keys: {len(payload)}")
+          PY
+
+          MERGE_BASE="$MERGE_BASE" STALE_OUT="$RUNNER_TEMP/stale.json" \
+            python3 "$RUNNER_TEMP/stale_check.py"
+
+          cat "$RUNNER_TEMP/stale.json"
+
+          STALE_EMPTY=$(jq -r 'if . == {} then "true" else "false" end' "$RUNNER_TEMP/stale.json")
+
+          # Circuit breaker: the workflow's own commit never re-enters the translate arm —
+          # at most one bot commit per human push, even if the model's output is unstable.
+          BOT_HEAD=false
+          if [ "$(git log -1 --format=%s)" = "Sync translations with studio.en.yaml [automated]" ]; then
+            BOT_HEAD=true
+          fi
+
+          if [ "$VALIDATE_EXIT" -eq 0 ] && { [ "$STALE_EMPTY" = "true" ] || [ "$BOT_HEAD" = "true" ]; }; then
+            echo "needs_translation=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_translation=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summary — in sync
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'false'
+        run: |
+          {
+            echo "### ✅ Translations in sync"
+            echo ""
+            echo "Every key in studio.en.yaml is present and valid in all target languages."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Auto-translate arm ────────────────────────────────────────────────
+      # Claude only edits translation files; everything before and after it is
+      # deterministic. Nothing is committed unless re-validation passes.
+
+      - name: Install translation skill into workspace
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        run: |
+          # claude-code-action restores .claude/ from the base branch before the CLI
+          # starts (defense against PR-injected config), so anything we put there is
+          # wiped. Install the skill at a neutral workspace path instead.
+          rm -rf .translation-skill
+          cp -r "$SKILL_PATH" .translation-skill
+          # The private checkout must not be on disk while the model runs; the skill
+          # copy above is the only piece it needs.
+          rm -rf .claude-code
+          # Pre-create the ambiguity report empty: the model only ever appends to it, so
+          # no create-permission semantics are involved. Remove any pre-existing path first
+          # (file, directory, or symlink): a bare `: >` follows a symlink instead of replacing
+          # it, so a PR-committed symlink here could redirect the write; rm -rf removes
+          # whatever is there without ever following it, so what gets created next is always
+          # a fresh regular file this workflow wrote.
+          rm -rf .translation-report.md
+          : > .translation-report.md
+
+          # Scan artifacts must live in the workspace: RUNNER_TEMP is outside it, and
+          # read-only tools are auto-approved only inside the working directory.
+          # .translation-scan/ is outside translations_dir and outside the commit
+          # file_pattern, so it is never committed. Remove any pre-existing path first (file,
+          # directory, or symlink): mkdir -p succeeds silently on a directory symlink and the
+          # cp below would then write through it; rm -rf removes whatever is there without
+          # ever following it, so the directory created next is always a fresh regular one
+          # this workflow made.
+          rm -rf .translation-scan
+          mkdir -p .translation-scan
+          cp "$RUNNER_TEMP/delta.json" "$RUNNER_TEMP/stale.json" "$RUNNER_TEMP/validation.txt" .translation-scan/
+
+          # claude-code-action snapshots the PR's versions of its sensitive config
+          # paths into .claude-pr/ with dereference:true before replacing them from
+          # the base branch. That snapshot follows symlinks — at those paths or
+          # nested inside them — and lands inside the workspace, where the model can
+          # read it. The action replaces all of these from base anyway, so removing
+          # the PR's copies here costs nothing and closes the dereference entirely.
+          for p in .claude .mcp.json .claude.json .gitmodules .ripgreprc CLAUDE.md CLAUDE.local.md .husky; do
+            if [ -e "$p" ] || [ -L "$p" ]; then
+              echo "::warning::removing PR-authored $p before invoking the model (replaced from the base branch anyway)"
+              rm -rf "$p"
+            fi
+          done
+
+      - name: Translate missing keys (Claude, tool-restricted)
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_TRANSLATIONS_API_KEY }}
+          github_token: ${{ github.token }}
+          prompt: |
+            Non-interactive CI run. Read .translation-skill/SKILL.md first and follow
+            its workflow to bring the translation files in
+            "${{ inputs.translations_dir }}" in sync with studio.en.yaml. Its
+            scripts/, data/, and references/ directories sit alongside it, at
+            .translation-skill/scripts/, .translation-skill/data/, and
+            .translation-skill/references/.
+
+            The deterministic scan already ran:
+            - Key delta (added/changed/removed): read .translation-scan/delta.json
+            - Stale changed keys: read .translation-scan/stale.json — a
+              {"key": ["lang", ...]} map of the changed-key/language pairs whose
+              translation is still the pre-change one. These are the ONLY `changed`
+              entries to re-translate, and only into the languages listed for them;
+              changed keys absent from stale.json are already up to date.
+            - Validation report: read .translation-scan/validation.txt
+
+            Do not run key_diff.py. The skill's workflow tells you to run it, but in this
+            CI run that step is already done — the delta is precomputed in the files above,
+            and Bash has no permission to run anything except the validation command below.
+
+            Fix exactly these findings: translate added keys into every target language
+            per the skill's guidelines and glossary, re-translate the stale changed-key /
+            language pairs, remove removed keys from all language files, and repair every
+            validation ERROR. Insert each key at the same position it has in studio.en.yaml.
+
+            Rules for this CI run:
+            - Edit ONLY studio.{locale}.yaml language files in
+              "${{ inputs.translations_dir }}". Never touch studio.en.yaml.
+            - Do not run git commands; do not create commits, branches, or PRs.
+            - There is no user to ask: for ambiguous keys apply the skill's guideline
+              default. The file .translation-report.md in the repo root already exists
+              and is empty: if there were ambiguous keys, append a short markdown section
+              listing them (key, chosen reading, alternative) to it. If there were none,
+              leave it empty.
+            - Before finishing, re-run validation and fix every remaining ERROR. Use
+              exactly this command, byte for byte:
+              python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }}
+              Any other variant is denied — do not add quotes, extra flags, redirects, or
+              pipes, and do not chain it with other commands.
+          # The single Bash allow rule below is an exact match, so the command spelled out
+          # in the prompt above must stay byte-identical to it. Keep translations_dir
+          # unquoted in both (the gate step rejects values containing spaces).
+          claude_args: |
+            --max-turns 50
+            ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
+            --allowedTools "Read,Glob,Grep,TodoWrite,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }})"
+            --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**)"
+
+      - name: Guard — English base untouched
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        env:
+          DIR: ${{ inputs.translations_dir }}
+        run: |
+          if ! git diff --exit-code -- "$DIR/studio.en.yaml"; then
+            echo "::error::The translate step modified studio.en.yaml — refusing to commit"
+            exit 1
+          fi
+
+      - name: Re-validate (mechanical gate)
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        shell: bash
+        env:
+          DIR: ${{ inputs.translations_dir }}
+        run: |
+          # Runs the copied scripts in .translation-skill/: the private checkout is gone by
+          # now (deleted before the model step). The copy is provably unmodified — no Edit
+          # rule covers .translation-skill/**, and the model's single Bash rule is an exact
+          # command match, so no redirect or extra argument can be smuggled into it.
+          if ! python3 .translation-skill/scripts/validate_translations.py --dir "$DIR" | tee "$RUNNER_TEMP/revalidation.txt"; then
+            {
+              echo "### ❌ Generated translations failed validation — nothing committed"
+              echo ""
+              echo '```'
+              cat "$RUNNER_TEMP/revalidation.txt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Generated translations failed validation — nothing was committed"
+            exit 1
+          fi
+
+      - name: Detect changes
+        id: changes
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        shell: bash
+        env:
+          DIR: ${{ inputs.translations_dir }}
+          MERGE_BASE: ${{ steps.scan.outputs.merge_base }}
+          STALE_OUT: ${{ runner.temp }}/stale-after.json
+        run: |
+          # --porcelain, not `git diff`: a newly created language file is untracked.
+          if [ -n "$(git status --porcelain -- "$DIR/studio.*.yaml")" ]; then
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Recompute staleness with the same script, now against the model's output. What
+          # survives is a changed-in-English key whose existing translation the model kept.
+          # Reporting only: the bot-commit circuit breaker makes the follow-up run green
+          # either way, so these pairs go into the PR comment for human review instead of
+          # failing the job.
+          python3 "$RUNNER_TEMP/stale_check.py"
+          cat "$STALE_OUT"
+
+      # Comment BEFORE pushing: the bot commit re-enters the caller's per-PR concurrency
+      # group with cancel-in-progress, which can cancel this run before a later step runs.
+      - name: Comment on PR
+        if: steps.gate.outputs.run == 'true' && steps.changes.outputs.any == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- translations-workflow -->';
+            const delta = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/delta.json`, 'utf8'));
+            // "Re-translated" must reflect what was actually re-translated: the stale
+            // changed-key/language pairs, not every changed key in the delta.
+            let stale = {};
+            const stalePath = `${process.env.GITHUB_WORKSPACE}/.translation-scan/stale.json`;
+            if (fs.existsSync(stalePath)) {
+              try {
+                stale = JSON.parse(fs.readFileSync(stalePath, 'utf8')) ?? {};
+              } catch (err) {
+                core.warning(`Could not parse stale.json: ${err.message}`);
+              }
+            }
+            // Recomputed after the model ran: pairs still stale are existing translations
+            // the model chose to keep. The circuit breaker makes the follow-up run green
+            // regardless, so surface them here rather than letting them pass unmentioned.
+            let keptStale = {};
+            const staleAfterPath = `${process.env.RUNNER_TEMP}/stale-after.json`;
+            if (fs.existsSync(staleAfterPath)) {
+              try {
+                keptStale = JSON.parse(fs.readFileSync(staleAfterPath, 'utf8')) ?? {};
+              } catch (err) {
+                core.warning(`Could not parse stale-after.json: ${err.message}`);
+              }
+            }
+            const clean = (k) => String(k).replace(/`/g, '');
+            const section = (title, items) => items.length
+              ? `**${title} (${items.length}):**\n${items.join('\n')}\n\n`
+              : '';
+            const keyItems = (keys) => keys.map((k) => `- \`${clean(k)}\``);
+            const staleItems = Object.entries(stale)
+              .map(([k, langs]) => `- \`${clean(k)}\` (${(langs ?? []).join(', ')})`);
+            let body = [
+              marker,
+              '### 🌐 Translations synced automatically',
+              '',
+              'The key changes below were generated for all target languages, passed the',
+              'mechanical validation gate (key parity, order, placeholders, types, plurals),',
+              'and are being committed to this branch by the workflow (check the run status',
+              'if the commit is not visible).',
+              'Please review the generated translations.',
+              '',
+              section('Added', keyItems(Object.keys(delta.added ?? {})))
+                + section('Re-translated (English value changed)', staleItems)
+                + section('Removed', keyItems(delta.removed ?? [])),
+            ].join('\n');
+            const keptItems = Object.entries(keptStale)
+              .map(([k, langs]) => `- \`${clean(k)}\` (${(langs ?? []).join(', ')})`);
+            if (keptItems.length) {
+              body += `\n#### ♻️ Existing translations kept (verify these)\n\n`
+                + `These keys changed in English but kept their existing translations —`
+                + ` confirm they still fit the new English wording.\n\n`
+                + `${keptItems.join('\n')}\n`;
+            }
+            // The file is pre-created empty, so existence proves nothing: only non-blank
+            // content means the model actually reported ambiguous keys.
+            const reportPath = `${process.env.GITHUB_WORKSPACE}/.translation-report.md`;
+            const report = fs.existsSync(reportPath)
+              ? fs.readFileSync(reportPath, 'utf8').trim()
+              : '';
+            if (report) {
+              body += `\n#### ⚠️ Ambiguous keys (review carefully)\n\n${report}\n`;
+            }
+            // Scope the upsert to our own comment: a marker planted by another user must
+            // neither be hijacked (we would edit their comment) nor block us (we would
+            // never post). Paginate — the marker can sit past the first page on busy PRs.
+            let me = null;
+            try {
+              me = (await github.rest.users.getAuthenticated()).data.login;
+            } catch (e) {
+              core.warning('Could not resolve token identity: ' + e.message);
+            }
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              ...context.repo, issue_number: context.issue.number, per_page: 100,
+            });
+            const existing = me
+              ? comments.find((c) => c.body && c.body.includes(marker) && c.user?.login === me)
+              : null;
+            let updated = false;
+            if (existing) {
+              try {
+                await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+                updated = true;
+              } catch (e) {
+                core.warning('Could not update existing comment, creating a new one: ' + e.message);
+              }
+            }
+            if (!updated) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+            }
+
+      - name: Configure push credentials
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        env:
+          TOKEN: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # claude-code-action's agent mode strips checkout's auth header and rewires
+          # origin to its own (read-only) token — restore a push-capable remote here,
+          # after the model has run and just before the commit step needs it.
+          git config --unset-all "http.https://github.com/.extraheader" 2>/dev/null || true
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
+
+      - name: Commit generated translations
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          commit_message: "Sync translations with studio.en.yaml [automated]"
+          file_pattern: "${{ inputs.translations_dir }}/studio.*.yaml"
+
+      - name: Summary — translated
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        env:
+          CHANGES: ${{ steps.changes.outputs.any }}
+        run: |
+          if [ "$CHANGES" = "true" ]; then
+            {
+              echo "### 🌐 Missing translations generated and committed"
+              echo ""
+              echo "A commit syncing the language files was pushed to this branch;"
+              echo "CI re-runs on it and must come back green (in sync)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### ✅ Nothing to commit"
+              echo ""
+              echo "The delta required no file changes (translations already correct)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
