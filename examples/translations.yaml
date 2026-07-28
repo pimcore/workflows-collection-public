@@ -9,7 +9,7 @@
 #   TRANSLATIONS_GITHUB_TOKEN  bot PAT with contents:write on this repo,
 #                              read access to pimcore/claude-code, and
 #                              pull-requests:write (PR comments)
-#   ANTHROPIC_TRANSLATIONS_API_KEY          org-level secret (already used by claude.yml)
+#   ANTHROPIC_TRANSLATIONS_API_KEY  org/repo secret holding an Anthropic API key dedicated to the translations workflow
 #
 # Behavior: on PRs touching the translations dir, missing/changed keys are
 # auto-translated, committed back to the PR branch, and summarized in one PR

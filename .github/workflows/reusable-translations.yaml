@@ -297,7 +297,7 @@ jobs:
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
         uses: anthropics/claude-code-action@v1
         with:
-          ANTHROPIC_TRANSLATIONS_API_KEY: ${{ secrets.ANTHROPIC_TRANSLATIONS_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_TRANSLATIONS_API_KEY }}
           github_token: ${{ github.token }}
           prompt: |
             Non-interactive CI run. Read .translation-skill/SKILL.md first and follow
