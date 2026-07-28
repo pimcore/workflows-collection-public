@@ -18,10 +18,10 @@ on:
         type: string
         default: "main"
       model:
-        description: "Model passed to claude-code-action (empty = action default)"
+        description: "Model passed to claude-code-action. Pass an empty string to fall back to the action's own default."
         required: false
         type: string
-        default: ""
+        default: "claude-sonnet-5"
     secrets:
       TRANSLATIONS_GITHUB_TOKEN:
         description: "Bot PAT: contents:write on the calling repo, read on pimcore/claude-code, pull-requests:write"
