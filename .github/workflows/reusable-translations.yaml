@@ -110,6 +110,23 @@ jobs:
           DIR: ${{ inputs.translations_dir }}
           BASE_REF: ${{ github.base_ref }}
         run: |
+          DIR="${DIR%/}"
+
+          # The lexical input checks cannot see filesystem tricks: a PR could commit the
+          # translations dir or a studio.*.yaml as a symlink, making the scanners below
+          # read arbitrary paths (the private pimcore/claude-code checkout is still on
+          # disk at this point). Resolve and reject before anything opens a file.
+          if [ "$(realpath -e "$DIR" 2>/dev/null)" != "$GITHUB_WORKSPACE/$DIR" ]; then
+            echo "::error::translations_dir does not resolve to a real directory inside the workspace (missing, symlinked, or escaping)"
+            exit 1
+          fi
+          SYMLINKS=$(find "$DIR" -type l)
+          if [ -n "$SYMLINKS" ]; then
+            echo "::error::symlinks are not allowed inside the translations directory:"
+            echo "$SYMLINKS"
+            exit 1
+          fi
+
           # Delta vs the merge base, not the base tip: English changes that landed on the
           # base branch after this PR forked are not this PR's work and must stay out.
           MERGE_BASE=$(git merge-base "origin/$BASE_REF" HEAD)
