@@ -17,6 +17,9 @@
 
 name: Translations
 
+# Because of the `paths` filter this workflow does not run on PRs that touch no
+# translations — do NOT mark it as a required status check: such PRs would wait
+# on a check that never reports and stay blocked forever.
 on:
   pull_request:
     paths:

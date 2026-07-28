@@ -44,7 +44,20 @@ jobs:
       # (secrets context is not available in `if:` -> compare head repo instead.)
       - name: Gate — same-repo PRs only
         id: gate
+        shell: bash
+        env:
+          DIR: ${{ inputs.translations_dir }}
+          MODEL: ${{ inputs.model }}
         run: |
+          # Inputs are interpolated into shell/CLI strings downstream — reject anything
+          # that is not a plain path / model identifier before it gets there.
+          if ! [[ "$DIR" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::translations_dir contains unsupported characters"; exit 1
+          fi
+          if [ -n "$MODEL" ] && ! [[ "$MODEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::model contains unsupported characters"; exit 1
+          fi
+
           if [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -191,7 +204,15 @@ jobs:
           cat "$RUNNER_TEMP/stale.json"
 
           STALE_EMPTY=$(jq -r 'if . == {} then "true" else "false" end' "$RUNNER_TEMP/stale.json")
-          if [ "$VALIDATE_EXIT" -eq 0 ] && [ "$STALE_EMPTY" = "true" ]; then
+
+          # Circuit breaker: the workflow's own commit never re-enters the translate arm —
+          # at most one bot commit per human push, even if the model's output is unstable.
+          BOT_HEAD=false
+          if [ "$(git log -1 --format=%s)" = "Sync translations with studio.en.yaml [automated]" ]; then
+            BOT_HEAD=true
+          fi
+
+          if [ "$VALIDATE_EXIT" -eq 0 ] && { [ "$STALE_EMPTY" = "true" ] || [ "$BOT_HEAD" = "true" ]; }; then
             echo "needs_translation=false" >> "$GITHUB_OUTPUT"
           else
             echo "needs_translation=true" >> "$GITHUB_OUTPUT"
@@ -216,6 +237,13 @@ jobs:
           mkdir -p .claude/skills
           cp -r "$SKILL_PATH" .claude/skills/
 
+          # Scan artifacts must live in the workspace: RUNNER_TEMP is outside it, and
+          # read-only tools are auto-approved only inside the working directory.
+          # .translation-scan/ is outside translations_dir and outside the commit
+          # file_pattern, so it is never committed.
+          mkdir -p .translation-scan
+          cp "$RUNNER_TEMP/delta.json" "$RUNNER_TEMP/stale.json" "$RUNNER_TEMP/validation.txt" .translation-scan/
+
       - name: Translate missing keys (Claude, tool-restricted)
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
         uses: anthropics/claude-code-action@v1
@@ -228,13 +256,13 @@ jobs:
             "${{ inputs.translations_dir }}" in sync with studio.en.yaml.
 
             The deterministic scan already ran:
-            - Key delta (added/changed/removed): read ${{ runner.temp }}/delta.json
-            - Stale changed keys: read ${{ runner.temp }}/stale.json — a
+            - Key delta (added/changed/removed): read .translation-scan/delta.json
+            - Stale changed keys: read .translation-scan/stale.json — a
               {"key": ["lang", ...]} map of the changed-key/language pairs whose
               translation is still the pre-change one. These are the ONLY `changed`
               entries to re-translate, and only into the languages listed for them;
               changed keys absent from stale.json are already up to date.
-            - Validation report: read ${{ runner.temp }}/validation.txt
+            - Validation report: read .translation-scan/validation.txt
 
             Fix exactly these findings: translate added keys into every target language
             per the skill's guidelines and glossary, re-translate the stale changed-key /
@@ -254,8 +282,8 @@ jobs:
           claude_args: |
             --max-turns 50
             ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
-            --allowedTools "Skill,Read,Glob,Grep,TodoWrite,Edit(${{ inputs.translations_dir }}/**),Write(${{ inputs.translations_dir }}/**),Write(.translation-report.md),Bash(python3 .claude/skills/pimcore-studio-ui-i18n-translation-workflow/scripts/key_diff.py:*),Bash(python3 .claude/skills/pimcore-studio-ui-i18n-translation-workflow/scripts/validate_translations.py:*)"
-            --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Write(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**),Write(.git/**)"
+            --allowedTools "Skill,Read,Glob,Grep,TodoWrite,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .claude/skills/pimcore-studio-ui-i18n-translation-workflow/scripts/key_diff.py:*),Bash(python3 .claude/skills/pimcore-studio-ui-i18n-translation-workflow/scripts/validate_translations.py:*)"
+            --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**)"
 
       - name: Guard — English base untouched
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
@@ -293,7 +321,7 @@ jobs:
           DIR: ${{ inputs.translations_dir }}
         run: |
           # --porcelain, not `git diff`: a newly created language file is untracked.
-          if [ -n "$(git status --porcelain -- "$DIR")" ]; then
+          if [ -n "$(git status --porcelain -- "$DIR/studio.*.yaml")" ]; then
             echo "any=true" >> "$GITHUB_OUTPUT"
           else
             echo "any=false" >> "$GITHUB_OUTPUT"
@@ -310,9 +338,24 @@ jobs:
             const fs = require('fs');
             const marker = '<!-- translations-workflow -->';
             const delta = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/delta.json`, 'utf8'));
-            const section = (title, keys) => keys.length
-              ? `**${title} (${keys.length}):**\n${keys.map((k) => `- \`${k.replace(/`/g, '')}\``).join('\n')}\n\n`
+            // "Re-translated" must reflect what was actually re-translated: the stale
+            // changed-key/language pairs, not every changed key in the delta.
+            let stale = {};
+            const stalePath = `${process.env.GITHUB_WORKSPACE}/.translation-scan/stale.json`;
+            if (fs.existsSync(stalePath)) {
+              try {
+                stale = JSON.parse(fs.readFileSync(stalePath, 'utf8')) ?? {};
+              } catch (err) {
+                core.warning(`Could not parse stale.json: ${err.message}`);
+              }
+            }
+            const clean = (k) => String(k).replace(/`/g, '');
+            const section = (title, items) => items.length
+              ? `**${title} (${items.length}):**\n${items.join('\n')}\n\n`
               : '';
+            const keyItems = (keys) => keys.map((k) => `- \`${clean(k)}\``);
+            const staleItems = Object.entries(stale)
+              .map(([k, langs]) => `- \`${clean(k)}\` (${(langs ?? []).join(', ')})`);
             let body = [
               marker,
               '### 🌐 Translations synced automatically',
@@ -321,9 +364,9 @@ jobs:
               'validated mechanically (key parity, order, placeholders, types, plurals).',
               'Please review the generated translations.',
               '',
-              section('Added', Object.keys(delta.added))
-                + section('Re-translated (English value changed)', Object.keys(delta.changed))
-                + section('Removed', delta.removed),
+              section('Added', keyItems(Object.keys(delta.added ?? {})))
+                + section('Re-translated (English value changed)', staleItems)
+                + section('Removed', keyItems(delta.removed ?? [])),
             ].join('\n');
             const reportPath = `${process.env.GITHUB_WORKSPACE}/.translation-report.md`;
             if (fs.existsSync(reportPath)) {
@@ -340,7 +383,6 @@ jobs:
             }
 
       - name: Commit generated translations
-        id: autocommit
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
