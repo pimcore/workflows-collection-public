@@ -156,6 +156,10 @@ jobs:
           BASE_DIR="$RUNNER_TEMP/base/$DIR"
           mkdir -p "$BASE_DIR"
           BASELINE_ERRORS=0
+          # Always exists, even when the block below is skipped (brand-new bundle, no
+          # baseline files) — the install step copies this into .translation-scan/
+          # unconditionally, so a missing file here would fail that cp.
+          : > "$RUNNER_TEMP/baseline.txt"
           BASE_FILES=$(git ls-tree --name-only "$MERGE_BASE" -- "$DIR/" | grep -E '/studio\.[^/]+\.yaml$' || true)
           if [ -n "$BASE_FILES" ]; then
             while IFS= read -r f; do
@@ -393,7 +397,7 @@ jobs:
           # this workflow made.
           rm -rf .translation-scan
           mkdir -p .translation-scan
-          cp "$RUNNER_TEMP/delta.json" "$RUNNER_TEMP/stale.json" "$RUNNER_TEMP/validation.txt" .translation-scan/
+          cp "$RUNNER_TEMP/delta.json" "$RUNNER_TEMP/stale.json" "$RUNNER_TEMP/validation.txt" "$RUNNER_TEMP/baseline.txt" .translation-scan/
 
           # claude-code-action snapshots the PR's versions of its sensitive config
           # paths into .claude-pr/ with dereference:true before replacing them from
@@ -435,10 +439,20 @@ jobs:
             CI run that step is already done — the delta is precomputed in the files above,
             and Bash has no permission to run anything except the validation command below.
 
-            Fix exactly these findings: translate added keys into every target language
+            Fix exactly this PR's delta: translate added keys into every target language
             per the skill's guidelines and glossary, re-translate the stale changed-key /
-            language pairs, remove removed keys from all language files, and repair every
-            validation ERROR. Insert each key at the same position it has in studio.en.yaml.
+            language pairs, and remove removed keys from all language files. Insert each
+            key at the same position it has in studio.en.yaml.
+
+            Validation work is bounded to that same delta. .translation-scan/validation.txt
+            lists every error currently in the repo; .translation-scan/baseline.txt lists
+            the errors that already existed before this PR.
+            - Errors that appear in baseline.txt are pre-existing legacy drift, are not
+              part of this task, and are cleared by a separate backfill. Do not attempt
+              them.
+            - Fix only errors that involve keys from delta.json/stale.json, i.e. the
+              errors this PR introduced.
+            - If baseline.txt is empty there is no backlog and every error is this PR's.
 
             Rules for this CI run:
             - Edit ONLY studio.{locale}.yaml language files in
@@ -449,8 +463,11 @@ jobs:
               and is empty: if there were ambiguous keys, append a short markdown section
               listing them (key, chosen reading, alternative) to it. If there were none,
               leave it empty.
-            - Before finishing, re-run validation and fix every remaining ERROR. Use
-              exactly this command, byte for byte:
+            - Before finishing, re-run validation and confirm that the keys you were
+              assigned above (from delta.json/stale.json) no longer appear as errors. Do
+              NOT try to drive the total error count to zero — pre-existing errors (those
+              listed in baseline.txt) are expected to remain. Use exactly this command,
+              byte for byte:
               python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }}
               Any other variant is denied — do not add quotes, extra flags, redirects, or
               pipes, and do not chain it with other commands.
