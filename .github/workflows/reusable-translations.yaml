@@ -54,6 +54,9 @@ jobs:
           if ! [[ "$DIR" =~ ^[A-Za-z0-9._/-]+$ ]]; then
             echo "::error::translations_dir contains unsupported characters"; exit 1
           fi
+          if [[ "$DIR" = /* ]] || [[ "$DIR" =~ (^|/)\.\.(/|$) ]]; then
+            echo "::error::translations_dir must be a relative path inside the repository"; exit 1
+          fi
           if [ -n "$MODEL" ] && ! [[ "$MODEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
             echo "::error::model contains unsupported characters"; exit 1
           fi
@@ -151,10 +154,17 @@ jobs:
 
 
           def load(text):
-              """Parse translation YAML; a missing or empty file is an empty mapping."""
+              """Parse translation YAML; missing, empty, or malformed files are empty mappings.
+
+              Malformed files are validation's problem (exit 1 routes to the repair arm);
+              staleness must not crash before that arm can run.
+              """
               if not text:
                   return {}
-              return yaml.safe_load(text) or {}
+              try:
+                  return yaml.safe_load(text) or {}
+              except yaml.YAMLError:
+                  return {}
 
 
           def lookup(doc, key):
@@ -361,8 +371,10 @@ jobs:
               marker,
               '### 🌐 Translations synced automatically',
               '',
-              'The key changes below were applied across all target languages and',
-              'validated mechanically (key parity, order, placeholders, types, plurals).',
+              'The key changes below were generated for all target languages, passed the',
+              'mechanical validation gate (key parity, order, placeholders, types, plurals),',
+              'and are being committed to this branch by the workflow (check the run status',
+              'if the commit is not visible).',
               'Please review the generated translations.',
               '',
               section('Added', keyItems(Object.keys(delta.added ?? {})))
