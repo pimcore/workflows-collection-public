@@ -282,14 +282,23 @@ jobs:
           # copy above is the only piece it needs.
           rm -rf .claude-code
           # Pre-create the ambiguity report empty: the model only ever appends to it, so
-          # no create-permission semantics are involved, and content a prior run (or the
-          # branch) left behind cannot masquerade as this run's output.
+          # no create-permission semantics are involved. Remove any pre-existing path first
+          # (file, directory, or symlink): a bare `: >` follows a symlink instead of replacing
+          # it, so a PR-committed symlink here could redirect the write; rm -rf removes
+          # whatever is there without ever following it, so what gets created next is always
+          # a fresh regular file this workflow wrote.
+          rm -rf .translation-report.md
           : > .translation-report.md
 
           # Scan artifacts must live in the workspace: RUNNER_TEMP is outside it, and
           # read-only tools are auto-approved only inside the working directory.
           # .translation-scan/ is outside translations_dir and outside the commit
-          # file_pattern, so it is never committed.
+          # file_pattern, so it is never committed. Remove any pre-existing path first (file,
+          # directory, or symlink): mkdir -p succeeds silently on a directory symlink and the
+          # cp below would then write through it; rm -rf removes whatever is there without
+          # ever following it, so the directory created next is always a fresh regular one
+          # this workflow made.
+          rm -rf .translation-scan
           mkdir -p .translation-scan
           cp "$RUNNER_TEMP/delta.json" "$RUNNER_TEMP/stale.json" "$RUNNER_TEMP/validation.txt" .translation-scan/
 
