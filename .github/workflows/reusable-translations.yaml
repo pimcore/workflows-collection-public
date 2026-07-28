@@ -1,0 +1,144 @@
+name: "Translations Sync"
+
+# Keeps a bundle's studio.{locale}.yaml files in sync with studio.en.yaml on PRs.
+# Deterministic scripts (from pimcore/claude-code) decide IF work is needed and
+# whether generated output is acceptable; a tool-restricted Claude step translates.
+# Issue: pimcore/product-management#1316
+
+on:
+  workflow_call:
+    inputs:
+      translations_dir:
+        description: "Translations directory relative to the repo root (e.g. translations or src/Resources/translations)"
+        required: true
+        type: string
+      claude_code_ref:
+        description: "Ref of pimcore/claude-code to check out (translation skill + scripts)"
+        required: false
+        type: string
+        default: "main"
+      model:
+        description: "Model passed to claude-code-action (empty = action default)"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      TRANSLATIONS_GITHUB_TOKEN:
+        description: "Bot PAT: contents:write on the calling repo, read on pimcore/claude-code, pull-requests:write"
+        required: true
+      ANTHROPIC_API_KEY:
+        required: true
+
+jobs:
+  translations:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read # pushes and comments use the PAT, never GITHUB_TOKEN
+    env:
+      SKILL_PATH: .claude-code/plugins/pimcore-studio/skills/pimcore-studio-ui-i18n-translation-workflow
+    steps:
+      # Fork PRs get no secrets, and even validation needs the private
+      # pimcore/claude-code checkout -> skip green with an explanatory summary.
+      # (secrets context is not available in `if:` -> compare head repo instead.)
+      - name: Gate — same-repo PRs only
+        id: gate
+        run: |
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Translations sync skipped"
+              echo ""
+              echo "Automated translation sync is unavailable for fork PRs (it requires org secrets)."
+              echo "A maintainer must verify translations before/after merge."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Checkout PR head
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v5.0.1
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          token: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
+
+      - name: Checkout pimcore/claude-code (skill + scripts)
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v5.0.1
+        with:
+          repository: pimcore/claude-code
+          ref: ${{ inputs.claude_code_ref }}
+          token: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
+          path: .claude-code
+
+      - name: Setup Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        if: steps.gate.outputs.run == 'true'
+        run: pip install pyyaml
+
+      - name: Scan translations (key delta + validation)
+        id: scan
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        env:
+          DIR: ${{ inputs.translations_dir }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          python3 "$SKILL_PATH/scripts/key_diff.py" \
+            --path "$DIR/studio.en.yaml" \
+            --base-ref "origin/$BASE_REF" > "$RUNNER_TEMP/delta.json"
+
+          set +e
+          python3 "$SKILL_PATH/scripts/validate_translations.py" --dir "$DIR" \
+            > "$RUNNER_TEMP/validation.txt" 2>&1
+          VALIDATE_EXIT=$?
+          set -e
+          cat "$RUNNER_TEMP/validation.txt"
+          if [ "$VALIDATE_EXIT" -ge 2 ]; then
+            echo "::error::validate_translations.py failed with a usage/IO error (exit $VALIDATE_EXIT) — check translations_dir"
+            exit 1
+          fi
+
+          DELTA_EMPTY=$(jq -r 'if .added == {} and .changed == {} and .removed == [] then "true" else "false" end' "$RUNNER_TEMP/delta.json")
+          if [ "$VALIDATE_EXIT" -eq 0 ] && [ "$DELTA_EMPTY" = "true" ]; then
+            echo "needs_translation=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_translation=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summary — in sync
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'false'
+        run: |
+          {
+            echo "### ✅ Translations in sync"
+            echo ""
+            echo "Every key in studio.en.yaml is present and valid in all target languages."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report missing translations
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        shell: bash
+        run: |
+          {
+            echo "### ❌ Translations out of sync"
+            echo ""
+            echo "Key delta vs \`${{ github.base_ref }}\`:"
+            echo '```json'
+            cat "$RUNNER_TEMP/delta.json"
+            echo '```'
+            echo ""
+            echo "Validation report:"
+            echo '```'
+            cat "$RUNNER_TEMP/validation.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Translations are out of sync — see the job summary for the key delta and validation report"
+          exit 1
