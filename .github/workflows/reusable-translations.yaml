@@ -147,6 +147,32 @@ jobs:
           # Later steps recompute staleness against the same comparison point.
           echo "merge_base=$MERGE_BASE" >> "$GITHUB_OUTPUT"
 
+          # Baseline: how many validation errors did the translation files already carry at
+          # the merge base? The job's pass/fail rule is "no worse than the baseline", never
+          # "zero errors" — a repo with legacy drift must still be able to merge a clean PR.
+          # Materialized with `git show`, which emits blob content, so it cannot traverse a
+          # symlink the way a worktree or a second checkout could. A bundle with no
+          # translation files at the merge base (brand new) correctly yields a baseline of 0.
+          BASE_DIR="$RUNNER_TEMP/base/$DIR"
+          mkdir -p "$BASE_DIR"
+          BASELINE_ERRORS=0
+          BASE_FILES=$(git ls-tree --name-only "$MERGE_BASE" -- "$DIR/" | grep -E '/studio\.[^/]+\.yaml$' || true)
+          if [ -n "$BASE_FILES" ]; then
+            while IFS= read -r f; do
+              git show "$MERGE_BASE:$f" > "$BASE_DIR/$(basename "$f")"
+            done <<< "$BASE_FILES"
+            set +e
+            python3 "$SKILL_PATH/scripts/validate_translations.py" --dir "$BASE_DIR" \
+              > "$RUNNER_TEMP/baseline.txt" 2>&1
+            set -e
+            # Summary line: "6 language(s) checked: 151 error(s), 0 warning(s), 1811 untranslated".
+            # Take the LAST match so per-language lines can never be picked up, and fall back
+            # to 0 rather than an empty string (which would break the comparisons below).
+            BASELINE_ERRORS=$(grep -oE '[0-9]+ error\(s\)' "$RUNNER_TEMP/baseline.txt" | tail -1 | grep -oE '^[0-9]+' || echo 0)
+          fi
+          echo "baseline_errors=$BASELINE_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "Baseline (merge base) validation errors: $BASELINE_ERRORS"
+
           python3 "$SKILL_PATH/scripts/key_diff.py" \
             --path "$DIR/studio.en.yaml" \
             --base-ref "$MERGE_BASE" > "$RUNNER_TEMP/delta.json"
@@ -161,6 +187,12 @@ jobs:
             echo "::error::validate_translations.py failed with a usage/IO error (exit $VALIDATE_EXIT) — check translations_dir"
             exit 1
           fi
+
+          # Same parse as the baseline, against the PR's current state. Exit 1 (errors exist)
+          # is no longer a gate on its own — only the comparison with the baseline is.
+          CURRENT_ERRORS=$(grep -oE '[0-9]+ error\(s\)' "$RUNNER_TEMP/validation.txt" | tail -1 | grep -oE '^[0-9]+' || echo 0)
+          echo "current_errors=$CURRENT_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "Current validation errors: $CURRENT_ERRORS (merge base baseline: $BASELINE_ERRORS)"
 
           # A changed English key is "stale" for a language while that language's value is
           # still exactly the value it had at the merge base. The bot's own commit rewrites
@@ -256,6 +288,7 @@ jobs:
           cat "$RUNNER_TEMP/stale.json"
 
           STALE_EMPTY=$(jq -r 'if . == {} then "true" else "false" end' "$RUNNER_TEMP/stale.json")
+          DELTA_EMPTY=$(jq -r 'if .added == {} and .changed == {} and .removed == [] then "true" else "false" end' "$RUNNER_TEMP/delta.json")
 
           # Circuit breaker: the workflow's own commit never re-enters the translate arm —
           # at most one bot commit per human push, even if the model's output is unstable.
@@ -264,20 +297,67 @@ jobs:
             BOT_HEAD=true
           fi
 
-          if [ "$VALIDATE_EXIT" -eq 0 ] && { [ "$STALE_EMPTY" = "true" ] || [ "$BOT_HEAD" = "true" ]; }; then
-            echo "needs_translation=false" >> "$GITHUB_OUTPUT"
-          else
+          # The model runs for this PR's own work only: keys it added/changed/removed, or
+          # changed keys whose translations are still the pre-change ones. Validation errors
+          # are deliberately NOT a trigger — in a repo with pre-existing drift that handed
+          # the model the entire legacy backlog instead of the PR's few keys. The backlog is
+          # instead held in place by the baseline comparison in the gates further down.
+          if { [ "$DELTA_EMPTY" = "false" ] || [ "$STALE_EMPTY" = "false" ]; } && [ "$BOT_HEAD" = "false" ]; then
             echo "needs_translation=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_translation=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Summary — in sync
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'false'
+        shell: bash
+        env:
+          CURRENT_ERRORS: ${{ steps.scan.outputs.current_errors }}
         run: |
-          {
-            echo "### ✅ Translations in sync"
-            echo ""
-            echo "Every key in studio.en.yaml is present and valid in all target languages."
-          } >> "$GITHUB_STEP_SUMMARY"
+          # "In sync" is only true at zero errors. With a pre-existing backlog the honest
+          # claim is the narrower one: this PR had no translation work to do.
+          if [ "$CURRENT_ERRORS" -eq 0 ]; then
+            {
+              echo "### ✅ Translations in sync"
+              echo ""
+              echo "Every key in studio.en.yaml is present and valid in all target languages."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### ✅ No translation work for this PR"
+              echo ""
+              echo "This PR adds, changes, or removes no English keys, so there is nothing to"
+              echo "translate. ${CURRENT_ERRORS} pre-existing validation error(s) remain in the"
+              echo "translation files (not caused by this PR) — clearing them needs a separate"
+              echo "full backfill run."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # The model did not run, so the workflow has nothing to regenerate — but the PR must
+      # still not leave validation worse than it found it. Pre-existing errors sit in both
+      # numbers and cancel out; only errors this PR introduced can make the difference grow.
+      - name: Guard — no new validation errors
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'false'
+        shell: bash
+        env:
+          BASELINE_ERRORS: ${{ steps.scan.outputs.baseline_errors }}
+          CURRENT_ERRORS: ${{ steps.scan.outputs.current_errors }}
+        run: |
+          if [ "$CURRENT_ERRORS" -gt "$BASELINE_ERRORS" ]; then
+            {
+              echo "### ❌ This PR adds validation errors to the translation files"
+              echo ""
+              echo "Validation errors went from ${BASELINE_ERRORS} at the merge base to ${CURRENT_ERRORS}."
+              echo "This PR does not change studio.en.yaml, so the workflow has no key delta to"
+              echo "regenerate the language files from — fix them in this PR."
+              echo ""
+              echo '```'
+              cat "$RUNNER_TEMP/validation.txt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::This PR introduces $((CURRENT_ERRORS - BASELINE_ERRORS)) new translation validation error(s) (merge base: $BASELINE_ERRORS, now: $CURRENT_ERRORS)"
+            exit 1
+          fi
 
       # ── Auto-translate arm ────────────────────────────────────────────────
       # Claude only edits translation files; everything before and after it is
@@ -377,10 +457,16 @@ jobs:
           # The single Bash allow rule below is an exact match, so the command spelled out
           # in the prompt above must stay byte-identical to it. Keep translations_dir
           # unquoted in both (the gate step rejects values containing spaces).
+          #
+          # `Write` is listed bare, with no path: the SDK allowlist gates file tools by NAME,
+          # and the file-permission checks match only Edit(path)/Read(path) rules ("Edit rules
+          # apply to all built-in tools that edit files"), so the two Edit allows below are
+          # what scope where Write may write, and the Edit denies below still block it.
+          # Omitting Write entirely is what produced 16 permission denials on the first run.
           claude_args: |
             --max-turns 50
             ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
-            --allowedTools "Read,Glob,Grep,TodoWrite,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }})"
+            --allowedTools "Read,Glob,Grep,TodoWrite,Write,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }})"
             --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**)"
 
       - name: Guard — English base untouched
@@ -398,14 +484,40 @@ jobs:
         shell: bash
         env:
           DIR: ${{ inputs.translations_dir }}
+          BASELINE_ERRORS: ${{ steps.scan.outputs.baseline_errors }}
         run: |
           # Runs the copied scripts in .translation-skill/: the private checkout is gone by
-          # now (deleted before the model step). The copy is provably unmodified — no Edit
-          # rule covers .translation-skill/**, and the model's single Bash rule is an exact
-          # command match, so no redirect or extra argument can be smuggled into it.
-          if ! python3 .translation-skill/scripts/validate_translations.py --dir "$DIR" | tee "$RUNNER_TEMP/revalidation.txt"; then
+          # now (deleted before the model step). No Edit allow rule covers
+          # .translation-skill/**, and the model's single Bash rule is an exact command
+          # match, so no redirect or extra argument can be smuggled into it.
+          #
+          # The gate is baseline-relative, not "must exit 0": errors that already existed at
+          # the merge base are not this PR's to fix, and demanding zero makes every PR in a
+          # drifted repo permanently red. The validator exits 1 whenever ANY error exists, so
+          # its exit code cannot be the gate — capture it, and keep exit >= 2 (usage/IO
+          # error, i.e. misconfiguration) as a hard failure.
+          set +e
+          python3 .translation-skill/scripts/validate_translations.py --dir "$DIR" \
+            > "$RUNNER_TEMP/revalidation.txt" 2>&1
+          REVALIDATE_EXIT=$?
+          set -e
+          cat "$RUNNER_TEMP/revalidation.txt"
+          if [ "$REVALIDATE_EXIT" -ge 2 ]; then
+            echo "::error::validate_translations.py failed with a usage/IO error (exit $REVALIDATE_EXIT) after the translate step"
+            exit 1
+          fi
+
+          FINAL_ERRORS=$(grep -oE '[0-9]+ error\(s\)' "$RUNNER_TEMP/revalidation.txt" | tail -1 | grep -oE '^[0-9]+' || echo 0)
+          echo "Validation errors after translating: $FINAL_ERRORS (merge base baseline: $BASELINE_ERRORS)"
+
+          # Self-enforcing: an added key the model failed to translate is itself a new error
+          # in every target language, so "no worse than the baseline" still forces the delta
+          # to be handled. No separate "was the delta applied?" check is needed.
+          if [ "$FINAL_ERRORS" -gt "$BASELINE_ERRORS" ]; then
             {
               echo "### ❌ Generated translations failed validation — nothing committed"
+              echo ""
+              echo "Validation errors (${FINAL_ERRORS}) exceed the merge-base baseline (${BASELINE_ERRORS})."
               echo ""
               echo '```'
               cat "$RUNNER_TEMP/revalidation.txt"
@@ -413,6 +525,10 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::error::Generated translations failed validation — nothing was committed"
             exit 1
+          fi
+
+          if [ "$FINAL_ERRORS" -gt 0 ]; then
+            echo "::warning::${FINAL_ERRORS} validation error(s) remain, all pre-existing at the merge base — not introduced by this PR, and not blocking it"
           fi
 
       - name: Detect changes
@@ -444,6 +560,8 @@ jobs:
       - name: Comment on PR
         if: steps.gate.outputs.run == 'true' && steps.changes.outputs.any == 'true'
         uses: actions/github-script@v7
+        env:
+          BASELINE_ERRORS: ${{ steps.scan.outputs.baseline_errors }}
         with:
           github-token: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
           script: |
@@ -510,6 +628,16 @@ jobs:
               : '';
             if (report) {
               body += `\n#### ⚠️ Ambiguous keys (review carefully)\n\n${report}\n`;
+            }
+            // Errors that already existed at the merge base are reported, never blocking:
+            // the job's gate is "no worse than the merge base", so a legacy backlog stays
+            // visible to reviewers without turning every PR in the repo red.
+            const baselineErrors = Number.parseInt(process.env.BASELINE_ERRORS ?? '', 10);
+            if (Number.isFinite(baselineErrors) && baselineErrors > 0) {
+              body += `\n#### ℹ️ Pre-existing translation errors (not from this PR)\n\n`
+                + `${baselineErrors} validation error(s) were already present in these files at`
+                + ` the merge base. They predate this PR, are not blocking it, and clearing them`
+                + ` needs a separate full backfill run.\n`;
             }
             // Scope the upsert to our own comment: a marker planted by another user must
             // neither be hijacked (we would edit their comment) nor block us (we would
