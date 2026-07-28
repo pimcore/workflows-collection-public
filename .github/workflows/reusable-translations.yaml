@@ -82,6 +82,19 @@ jobs:
           token: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
           persist-credentials: false # the PAT never lands in .git/config; push creds are injected after the Claude step
 
+      - name: Clear private checkout path
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          # A PR that commits .claude-code (as a symlink or a directory) would make
+          # the next checkout materialize the private repo somewhere else — and the
+          # later `rm -rf .claude-code` would then remove only the link, leaving
+          # private content on disk while the model runs. Clear the path first.
+          if [ -e .claude-code ] || [ -L .claude-code ]; then
+            echo "::warning::removing a pre-existing .claude-code path committed by this branch"
+            rm -rf .claude-code
+          fi
+
       - name: Checkout pimcore/claude-code (skill + scripts)
         if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@v5.0.1
