@@ -463,11 +463,20 @@ jobs:
           # apply to all built-in tools that edit files"), so the two Edit allows below are
           # what scope where Write may write, and the Edit denies below still block it.
           # Omitting Write entirely is what produced 16 permission denials on the first run.
+          #
+          # Edit(.translation-skill/**) and Edit(.translation-scan/**) exist because of that
+          # bare Write: the docs do not settle whether a bare allow matches a path covered by
+          # no Edit rule at all, so these two paths are denied explicitly rather than left to
+          # fall through. Deny beats allow unconditionally and Edit rules cover every
+          # file-editing tool, so the mechanical gate's own validator (.translation-skill/)
+          # and the scan artifacts that define the model's task (.translation-scan/) are
+          # unwritable under either reading. Neither is Read-denied — the model must read the
+          # skill and its precomputed delta/stale/validation inputs.
           claude_args: |
             --max-turns 50
             ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
             --allowedTools "Read,Glob,Grep,TodoWrite,Write,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }})"
-            --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**)"
+            --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**),Edit(.translation-skill/**),Edit(.translation-scan/**)"
 
       - name: Guard — English base untouched
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
