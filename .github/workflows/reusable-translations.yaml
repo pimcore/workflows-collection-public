@@ -299,6 +299,10 @@ jobs:
               changed keys absent from stale.json are already up to date.
             - Validation report: read .translation-scan/validation.txt
 
+            Do not run key_diff.py. The skill's workflow tells you to run it, but in this
+            CI run that step is already done — the delta is precomputed in the files above,
+            and Bash has no permission to run anything except the validation command below.
+
             Fix exactly these findings: translate added keys into every target language
             per the skill's guidelines and glossary, re-translate the stale changed-key /
             language pairs, remove removed keys from all language files, and repair every
@@ -313,12 +317,18 @@ jobs:
               and is empty: if there were ambiguous keys, append a short markdown section
               listing them (key, chosen reading, alternative) to it. If there were none,
               leave it empty.
-            - Before finishing, re-run .translation-skill/scripts/validate_translations.py
-              (allowed via Bash) and fix every remaining ERROR.
+            - Before finishing, re-run validation and fix every remaining ERROR. Use
+              exactly this command, byte for byte:
+              python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }}
+              Any other variant is denied — do not add quotes, extra flags, redirects, or
+              pipes, and do not chain it with other commands.
+          # The single Bash allow rule below is an exact match, so the command spelled out
+          # in the prompt above must stay byte-identical to it. Keep translations_dir
+          # unquoted in both (the gate step rejects values containing spaces).
           claude_args: |
             --max-turns 50
             ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
-            --allowedTools "Read,Glob,Grep,TodoWrite,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .translation-skill/scripts/key_diff.py:*),Bash(python3 .translation-skill/scripts/validate_translations.py:*)"
+            --allowedTools "Read,Glob,Grep,TodoWrite,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }})"
             --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**)"
 
       - name: Guard — English base untouched
@@ -337,9 +347,10 @@ jobs:
         env:
           DIR: ${{ inputs.translations_dir }}
         run: |
-          # Runs the copied scripts in .translation-skill/: the private checkout is gone
-          # by now (deleted before the model step), and the model's write rules cover only
-          # the studio.*.yaml files and the report file, so the copy is unmodified.
+          # Runs the copied scripts in .translation-skill/: the private checkout is gone by
+          # now (deleted before the model step). The copy is provably unmodified — no Edit
+          # rule covers .translation-skill/**, and the model's single Bash rule is an exact
+          # command match, so no redirect or extra argument can be smuggled into it.
           if ! python3 .translation-skill/scripts/validate_translations.py --dir "$DIR" | tee "$RUNNER_TEMP/revalidation.txt"; then
             {
               echo "### ❌ Generated translations failed validation — nothing committed"
