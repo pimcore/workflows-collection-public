@@ -315,6 +315,19 @@ jobs:
           mkdir -p .translation-scan
           cp "$RUNNER_TEMP/delta.json" "$RUNNER_TEMP/stale.json" "$RUNNER_TEMP/validation.txt" .translation-scan/
 
+          # claude-code-action snapshots the PR's versions of its sensitive config
+          # paths into .claude-pr/ with dereference:true before replacing them from
+          # the base branch. That snapshot follows symlinks — at those paths or
+          # nested inside them — and lands inside the workspace, where the model can
+          # read it. The action replaces all of these from base anyway, so removing
+          # the PR's copies here costs nothing and closes the dereference entirely.
+          for p in .claude .mcp.json .claude.json .gitmodules .ripgreprc CLAUDE.md CLAUDE.local.md .husky; do
+            if [ -e "$p" ] || [ -L "$p" ]; then
+              echo "::warning::removing PR-authored $p before invoking the model (replaced from the base branch anyway)"
+              rm -rf "$p"
+            fi
+          done
+
       - name: Translate missing keys (Claude, tool-restricted)
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
         uses: anthropics/claude-code-action@v1
