@@ -117,7 +117,9 @@ jobs:
               id: vulnerabilities
               run: |
                 set +e
-                VULNERABILITIES=$(composer audit)
+                # Abandoned packages are still listed in the output, but no longer influence the
+                # exit code - otherwise they get reported as security vulnerabilities.
+                VULNERABILITIES=$(composer audit --abandoned=report)
                 EXIT_CODE=$?
                 set -e
 
