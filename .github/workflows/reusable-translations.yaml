@@ -555,7 +555,15 @@ jobs:
           done
 
       - name: Translate missing keys (Claude, tool-restricted)
+        id: translate
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        # The deterministic gates below (English-base guard, re-validate, delta check) are
+        # the authority on whether the model's output is acceptable, so a model failure —
+        # including running out of turns — must fall through to them instead of skipping
+        # them. continue-on-error lets a turn-limit stop (or any other step failure here)
+        # reach those gates, which then fail the job with a far better diagnosis than
+        # "reached maximum number of turns" if the model produced nothing usable.
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_TRANSLATIONS_API_KEY }}
@@ -597,11 +605,17 @@ jobs:
                this PR. Those are legacy drift: you are welcome to fix them — that is what
                step 2 is for — but they are not required. If you run short of turns, leave
                them rather than leaving the step 1 delta unfinished.
-            4. Whole-file rewrites are allowed, and are usually cheaper than many
-               single-key edits when a language file needs a lot of changes. You may
-               rewrite a studio.{locale}.yaml wholesale — preserving every existing
-               translated value exactly, and adding, removing, or reordering only what the
-               errors require. Never invent changes to values that are already correct.
+            4. Missing keys are usually clustered: a feature's keys typically sit together
+               in studio.en.yaml (for example operational-grid.csv-import.title/description/
+               ok/cancel are four adjacent keys). Insert a whole run of adjacent missing
+               keys in ONE edit rather than one edit per key — that is the difference
+               between finishing inside the turn budget and running out of turns. Each
+               tool call costs one turn and the budget is finite, so prefer the fewest
+               edits that do the job correctly. Do NOT rewrite an entire language file to
+               fix a handful of keys: restating thousands of already-correct lines is slow
+               and expensive, and risks corrupting translations that were fine. Never alter
+               a value that is already correct — only add, remove, or reorder what the
+               reported errors require.
             5. Values that are identical to their English source are reported as
                "untranslated". Those are WARNINGS, not errors — for technical terms an
                identical value is legitimate. Do not mass-rewrite them: leave them alone
@@ -653,6 +667,21 @@ jobs:
             ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
             --allowedTools "Read,Glob,Grep,TodoWrite,Write,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }})"
             --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**),Edit(.translation-skill/**),Edit(.translation-scan/**)"
+
+      - name: Note model outcome
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        env:
+          OUTCOME: ${{ steps.translate.outcome }}
+        run: |
+          if [ "$OUTCOME" != "success" ]; then
+            echo "::warning::The translate step did not complete (outcome: ${OUTCOME}). Any work it did complete is still being validated by the gates below. A turn-limit stop means backlog cleanup was truncated, not that the run is broken."
+            {
+              echo "### ⚠️ Model step did not complete (outcome: ${OUTCOME})"
+              echo ""
+              echo "Any work it did complete is still being validated by the gates below."
+              echo "A turn-limit stop means backlog cleanup was truncated, not that the run is broken."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Guard — English base untouched
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
