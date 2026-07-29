@@ -147,6 +147,36 @@ jobs:
           # Later steps recompute staleness against the same comparison point.
           echo "merge_base=$MERGE_BASE" >> "$GITHUB_OUTPUT"
 
+          # Baseline: how many validation errors did the translation files already carry at
+          # the merge base? The job's pass/fail rule is "no worse than the baseline", never
+          # "zero errors" — a repo with legacy drift must still be able to merge a clean PR.
+          # Materialized with `git show`, which emits blob content, so it cannot traverse a
+          # symlink the way a worktree or a second checkout could. A bundle with no
+          # translation files at the merge base (brand new) correctly yields a baseline of 0.
+          BASE_DIR="$RUNNER_TEMP/base/$DIR"
+          mkdir -p "$BASE_DIR"
+          BASELINE_ERRORS=0
+          # Always exists, even when the block below is skipped (brand-new bundle, no
+          # baseline files) — the install step copies this into .translation-scan/
+          # unconditionally, so a missing file here would fail that cp.
+          : > "$RUNNER_TEMP/baseline.txt"
+          BASE_FILES=$(git ls-tree --name-only "$MERGE_BASE" -- "$DIR/" | grep -E '/studio\.[^/]+\.yaml$' || true)
+          if [ -n "$BASE_FILES" ]; then
+            while IFS= read -r f; do
+              git show "$MERGE_BASE:$f" > "$BASE_DIR/$(basename "$f")"
+            done <<< "$BASE_FILES"
+            set +e
+            python3 "$SKILL_PATH/scripts/validate_translations.py" --dir "$BASE_DIR" \
+              > "$RUNNER_TEMP/baseline.txt" 2>&1
+            set -e
+            # Summary line: "6 language(s) checked: 151 error(s), 0 warning(s), 1811 untranslated".
+            # Take the LAST match so per-language lines can never be picked up, and fall back
+            # to 0 rather than an empty string (which would break the comparisons below).
+            BASELINE_ERRORS=$(grep -oE '[0-9]+ error\(s\)' "$RUNNER_TEMP/baseline.txt" | tail -1 | grep -oE '^[0-9]+' || echo 0)
+          fi
+          echo "baseline_errors=$BASELINE_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "Baseline (merge base) validation errors: $BASELINE_ERRORS"
+
           python3 "$SKILL_PATH/scripts/key_diff.py" \
             --path "$DIR/studio.en.yaml" \
             --base-ref "$MERGE_BASE" > "$RUNNER_TEMP/delta.json"
@@ -161,6 +191,12 @@ jobs:
             echo "::error::validate_translations.py failed with a usage/IO error (exit $VALIDATE_EXIT) — check translations_dir"
             exit 1
           fi
+
+          # Same parse as the baseline, against the PR's current state. Exit 1 (errors exist)
+          # is no longer a gate on its own — only the comparison with the baseline is.
+          CURRENT_ERRORS=$(grep -oE '[0-9]+ error\(s\)' "$RUNNER_TEMP/validation.txt" | tail -1 | grep -oE '^[0-9]+' || echo 0)
+          echo "current_errors=$CURRENT_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "Current validation errors: $CURRENT_ERRORS (merge base baseline: $BASELINE_ERRORS)"
 
           # A changed English key is "stale" for a language while that language's value is
           # still exactly the value it had at the merge base. The bot's own commit rewrites
@@ -255,7 +291,144 @@ jobs:
 
           cat "$RUNNER_TEMP/stale.json"
 
+          # Second RUNNER_TEMP script, generated here but deliberately NOT run here: it judges
+          # the model's output, so it only means anything after the translate step, which runs
+          # it. Same reasoning as stale_check.py for why it lives in RUNNER_TEMP — outside the
+          # workspace, so the model (workspace-scoped write rules, Bash limited to one exact
+          # command) cannot edit the check that judges it.
+          #
+          # Why it exists: error counts alone can no longer prove this PR's delta was applied.
+          # Now that the model also repairs the pre-existing backlog, a legacy error it fixed
+          # offsets an added key it skipped — the totals stay within the baseline and the job
+          # would go green with the PR's own keys still missing. So the delta is asserted
+          # directly, per key and per language, instead of inferred from arithmetic.
+          #
+          # It enumerates the CONFIGURED target languages, not the files on disk. A wholly
+          # absent studio.{lang}.yaml costs validate_translations.py exactly one MISSING FILE
+          # error no matter how many keys it lacks, so that error is identical before and
+          # after the model and the count gate cannot see an unapplied delta there — and a
+          # check that globbed only existing files would not see it either. Both gates would
+          # pass with the new key never reaching that language. This is the real
+          # "new bundle / newly added language" case the skill supports.
+          #
+          # delta.changed is deliberately NOT checked here. A changed English key whose
+          # existing translation legitimately still fits (an English-only typo fix) must stay
+          # green, and no mechanical test can tell that from a translation the model wrongly
+          # skipped — those pairs stay human-enforced, via the PR comment's "existing
+          # translations kept (verify these)" section.
+          cat > "$RUNNER_TEMP/delta_check.py" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import yaml
+
+          dir_path = Path(os.environ["DIR"])
+          temp = Path(os.environ["RUNNER_TEMP"])
+          # Copied into the workspace by the install step, so it is on disk by the time the
+          # re-validate step runs this — the only step that does.
+          languages_file = Path(".translation-skill/data/languages.yaml")
+
+          delta = json.loads((temp / "delta.json").read_text(encoding="utf-8"))
+          added = delta.get("added") or {}
+          removed = delta.get("removed") or []
+          # key_diff.py emits added as a mapping and removed as a list; accept either shape
+          # for both rather than depending on that.
+          added_keys = list(added.keys()) if isinstance(added, dict) else list(added)
+          removed_keys = list(removed.keys()) if isinstance(removed, dict) else list(removed)
+
+          MISSING = object()
+
+
+          def load(text):
+              """Parse translation YAML; missing, empty, or malformed files are empty mappings.
+
+              A malformed file makes every added key read as missing, which is the right
+              answer here: the delta was not applied to it.
+              """
+              if not text:
+                  return {}
+              try:
+                  return yaml.safe_load(text) or {}
+              except yaml.YAMLError:
+                  return {}
+
+
+          def lookup(doc, key):
+              """Resolve a key stored either flat ("a.b: x") or nested (a: {b: x})."""
+              if isinstance(doc, dict) and key in doc:
+                  return doc[key]
+              node = doc
+              for part in key.split("."):
+                  if not isinstance(node, dict) or part not in node:
+                      return MISSING
+                  node = node[part]
+              return node
+
+
+          def globbed_languages():
+              return [
+                  p.name[len("studio."):-len(".yaml")]
+                  for p in sorted(dir_path.glob("studio.*.yaml"))
+                  if p.name != "studio.en.yaml"
+              ]
+
+
+          def expected_languages():
+              """Target codes from the skill's languages.yaml, mirroring the validator's loader.
+
+              str() is not decorative: "no" (Norwegian) is quoted in that file precisely
+              because YAML parses a bare `no` as the boolean False, and the validator coerces
+              the same way. Dropping it would look for studio.False.yaml.
+
+              Falls back to whatever language files exist if the file is unreadable, is not
+              the expected shape, or lists no targets — a degraded check beats a crashed one,
+              but it is announced so the log shows which mode ran.
+              """
+              try:
+                  data = yaml.safe_load(languages_file.read_text(encoding="utf-8")) or {}
+                  codes = [str(t["code"]) for t in (data.get("targets") or [])]
+              except (OSError, yaml.YAMLError, AttributeError, TypeError, KeyError, IndexError):
+                  codes = []
+              if codes:
+                  return codes
+              print("WARNING: falling back to globbed language files")
+              return globbed_languages()
+
+
+          languages = expected_languages()
+          delta_has_keys = bool(added_keys or removed_keys)
+
+          violations = 0
+          for lang in languages:
+              if lang == "en":
+                  continue
+              path = dir_path / f"studio.{lang}.yaml"
+              if not path.is_file():
+                  # One MISSING FILE error in the validator regardless of key count, so the
+                  # count gate is blind here. With no added/removed keys to apply there is
+                  # nothing for THIS check to assert — an absent file on its own is the count
+                  # gate's business.
+                  if delta_has_keys:
+                      print(f"MISSING FILE studio.{lang}.yaml")
+                      violations += 1
+                  continue
+              now = load(path.read_text(encoding="utf-8"))
+              for key in added_keys:
+                  if lookup(now, key) is MISSING:
+                      print(f"MISSING {key} [{lang}]")
+                      violations += 1
+              for key in removed_keys:
+                  if lookup(now, key) is not MISSING:
+                      print(f"STILL PRESENT {key} [{lang}]")
+                      violations += 1
+
+          print(f"Delta violations: {violations}")
+          raise SystemExit(1 if violations else 0)
+          PY
+
           STALE_EMPTY=$(jq -r 'if . == {} then "true" else "false" end' "$RUNNER_TEMP/stale.json")
+          DELTA_EMPTY=$(jq -r 'if .added == {} and .changed == {} and .removed == [] then "true" else "false" end' "$RUNNER_TEMP/delta.json")
 
           # Circuit breaker: the workflow's own commit never re-enters the translate arm —
           # at most one bot commit per human push, even if the model's output is unstable.
@@ -264,20 +437,73 @@ jobs:
             BOT_HEAD=true
           fi
 
-          if [ "$VALIDATE_EXIT" -eq 0 ] && { [ "$STALE_EMPTY" = "true" ] || [ "$BOT_HEAD" = "true" ]; }; then
-            echo "needs_translation=false" >> "$GITHUB_OUTPUT"
-          else
+          # The model runs whenever there is any work at all: keys this PR added/changed/
+          # removed, changed keys whose translations are still the pre-change ones, or any
+          # validation error already sitting in the files. Errors DO invoke the model —
+          # that is what lets a drifted repo converge to zero over successive runs instead
+          # of merely holding steady — but they still do NOT decide pass/fail. That stays
+          # the baseline comparison in the gates further down, so cleanup is best-effort:
+          # clearing part of the backlog is green, clearing none of it is green too.
+          if { [ "$DELTA_EMPTY" = "false" ] || [ "$STALE_EMPTY" = "false" ] || [ "$CURRENT_ERRORS" -gt 0 ]; } && [ "$BOT_HEAD" = "false" ]; then
             echo "needs_translation=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_translation=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Summary — in sync
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'false'
+        shell: bash
+        env:
+          CURRENT_ERRORS: ${{ steps.scan.outputs.current_errors }}
         run: |
-          {
-            echo "### ✅ Translations in sync"
-            echo ""
-            echo "Every key in studio.en.yaml is present and valid in all target languages."
-          } >> "$GITHUB_STEP_SUMMARY"
+          # "In sync" is only true at zero errors. The other branch must describe THIS RUN, not
+          # the PR: now that any validation error invokes the model, the only way to reach it
+          # with errors outstanding is the circuit breaker — the re-run of the workflow's own
+          # sync commit — where the PR itself may well have changed English keys, and where
+          # the remaining errors are simply what the previous run did not get to.
+          if [ "$CURRENT_ERRORS" -eq 0 ]; then
+            {
+              echo "### ✅ Translations in sync"
+              echo ""
+              echo "Every key in studio.en.yaml is present and valid in all target languages."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### ✅ No translation work triggered for this run"
+              echo ""
+              echo "Nothing invoked the translation step here — either there were no key changes"
+              echo "and no stale translations to refresh, or this run is the re-run of the"
+              echo "workflow's own sync commit. ${CURRENT_ERRORS} validation error(s) remain in the"
+              echo "translation files. They are not blocking this PR; a later run will keep"
+              echo "working through them."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # The model did not run, so the workflow has nothing to regenerate — but the PR must
+      # still not leave validation worse than it found it. Pre-existing errors sit in both
+      # numbers and cancel out; only errors this PR introduced can make the difference grow.
+      - name: Guard — no new validation errors
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'false'
+        shell: bash
+        env:
+          BASELINE_ERRORS: ${{ steps.scan.outputs.baseline_errors }}
+          CURRENT_ERRORS: ${{ steps.scan.outputs.current_errors }}
+        run: |
+          if [ "$CURRENT_ERRORS" -gt "$BASELINE_ERRORS" ]; then
+            {
+              echo "### ❌ This PR adds validation errors to the translation files"
+              echo ""
+              echo "Validation errors went from ${BASELINE_ERRORS} at the merge base to ${CURRENT_ERRORS}."
+              echo "This PR does not change studio.en.yaml, so the workflow has no key delta to"
+              echo "regenerate the language files from — fix them in this PR."
+              echo ""
+              echo '```'
+              cat "$RUNNER_TEMP/validation.txt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::This PR introduces $((CURRENT_ERRORS - BASELINE_ERRORS)) new translation validation error(s) (merge base: $BASELINE_ERRORS, now: $CURRENT_ERRORS)"
+            exit 1
+          fi
 
       # ── Auto-translate arm ────────────────────────────────────────────────
       # Claude only edits translation files; everything before and after it is
@@ -313,7 +539,7 @@ jobs:
           # this workflow made.
           rm -rf .translation-scan
           mkdir -p .translation-scan
-          cp "$RUNNER_TEMP/delta.json" "$RUNNER_TEMP/stale.json" "$RUNNER_TEMP/validation.txt" .translation-scan/
+          cp "$RUNNER_TEMP/delta.json" "$RUNNER_TEMP/stale.json" "$RUNNER_TEMP/validation.txt" "$RUNNER_TEMP/baseline.txt" .translation-scan/
 
           # claude-code-action snapshots the PR's versions of its sensitive config
           # paths into .claude-pr/ with dereference:true before replacing them from
@@ -355,10 +581,31 @@ jobs:
             CI run that step is already done — the delta is precomputed in the files above,
             and Bash has no permission to run anything except the validation command below.
 
-            Fix exactly these findings: translate added keys into every target language
-            per the skill's guidelines and glossary, re-translate the stale changed-key /
-            language pairs, remove removed keys from all language files, and repair every
-            validation ERROR. Insert each key at the same position it has in studio.en.yaml.
+            Fix as much as you can, in this priority order:
+
+            1. FIRST, this PR's own delta. Translate the added keys into every target
+               language per the skill's guidelines and glossary, re-translate the stale
+               changed-key / language pairs listed in stale.json, and remove the removed
+               keys from all language files. Insert each key at the same position it has
+               in studio.en.yaml. This part is mandatory — the job fails if it is not
+               completed.
+            2. THEN, repair as many of the remaining validation errors in
+               .translation-scan/validation.txt as you can: missing keys, extra keys that
+               are not in English, non-string values that need quoting, key order,
+               placeholder mismatches, and plural pairs.
+            3. .translation-scan/baseline.txt lists the errors that already existed before
+               this PR. Those are legacy drift: you are welcome to fix them — that is what
+               step 2 is for — but they are not required. If you run short of turns, leave
+               them rather than leaving the step 1 delta unfinished.
+            4. Whole-file rewrites are allowed, and are usually cheaper than many
+               single-key edits when a language file needs a lot of changes. You may
+               rewrite a studio.{locale}.yaml wholesale — preserving every existing
+               translated value exactly, and adding, removing, or reordering only what the
+               errors require. Never invent changes to values that are already correct.
+            5. Values that are identical to their English source are reported as
+               "untranslated". Those are WARNINGS, not errors — for technical terms an
+               identical value is legitimate. Do not mass-rewrite them: leave them alone
+               unless the key is part of this PR's delta.
 
             Rules for this CI run:
             - Edit ONLY studio.{locale}.yaml language files in
@@ -369,19 +616,43 @@ jobs:
               and is empty: if there were ambiguous keys, append a short markdown section
               listing them (key, chosen reading, alternative) to it. If there were none,
               leave it empty.
-            - Before finishing, re-run validation and fix every remaining ERROR. Use
-              exactly this command, byte for byte:
+            - Before finishing, re-run validation and confirm two things: (a) none of the
+              delta keys you were assigned in step 1 appear as errors, and (b) the total
+              error count has not increased. Anything you cleared beyond that is a bonus;
+              the total does not have to reach zero. Use exactly this command,
+              byte for byte:
               python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }}
               Any other variant is denied — do not add quotes, extra flags, redirects, or
               pipes, and do not chain it with other commands.
           # The single Bash allow rule below is an exact match, so the command spelled out
           # in the prompt above must stay byte-identical to it. Keep translations_dir
           # unquoted in both (the gate step rejects values containing spaces).
+          #
+          # `Write` is listed bare, with no path: the SDK allowlist gates file tools by NAME,
+          # and the file-permission checks match only Edit(path)/Read(path) rules ("Edit rules
+          # apply to all built-in tools that edit files"), so the two Edit allows below are
+          # what scope where Write may write, and the Edit denies below still block it.
+          # Omitting Write entirely is what produced 16 permission denials on the first run.
+          #
+          # Edit(.translation-skill/**) and Edit(.translation-scan/**) exist because of that
+          # bare Write: the docs do not settle whether a bare allow matches a path covered by
+          # no Edit rule at all, so these two paths are denied explicitly rather than left to
+          # fall through. Deny beats allow unconditionally and Edit rules cover every
+          # file-editing tool, so the mechanical gate's own validator (.translation-skill/)
+          # and the scan artifacts that define the model's task (.translation-scan/) are
+          # unwritable under either reading. Neither is Read-denied — the model must read the
+          # skill and its precomputed delta/stale/validation inputs.
+          #
+          # --max-turns was 50, sized for a delta-only task. The model now also repairs the
+          # pre-existing validation backlog, which can span every language file, so 150.
+          # The gate is baseline-relative, not "must reach zero", so partial progress still
+          # passes: exhausting the budget mid-cleanup is not a failure — it just leaves the
+          # remainder for the next run.
           claude_args: |
-            --max-turns 50
+            --max-turns 150
             ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
-            --allowedTools "Read,Glob,Grep,TodoWrite,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }})"
-            --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**)"
+            --allowedTools "Read,Glob,Grep,TodoWrite,Write,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }})"
+            --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**),Edit(.translation-skill/**),Edit(.translation-scan/**)"
 
       - name: Guard — English base untouched
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
@@ -394,24 +665,88 @@ jobs:
           fi
 
       - name: Re-validate (mechanical gate)
+        id: revalidate
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
         shell: bash
         env:
           DIR: ${{ inputs.translations_dir }}
+          BASELINE_ERRORS: ${{ steps.scan.outputs.baseline_errors }}
         run: |
           # Runs the copied scripts in .translation-skill/: the private checkout is gone by
-          # now (deleted before the model step). The copy is provably unmodified — no Edit
-          # rule covers .translation-skill/**, and the model's single Bash rule is an exact
-          # command match, so no redirect or extra argument can be smuggled into it.
-          if ! python3 .translation-skill/scripts/validate_translations.py --dir "$DIR" | tee "$RUNNER_TEMP/revalidation.txt"; then
+          # now (deleted before the model step). No Edit allow rule covers
+          # .translation-skill/**, and the model's single Bash rule is an exact command
+          # match, so no redirect or extra argument can be smuggled into it.
+          #
+          # The gate is baseline-relative, not "must exit 0": errors that already existed at
+          # the merge base are not this PR's to fix, and demanding zero makes every PR in a
+          # drifted repo permanently red. The validator exits 1 whenever ANY error exists, so
+          # its exit code cannot be the gate — capture it, and keep exit >= 2 (usage/IO
+          # error, i.e. misconfiguration) as a hard failure.
+          set +e
+          python3 .translation-skill/scripts/validate_translations.py --dir "$DIR" \
+            > "$RUNNER_TEMP/revalidation.txt" 2>&1
+          REVALIDATE_EXIT=$?
+          set -e
+          cat "$RUNNER_TEMP/revalidation.txt"
+          if [ "$REVALIDATE_EXIT" -ge 2 ]; then
+            echo "::error::validate_translations.py failed with a usage/IO error (exit $REVALIDATE_EXIT) after the translate step"
+            exit 1
+          fi
+
+          FINAL_ERRORS=$(grep -oE '[0-9]+ error\(s\)' "$RUNNER_TEMP/revalidation.txt" | tail -1 | grep -oE '^[0-9]+' || echo 0)
+          # Exported so the PR comment can report backlog progress (final vs baseline).
+          echo "final_errors=$FINAL_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "Validation errors after translating: $FINAL_ERRORS (merge base baseline: $BASELINE_ERRORS)"
+
+          # Two independent gates, in this order. This first one is the count comparison, and
+          # it answers exactly one question: did this run leave the repo worse than it found
+          # it? It cannot answer "was this PR's delta applied?" — with backlog cleanup active,
+          # a legacy error the model fixed offsets an added key it skipped and the two cancel
+          # out. That second question is answered directly by delta_check.py below, per key
+          # and per language, so the delta guarantee is enforced rather than inferred.
+          if [ "$FINAL_ERRORS" -gt "$BASELINE_ERRORS" ]; then
             {
               echo "### ❌ Generated translations failed validation — nothing committed"
+              echo ""
+              echo "Validation errors (${FINAL_ERRORS}) exceed the merge-base baseline (${BASELINE_ERRORS})."
               echo ""
               echo '```'
               cat "$RUNNER_TEMP/revalidation.txt"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::error::Generated translations failed validation — nothing was committed"
+            exit 1
+          fi
+
+          if [ "$FINAL_ERRORS" -gt 0 ]; then
+            echo "::warning::${FINAL_ERRORS} validation error(s) remain, all pre-existing at the merge base — not introduced by this PR, and not blocking it"
+          fi
+
+          # Second gate: the delta itself, asserted per key and per language. Generated in the
+          # scan step (see the rationale there); reads DIR and RUNNER_TEMP from this step's
+          # environment. Runs after the count comparison has passed, and three steps before
+          # anything is committed — "Detect changes", "Comment on PR" and "Configure push
+          # credentials" all sit between here and the commit action, and a failure here aborts
+          # the job before any of them, so nothing is pushed and no comment is posted.
+          set +e
+          python3 "$RUNNER_TEMP/delta_check.py" > "$RUNNER_TEMP/delta-violations.txt" 2>&1
+          DELTA_EXIT=$?
+          set -e
+          cat "$RUNNER_TEMP/delta-violations.txt"
+          if [ "$DELTA_EXIT" -ne 0 ]; then
+            {
+              echo "### ❌ This PR's key changes were not applied to every language — nothing committed"
+              echo ""
+              echo "Total validation errors are within the merge-base baseline, but this PR's own"
+              echo "added keys are still missing, or its removed keys are still present, in the"
+              echo "language files listed below. Backlog cleanup elsewhere in the same run can hide"
+              echo "that in the totals, so the key changes are checked directly."
+              echo ""
+              echo '```'
+              cat "$RUNNER_TEMP/delta-violations.txt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::the model did not apply this PR's key changes to every language"
             exit 1
           fi
 
@@ -444,6 +779,9 @@ jobs:
       - name: Comment on PR
         if: steps.gate.outputs.run == 'true' && steps.changes.outputs.any == 'true'
         uses: actions/github-script@v7
+        env:
+          BASELINE_ERRORS: ${{ steps.scan.outputs.baseline_errors }}
+          FINAL_ERRORS: ${{ steps.revalidate.outputs.final_errors }}
         with:
           github-token: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
           script: |
@@ -510,6 +848,32 @@ jobs:
               : '';
             if (report) {
               body += `\n#### ⚠️ Ambiguous keys (review carefully)\n\n${report}\n`;
+            }
+            // Errors that already existed at the merge base are reported, never blocking:
+            // the job's gate is "no worse than the merge base", so a legacy backlog stays
+            // visible to reviewers without turning every PR in the repo red. The model is
+            // asked to chip at that backlog after finishing the delta, so this section also
+            // reports how far it got. Both counts are parsed defensively — a missing or
+            // non-numeric value falls back to the plain "backlog exists" wording.
+            const baselineErrors = Number.parseInt(process.env.BASELINE_ERRORS ?? '', 10);
+            const finalErrors = Number.parseInt(process.env.FINAL_ERRORS ?? '', 10);
+            if (Number.isFinite(baselineErrors) && baselineErrors > 0) {
+              if (Number.isFinite(finalErrors) && finalErrors < baselineErrors) {
+                body += `\n#### 🧹 Pre-existing translation errors (backlog partly cleared)\n\n`
+                  + `${baselineErrors} validation error(s) predating this PR were present at the`
+                  + ` merge base. This run also fixed ${baselineErrors - finalErrors} of them;`
+                  + ` ${finalErrors} still remain. The remainder is not blocking — later runs`
+                  + ` keep chipping at it.\n`;
+              } else if (Number.isFinite(finalErrors) && finalErrors === baselineErrors) {
+                body += `\n#### ℹ️ Pre-existing translation errors (not from this PR)\n\n`
+                  + `${baselineErrors} validation error(s) predating this PR are still present.`
+                  + ` They are not blocking it; clearing them needs another run or a dedicated`
+                  + ` backfill.\n`;
+              } else {
+                body += `\n#### ℹ️ Pre-existing translation errors (not from this PR)\n\n`
+                  + `${baselineErrors} validation error(s) were already present in these files at`
+                  + ` the merge base. They predate this PR and are not blocking it.\n`;
+              }
             }
             // Scope the upsert to our own comment: a marker planted by another user must
             // neither be hijacked (we would edit their comment) nor block us (we would
