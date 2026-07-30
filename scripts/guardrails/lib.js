@@ -195,7 +195,8 @@ async function upsertComment({ github, context, issueNumber, marker, body }) {
  * Delete the marker comments of one or more guardrails (used when a guardrail now
  * passes, or when a PR turns out to be bypassed, so a stale failure comment does
  * not linger). Lists the comments once for all markers. No-op when there is
- * nothing to remove. Returns the number of comments deleted.
+ * nothing to remove. A comment another job deleted first (404) is not an error.
+ * Returns the number of comments deleted.
  */
 async function deleteMarkerComments({ github, context, issueNumber, markers }) {
   const { owner, repo } = context.repo;
@@ -215,10 +216,18 @@ async function deleteMarkerComments({ github, context, issueNumber, markers }) {
   const matches = comments.filter(
     (c) => c.user && c.user.login === GUARD_BOT && c.body && tags.some((t) => c.body.includes(t)),
   );
+  let deleted = 0;
   for (const c of matches) {
-    await github.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
+    try {
+      await github.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
+      deleted++;
+    } catch (err) {
+      // Another guardrail job may have deleted the same comment first (a
+      // check_suite run and a PR run can overlap). Nothing left to do.
+      if (err.status !== 404) throw err;
+    }
   }
-  return matches.length;
+  return deleted;
 }
 
 /** Single-marker convenience wrapper around `deleteMarkerComments`. */

@@ -148,12 +148,22 @@ jobs:
               // A bypass reached without any PR event (e.g. the override label
               // applied by hand, which the consumer trigger does not subscribe to)
               // therefore clears on the PR's next event rather than immediately.
+              // Best-effort, and MUST stay that way: this cleanup is cosmetic, but
+              // it now runs on the hot path for every bypassed PR. An unhandled
+              // rejection here (secondary rate limit, transient 5xx) would fail the
+              // job, and a failed membership stage emits no `bypass`, which the
+              // orchestrator's fail-safe reads as "enforce" — drafting the very PR
+              // this stage just decided to exempt. Swallow and warn instead.
               if (bypass && context.eventName === 'pull_request_target') {
-                const deleted = await lib.deleteMarkerComments({
-                  github, context, issueNumber: pr.number, markers: lib.GUARDRAIL_MARKERS,
-                });
-                if (deleted > 0) {
-                  core.info(`PR #${pr.number}: cleared ${deleted} stale guardrail failure comment(s).`);
+                try {
+                  const deleted = await lib.deleteMarkerComments({
+                    github, context, issueNumber: pr.number, markers: lib.GUARDRAIL_MARKERS,
+                  });
+                  if (deleted > 0) {
+                    core.info(`PR #${pr.number}: cleared ${deleted} stale guardrail failure comment(s).`);
+                  }
+                } catch (err) {
+                  core.warning(`PR #${pr.number}: could not clear stale guardrail comments (${err.message}); bypass is unaffected.`);
                 }
               }
             }
