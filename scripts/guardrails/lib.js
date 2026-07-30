@@ -21,6 +21,10 @@ const GUARD_BOT = process.env.GUARD_BOT_LOGIN || 'pimcore-deployments';
 // disables the date gate. ISO date (UTC) — e.g. "2026-07-07".
 const START_DATE = process.env.GUARD_START_DATE || '2026-07-07';
 
+// Marker tags of every guardrail that posts a failure comment. Kept here so a
+// bypass can clear all of them without each caller re-listing the markers.
+const GUARDRAIL_MARKERS = ['guardrail:issue-link', 'guardrail:ci-status'];
+
 // GitHub's supported issue-closing keywords.
 const CLOSING_KEYWORDS = [
   'close', 'closes', 'closed',
@@ -187,12 +191,17 @@ async function upsertComment({ github, context, issueNumber, marker, body }) {
   }
 }
 
-/** Delete the marker comment if present (used when a guardrail now passes, so a
- *  stale failure comment does not linger). No-op when there is nothing to remove. */
-async function deleteMarkerComment({ github, context, issueNumber, marker }) {
+/**
+ * Delete the marker comments of one or more guardrails (used when a guardrail now
+ * passes, or when a PR turns out to be bypassed, so a stale failure comment does
+ * not linger). Lists the comments once for all markers. No-op when there is
+ * nothing to remove. Returns the number of comments deleted.
+ */
+async function deleteMarkerComments({ github, context, issueNumber, markers }) {
   const { owner, repo } = context.repo;
   const issue_number = issueNumber || context.payload.pull_request.number;
-  const tag = `<!-- ${marker} -->`;
+  const tags = (Array.isArray(markers) ? markers : [markers]).map((m) => `<!-- ${m} -->`);
+  if (tags.length === 0) return 0;
 
   const comments = await github.paginate(github.rest.issues.listComments, {
     owner,
@@ -204,11 +213,17 @@ async function deleteMarkerComment({ github, context, issueNumber, marker }) {
   // duplicates do not leave a stale comment behind and human comments containing
   // the marker are never deleted.
   const matches = comments.filter(
-    (c) => c.user && c.user.login === GUARD_BOT && c.body && c.body.includes(tag),
+    (c) => c.user && c.user.login === GUARD_BOT && c.body && tags.some((t) => c.body.includes(t)),
   );
   for (const c of matches) {
     await github.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
   }
+  return matches.length;
+}
+
+/** Single-marker convenience wrapper around `deleteMarkerComments`. */
+async function deleteMarkerComment({ github, context, issueNumber, marker }) {
+  return deleteMarkerComments({ github, context, issueNumber, markers: [marker] });
 }
 
 /** Add a label to a PR/issue, creating the label in the repo if it is missing. */
@@ -254,6 +269,7 @@ module.exports = {
   GUARD_BOT,
   START_DATE,
   CLOSING_KEYWORDS,
+  GUARDRAIL_MARKERS,
   REVALIDATE_HINT,
   isExemptByAge,
   isDevTeamMember,
@@ -263,6 +279,7 @@ module.exports = {
   convertToDraft,
   upsertComment,
   deleteMarkerComment,
+  deleteMarkerComments,
   addLabel,
   removeLabel,
 };

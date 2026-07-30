@@ -47,8 +47,17 @@ is exempt) no comment is created, and any prior failure comment is removed.
 | Stage | Runs when | On failure |
 |-------|-----------|------------|
 | membership | `check_suite`, non-draft PR events, and `converted_to_draft` (skipped on draft PR events) | never drafts, never comments; emits `bypass` |
-| issue-link | non-draft PR events **and** not bypassed | draft + comment (reason + docs link) |
-| ci | all events (PR + `check_suite`) **and** not bypassed | draft + comment (reason) |
+| issue-link | non-draft PR events **and** membership concluded **and** not bypassed | draft + comment (reason + docs link) |
+| ci | all events (PR + `check_suite`) **and** membership concluded **and** not bypassed | draft + comment (reason) |
+
+- **Membership must conclude**: the enforcing stages carry no `always()` /
+  `!cancelled()`, so `success()` is implied on their `needs: [membership]`. A
+  membership stage that was **cancelled** (the consumer trigger uses
+  `cancel-in-progress`, so back-to-back PR events cancel runs routinely), failed
+  or was skipped emits no `bypass`, and enforcing on that empty value would draft
+  exempt members' PRs. Such an event is therefore not enforced; the superseding
+  run and every later `edited` / `synchronize` / `ready_for_review` /
+  `check_suite` event re-evaluate the PR, so enforcement is eventually consistent.
 
 - **Age exemption**: PRs created **before `GUARD_START_DATE`** (default
   `2026-07-07`) are exempt — every guardrail skips them, so the policy only
@@ -58,7 +67,8 @@ is exempt) no comment is created, and any prior failure comment is removed.
   `guardrails:override` label, or a Dev-Team member overrode it (see below).
   Otherwise non-members must link a valid issue in `pimcore/platform-version`
   via a closing keyword (every closing-keyword reference must be valid) **and**
-  pass CI.
+  pass CI. On a PR event a bypassed PR also has any guardrail failure comments
+  removed, so a comment left by an earlier run never lingers on an exempt PR.
 - **ci** requires the PR to be mergeable (no conflicts) and all checks/statuses
   green. It ignores any guardrail checks (name contains `guardrail`) to avoid
   self-deadlock and to not count a sibling guardrail's failure as a CI failure,
