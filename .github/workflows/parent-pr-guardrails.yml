@@ -7,11 +7,20 @@ name: "PR Guardrails pipeline"
 #
 # Pipeline:
 #   membership  (all events) ─► outputs.bypass
-#   issue-link  (PR events, only when not bypassed)   needs: membership
-#   ci          (PR + check_suite events, only when not bypassed)   needs: membership
+#   issue-link  (PR events, only when membership said "not bypassed")   needs: membership
+#   ci          (PR + check_suite events, only when membership said "not bypassed")   needs: membership
 #
 # Each stage that fails converts the PR to draft and comments. Stages run
 # independently and report individually (a failure does not cancel later stages).
+#
+# The enforcing stages deliberately carry NO always()/!cancelled() in their `if`,
+# so the implied success() gate applies: they run only when `membership` actually
+# produced a verdict. A membership stage that was cancelled (the consumer trigger
+# uses concurrency cancel-in-progress, so back-to-back PR events cancel runs
+# routinely), failed or was skipped emits no outputs, and enforcing on that empty
+# `bypass` would draft Dev-Team members' PRs. Enforcement is instead eventually
+# consistent: the superseding run — and every later edited / synchronize /
+# ready_for_review / check_suite event — re-evaluates the PR.
 
 on:
   workflow_call:
@@ -36,9 +45,11 @@ jobs:
 
   issue-link:
     needs: [membership]
-    # Non-draft PR events only, and only when not bypassed. If membership was
-    # skipped/errored, bypass is empty -> issue-link runs (fail-safe: enforce).
-    if: ${{ always() && github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && needs.membership.outputs.bypass != 'true' }}
+    # Non-draft PR events only, and only when membership returned a verdict that
+    # is not a bypass. No always()/!cancelled(): success() is implied, so a
+    # cancelled/failed/skipped membership stage skips this guardrail instead of
+    # enforcing on an empty `bypass`.
+    if: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && needs.membership.outputs.bypass != 'true' }}
     uses: ./.github/workflows/reusable-guardrail-issue-link.yml
     secrets:
       ISSUE_LINK_GUARD_TOKEN: ${{ secrets.ISSUE_LINK_GUARD_TOKEN }}
@@ -46,8 +57,10 @@ jobs:
   ci:
     needs: [membership]
     # Runs on PR events and on check_suite completion, but never when bypassed.
-    # Empty bypass (membership skipped/errored) -> CI runs (fail-safe).
-    if: ${{ always() && needs.membership.outputs.bypass != 'true' }}
+    # Same gate as issue-link: no always()/!cancelled(), so CI only runs once
+    # membership has concluded. (On draft PR events membership is skipped, which
+    # now skips this job too — it previously ran and no-opped on drafts anyway.)
+    if: ${{ needs.membership.outputs.bypass != 'true' }}
     uses: ./.github/workflows/reusable-guardrail-ci.yml
     with:
       # Skip individually-bypassed PRs (e.g. a member PR sharing a check_suite
