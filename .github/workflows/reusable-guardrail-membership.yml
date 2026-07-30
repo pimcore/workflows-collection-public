@@ -144,8 +144,10 @@ jobs:
               // triggered cleanup before, so a comment from an earlier run (or from
               // a run whose membership stage was cancelled) lingered forever.
               // Restricted to pull_request_target: check_suite fires many times per
-              // push, and a PR event always follows the situations that leave a
-              // stale comment behind.
+              // push, so cleaning there would list comments on every CI completion.
+              // A bypass reached without any PR event (e.g. the override label
+              // applied by hand, which the consumer trigger does not subscribe to)
+              // therefore clears on the PR's next event rather than immediately.
               if (bypass && context.eventName === 'pull_request_target') {
                 const deleted = await lib.deleteMarkerComments({
                   github, context, issueNumber: pr.number, markers: lib.GUARDRAIL_MARKERS,

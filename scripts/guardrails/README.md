@@ -47,18 +47,17 @@ is exempt) no comment is created, and any prior failure comment is removed.
 | Stage | Runs when | On failure |
 |-------|-----------|------------|
 | membership | `check_suite`, non-draft PR events, and `converted_to_draft` (skipped on draft PR events) | never drafts, never comments; emits `bypass` |
-| issue-link | non-draft PR events **and** membership concluded **and** not bypassed | draft + comment (reason + docs link) |
-| ci | all events (PR + `check_suite`) **and** membership concluded **and** not bypassed | draft + comment (reason) |
+| issue-link | non-draft PR events **and** not bypassed | draft + comment (reason + docs link) |
+| ci | all events (PR + `check_suite`) **and** not bypassed | draft + comment (reason) |
 
-- **Membership must conclude**: the enforcing stages carry no `always()` /
-  `!cancelled()`, so `success()` is implied on their `needs: [membership]`. A
-  membership stage that was **cancelled** (the consumer trigger uses
-  `cancel-in-progress`, so back-to-back PR events cancel runs routinely), failed
-  or was skipped emits no `bypass`, and enforcing on that empty value would draft
-  exempt members' PRs. Such an event is therefore not enforced; the superseding
-  run and every later `edited` / `synchronize` / `ready_for_review` /
-  `check_suite` event re-evaluate the PR, so enforcement is eventually consistent.
-
+- **Cancellation**: the enforcing stages gate on `!cancelled()`, never `always()`
+  — `always()` runs a job *even when the run is cancelled*, and the consumer
+  trigger uses `cancel-in-progress`, so back-to-back PR events cancel runs
+  routinely. A cancelled membership stage emits no `bypass`, and enforcing on
+  that empty value drafts exempt members' PRs. Cancellation is safe to skip
+  because the superseding run re-evaluates the PR immediately. Every **other**
+  non-success membership result (failed, skipped) still enforces, so a broken
+  membership stage can never silently disable the guardrails.
 - **Age exemption**: PRs created **before `GUARD_START_DATE`** (default
   `2026-07-07`) are exempt — every guardrail skips them, so the policy only
   applies to PRs opened on/after that date.
@@ -67,8 +66,14 @@ is exempt) no comment is created, and any prior failure comment is removed.
   `guardrails:override` label, or a Dev-Team member overrode it (see below).
   Otherwise non-members must link a valid issue in `pimcore/platform-version`
   via a closing keyword (every closing-keyword reference must be valid) **and**
-  pass CI. On a PR event a bypassed PR also has any guardrail failure comments
-  removed, so a comment left by an earlier run never lingers on an exempt PR.
+  pass CI.
+- **Bypass clears failure comments**: on a `pull_request_target` event a bypassed
+  PR also has every marker comment in `lib.GUARDRAIL_MARKERS` removed, so a
+  comment left by an earlier run never lingers on an exempt PR. Not done on
+  `check_suite` (it fires many times per push, and a PR event always follows the
+  situations that leave a stale comment behind). Applying the
+  `guardrails:override` label by hand is the one bypass the consumer trigger does
+  not subscribe to — its comments clear on the PR's next event.
 - **ci** requires the PR to be mergeable (no conflicts) and all checks/statuses
   green. It ignores any guardrail checks (name contains `guardrail`) to avoid
   self-deadlock and to not count a sibling guardrail's failure as a CI failure,
@@ -105,6 +110,8 @@ does not.
 1. Add `reusable-guardrail-<x>.yml` here (`workflow_call`, one token secret).
 2. Add a job to `parent-pr-guardrails.yml` and pass it the token.
 3. If it needs a new token, add **one** org-level secret.
+4. If it posts a failure comment, add its marker to `GUARDRAIL_MARKERS` in
+   `lib.js` — otherwise its comments are never cleared when a PR is bypassed.
 
 No consumer repo is touched.
 
