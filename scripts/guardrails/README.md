@@ -54,7 +54,8 @@ is exempt) no comment is created, and any prior failure comment is removed.
   `2026-07-07`) are exempt — every guardrail skips them, so the policy only
   applies to PRs opened on/after that date.
 - **Bypass**: the membership stage emits `bypass=true` (orchestrator skips both
-  issue-link and CI) when the PR author is a Dev-Team member, the PR carries the
+  issue-link and CI) when the PR author is a Dev-Team member, the PR author is
+  the guard service account (`pimcore-deployments`), the PR carries the
   `guardrails:override` label, or a Dev-Team member overrode it (see below).
   Otherwise non-members must link a valid issue in `pimcore/platform-version`
   via a closing keyword (every closing-keyword reference must be valid) **and**

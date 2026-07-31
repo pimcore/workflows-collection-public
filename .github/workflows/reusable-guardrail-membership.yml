@@ -3,6 +3,7 @@ name: "Reusable Guardrail: Dev-Team membership"
 # Fast-path / bypass guardrail. Emits `bypass=true` (so the orchestrator skips
 # the issue-link and CI guardrails) when ANY of:
 #   - the PR author is a Dev-Team member, or
+#   - the PR author is the guard service account (pimcore-deployments), or
 #   - the PR carries the override label, or
 #   - a Dev-Team member pressed "Ready for review" on the PR (manual override) —
 #     in which case the override label is added so later runs keep bypassing.
@@ -118,10 +119,16 @@ jobs:
             const bypassedPrs = [];
             for (const pr of prs) {
               // PRs opened before the start date are exempt (checked before any
-              // API call). Then override label, then Dev-Team membership.
+              // API call). Then guard service account author (deterministic, no
+              // API call — team membership of a bot account is not reliable),
+              // then override label, then Dev-Team membership.
               const ageExempt = lib.isExemptByAge(pr);
+              const isGuardBotAuthor = pr.user.login === lib.GUARD_BOT;
               const hasLabel = (pr.labels || []).some((l) => l.name === OVERRIDE_LABEL);
-              let bypass = ageExempt || hasLabel || await lib.isDevTeamMember({ github, username: pr.user.login });
+              let bypass = ageExempt || isGuardBotAuthor || hasLabel || await lib.isDevTeamMember({ github, username: pr.user.login });
+              if (isGuardBotAuthor) {
+                core.info(`PR #${pr.number} authored by ${lib.GUARD_BOT} (guard service account) — exempt.`);
+              }
               if (ageExempt) {
                 core.info(`PR #${pr.number} created ${pr.created_at} is before start date ${lib.START_DATE} — exempt.`);
               }
