@@ -6,7 +6,10 @@ name: "Reusable Guardrail: Dev-Team membership"
 #   - the PR author is the guard service account (pimcore-deployments), or
 #   - the PR carries the override label, or
 #   - a Dev-Team member pressed "Ready for review" on the PR (manual override) —
-#     in which case the override label is added so later runs keep bypassing.
+#     in which case the override label is added so later runs keep bypassing, or
+#   - the PR predates the guardrail start date (age exemption).
+# On a PR event a bypassed PR also has any guardrail failure comments cleared, so
+# a comment from an earlier run never lingers on an exempt PR.
 # This workflow never converts a PR to draft and always succeeds.
 #
 # Called by parent-pr-guardrails.yml in the caller's event context.
@@ -137,15 +140,39 @@ jobs:
                   && await lib.isDevTeamMember({ github, username: actor })) {
                 bypass = true;
                 await lib.addLabel({ github, context, issueNumber: pr.number, label: OVERRIDE_LABEL });
-                // Override clears any guardrail failure comments left by earlier runs.
-                for (const m of ['guardrail:issue-link', 'guardrail:ci-status']) {
-                  await lib.deleteMarkerComment({ github, context, issueNumber: pr.number, marker: m });
-                }
-                core.info(`Override: @${actor} (Dev-Team) marked PR #${pr.number} ready — guardrails bypassed, failure comments cleared.`);
+                core.info(`Override: @${actor} (Dev-Team) marked PR #${pr.number} ready — guardrails bypassed.`);
               }
 
               core.info(`PR #${pr.number}: bypass=${bypass}`);
               if (bypass) bypassedPrs.push(pr.number); else allBypass = false;
+
+              // A bypassed PR must not keep a guardrail failure comment, whatever
+              // the reason for the bypass: a member author or age exemption never
+              // triggered cleanup before, so a comment from an earlier run (or from
+              // a run whose membership stage was cancelled) lingered forever.
+              // Restricted to pull_request_target: check_suite fires many times per
+              // push, so cleaning there would list comments on every CI completion.
+              // A bypass reached without any PR event (e.g. the override label
+              // applied by hand, which the consumer trigger does not subscribe to)
+              // therefore clears on the PR's next event rather than immediately.
+              // Best-effort, and MUST stay that way: this cleanup is cosmetic, but
+              // it now runs on the hot path for every bypassed PR. An unhandled
+              // rejection here (secondary rate limit, transient 5xx) would fail the
+              // job, and a failed membership stage emits no `bypass`, which the
+              // orchestrator's fail-safe reads as "enforce" — drafting the very PR
+              // this stage just decided to exempt. Swallow and warn instead.
+              if (bypass && context.eventName === 'pull_request_target') {
+                try {
+                  const deleted = await lib.deleteMarkerComments({
+                    github, context, issueNumber: pr.number, markers: lib.GUARDRAIL_MARKERS,
+                  });
+                  if (deleted > 0) {
+                    core.info(`PR #${pr.number}: cleared ${deleted} stale guardrail failure comment(s).`);
+                  }
+                } catch (err) {
+                  core.warning(`PR #${pr.number}: could not clear stale guardrail comments (${err.message}); bypass is unaffected.`);
+                }
+              }
             }
             core.setOutput('bypass', allBypass ? 'true' : 'false');
             core.setOutput('bypassed_prs', JSON.stringify(bypassedPrs));
