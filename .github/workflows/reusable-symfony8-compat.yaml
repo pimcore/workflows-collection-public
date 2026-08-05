@@ -1,0 +1,117 @@
+name: "Reusable Symfony 8 compatibility check"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Central, growing Symfony-8-compatibility test suite for all Pimcore repos.
+#
+# Repos subscribe with a thin caller workflow (.github/workflows/symfony8-compat.yaml):
+#
+#     jobs:
+#       symfony8-compat:
+#         uses: pimcore/workflows-collection-public/.github/workflows/reusable-symfony8-compat.yaml@main
+#
+# HOW TO ADD A TEST (after a fix sweep has merged across the repos):
+#   Append ONE entry to jobs.api-scan.strategy.matrix.include below:
+#     - id:    kebab-case identifier          (becomes the check name on the PR)
+#       title: what is banned and since when  (one line, human-readable)
+#       regex: extended regex, PRECISE FORM ONLY (see rules below)
+#       hint:  what to use instead            (shown in the PR error annotation)
+#   Nothing else changes - the scan step below is generic.
+#
+# PATTERN RULES:
+#   - Match the precise syntactic form (attribute call, import line), never a bare
+#     word: Pimcore names classes after Symfony concepts (TaggedIteratorAdapter,
+#     TaggedIteratorHydrator, ...) and those must never match.
+#   - One deprecated API often needs two entries: the usage and the import.
+#   - Non-grep checks (composer installability, PHPStan) are added as sibling
+#     jobs - see the scaffold at the bottom - not as matrix entries.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+    workflow_call:
+        inputs:
+            source-dirs:
+                required: false
+                default: "src lib models bundles config"
+                type: string
+                description: Space-separated dirs to scan; missing ones are skipped
+
+permissions:
+  contents: read
+
+jobs:
+    api-scan:
+        name: "api-scan (${{ matrix.id }})"
+        runs-on: "ubuntu-latest"
+        strategy:
+            fail-fast: false            # every rule reports; none masks another
+            matrix:
+                include:
+                    # ── Symfony 8.0: #[TaggedIterator] removed ────────────────────
+                    - id: "tagged-iterator-attribute"
+                      title: "#[TaggedIterator] attribute (removed in Symfony 8.0)"
+                      regex: '#\[TaggedIterator\('
+                      hint: 'Use #[AutowireIterator] - identical constructor, drop-in rename'
+                    - id: "tagged-iterator-import"
+                      title: "TaggedIterator import (removed in Symfony 8.0)"
+                      regex: 'use Symfony\\Component\\DependencyInjection\\Attribute\\TaggedIterator;'
+                      hint: 'Use Symfony\Component\DependencyInjection\Attribute\AutowireIterator'
+
+                    # ── NEXT ENTRIES LAND HERE, one block per completed fix sweep ──
+
+        steps:
+            - uses: actions/checkout@v5.0.1
+
+            - name: "${{ matrix.title }}"
+              shell: bash
+              env:
+                  SCAN_ID: ${{ matrix.id }}
+                  SCAN_TITLE: ${{ matrix.title }}
+                  SCAN_REGEX: ${{ matrix.regex }}
+                  SCAN_HINT: ${{ matrix.hint }}
+                  SOURCE_DIRS: ${{ inputs.source-dirs }}
+              run: |
+                  DIRS=""
+                  for d in $SOURCE_DIRS; do
+                      [ -d "$d" ] && DIRS="$DIRS $d"
+                  done
+                  if [ -z "$DIRS" ]; then
+                      echo "No source dirs out of '$SOURCE_DIRS' present - nothing to scan."
+                      exit 0
+                  fi
+
+                  echo "Scanning$DIRS for: $SCAN_TITLE"
+                  hits=$(grep -rEn --include='*.php' -e "$SCAN_REGEX" $DIRS 2>/dev/null || true)
+
+                  if [ -z "$hits" ]; then
+                      echo "clean - no match for '$SCAN_REGEX'"
+                      exit 0
+                  fi
+
+                  while IFS= read -r hit; do
+                      file="${hit%%:*}"
+                      rest="${hit#*:}"
+                      line="${rest%%:*}"
+                      echo "::error file=$file,line=$line::Symfony 8 incompatibility ($SCAN_ID): $SCAN_HINT"
+                  done <<< "$hits"
+
+                  count=$(printf '%s\n' "$hits" | wc -l | tr -d ' ')
+                  echo "::notice::$SCAN_TITLE - $count occurrence(s) found"
+                  exit 1
+
+    # ── Scaffold for future NON-GREP checks ──────────────────────────────────────
+    # Grep rules belong in the matrix above. Checks that need PHP, Composer or a
+    # static analyser get their own job here, so they stay separately named on the PR.
+    #
+    # composer-symfony8-installability:
+    #     name: "composer why-not symfony/http-kernel ^8"
+    #     runs-on: "ubuntu-latest"
+    #     steps:
+    #         - uses: actions/checkout@v5.0.1
+    #         - ...   # informational until pimcore/pimcore itself targets symfony ^8.1
+    #
+    # phpstan-symfony-deprecations:
+    #     name: "PHPStan deprecation scan limited to Symfony\\* APIs"
+    #     runs-on: "ubuntu-latest"
+    #     steps:
+    #         - uses: actions/checkout@v5.0.1
+    #         - ...   # needs composer install; add once the deprecation baseline is empty
