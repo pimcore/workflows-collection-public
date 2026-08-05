@@ -3,7 +3,21 @@ name: "Reusable Symfony 8 compatibility check"
 # ─────────────────────────────────────────────────────────────────────────────
 # Central, growing Symfony-8-compatibility test suite for all Pimcore repos.
 #
-# Repos subscribe with a thin caller workflow (.github/workflows/symfony8-compat.yaml):
+# Repos subscribe with a thin caller workflow - copy this file verbatim to
+# .github/workflows/symfony8-compat.yaml. Keep BOTH triggers: pull_request alone would
+# leave code that reaches a release branch by any other route (a direct push, or a merge
+# whose PR checks were bypassed) unscanned.
+#
+#     name: "Symfony 8 compatibility"
+#
+#     on:
+#       pull_request:
+#         types: [ opened, synchronize, reopened ]
+#       push:
+#         branches:
+#           - "[0-9]+.[0-9]+"
+#           - "[0-9]+.x"
+#       workflow_dispatch:
 #
 #     jobs:
 #       symfony8-compat:
