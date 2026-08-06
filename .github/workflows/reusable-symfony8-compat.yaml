@@ -36,18 +36,19 @@ name: "Reusable Symfony 8 compatibility check"
 #   b) signature-scan - "this method must DECLARE this parameter". Use it whenever a
 #      Symfony base class adds an argument to a method we override: a line-based grep
 #      cannot express that, and it silently misses signatures wrapped over several lines.
-#        - id:             kebab-case identifier
-#          title:          what is required and since when
-#          method:         the overridden method name, e.g. voteOnAttribute
-#          required-param: ERE the whole parameter list must match, e.g. (^|[ (,?])Vote[[:blank:]]+[$]
-#          hint:           what to add
+#        - id:       kebab-case identifier
+#          title:    what is required and since when
+#          method:   the overridden method name, e.g. voteOnAttribute
+#          requires: ERE the whole parameter list must match, e.g. (^|[ (,?])Vote[[:blank:]]+[$]
+#          hint:     what to add
+#      (avoid hyphens in matrix key names - they are operators in ${{ }} expressions)
 #
 # PATTERN RULES:
 #   - Match the precise syntactic form (attribute call, import line), never a bare
 #     word: Pimcore names classes after Symfony concepts (TaggedIteratorAdapter,
 #     TaggedIteratorHydrator, ...) and those must never match.
 #   - One deprecated API often needs two entries: the usage and the import.
-#   - For signature-scan, anchor required-param so a type merely ENDING in the name
+#   - For signature-scan, anchor `requires` so a type merely ENDING in the name
 #     (LegacyVote) or a variable ($voteResult) does not satisfy the requirement.
 #   - Checks needing PHP, Composer or a static analyser are added as sibling jobs -
 #     see the scaffold at the bottom - not as matrix entries.
@@ -136,7 +137,7 @@ jobs:
                     - id: "voter-vote-argument"
                       title: "voteOnAttribute() must declare ?Vote $vote (required by Symfony 8.0)"
                       method: "voteOnAttribute"
-                      required-param: '(^|[ (,?])Vote[[:blank:]]+[$]'
+                      requires: '(^|[ (,?])Vote[[:blank:]]+[$]'
                       hint: "Add '?Vote $vote = null' as the last parameter and import Symfony\\Component\\Security\\Core\\Authorization\\Voter\\Vote (available since Symfony 7.3)"
 
                     # ── NEXT ENTRIES LAND HERE, one block per completed fix sweep ──
@@ -150,10 +151,17 @@ jobs:
                   SCAN_ID: ${{ matrix.id }}
                   SCAN_TITLE: ${{ matrix.title }}
                   SCAN_METHOD: ${{ matrix.method }}
-                  SCAN_PARAM: ${{ matrix.required-param }}
+                  SCAN_PARAM: ${{ matrix.requires }}
                   SCAN_HINT: ${{ matrix.hint }}
                   SOURCE_DIRS: ${{ inputs.source-dirs }}
               run: |
+                  # Fail loudly on a misconfigured entry: an empty pattern would match every
+                  # signature and turn this rule into a silent pass.
+                  if [ -z "$SCAN_METHOD" ] || [ -z "$SCAN_PARAM" ]; then
+                      echo "::error::signature-scan is misconfigured - method='$SCAN_METHOD' requires='$SCAN_PARAM' (both must be set)"
+                      exit 1
+                  fi
+
                   DIRS=""
                   for d in $SOURCE_DIRS; do
                       [ -d "$d" ] && DIRS="$DIRS $d"
