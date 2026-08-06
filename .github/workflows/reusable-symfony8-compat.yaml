@@ -84,6 +84,20 @@ jobs:
                       regex: 'use Symfony\\Component\\DependencyInjection\\Attribute\\TaggedIterator;'
                       hint: 'Use Symfony\Component\DependencyInjection\Attribute\AutowireIterator'
 
+                    # ── Symfony 8.0: autowiring aliases for RateLimiterFactory removed ──
+                    # Both patterns are anchored so the FIXED form does not match: the interface
+                    # name STARTS with the banned one (RateLimiterFactoryInterface), and there are
+                    # decoys ending in it (McpAuthRateLimiterFactory, CompoundRateLimiterFactory).
+                    # Return types are not matched (no "$" follows) - the import rule covers those files.
+                    - id: "ratelimiter-factory-typehint"
+                      title: "concrete RateLimiterFactory type-hint (autowiring aliases removed in Symfony 8.0)"
+                      regex: '(^|[ (,?\\])RateLimiterFactory[[:blank:]]+[$]'
+                      hint: 'Type-hint RateLimiterFactoryInterface instead - it exists since Symfony 7.3 and create() is identical'
+                    - id: "ratelimiter-factory-import"
+                      title: "concrete RateLimiterFactory import (aliases removed in Symfony 8.0)"
+                      regex: 'use Symfony\\Component\\RateLimiter\\RateLimiterFactory;'
+                      hint: 'Use Symfony\Component\RateLimiter\RateLimiterFactoryInterface'
+
                     # ── NEXT ENTRIES LAND HERE, one block per completed fix sweep ──
 
         steps:
