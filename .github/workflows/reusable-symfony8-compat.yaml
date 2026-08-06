@@ -84,6 +84,16 @@ jobs:
                       regex: 'use Symfony\\Component\\DependencyInjection\\Attribute\\TaggedIterator;'
                       hint: 'Use Symfony\Component\DependencyInjection\Attribute\AutowireIterator'
 
+                    # ── Symfony 8.1: HttpKernel's DI Extension base class deprecated ──
+                    # Terminated by ";" or a blank so an "as Alias" import still matches, while
+                    # ConfigurableExtension (same namespace, SEPARATE deprecation) and longer
+                    # names such as ExtensionInterface cannot. Only the import changes in a fix:
+                    # the new parent has the same short name and is the deprecated class's parent.
+                    - id: "httpkernel-extension-import"
+                      title: "HttpKernel DI Extension base class (deprecated in Symfony 8.1)"
+                      regex: 'use Symfony\\Component\\HttpKernel\\DependencyInjection\\Extension(;|[[:blank:]])'
+                      hint: 'Extend Symfony\Component\DependencyInjection\Extension\Extension instead - it is the deprecated class own parent, so only the import line changes'
+
                     # ── NEXT ENTRIES LAND HERE, one block per completed fix sweep ──
 
         steps:
