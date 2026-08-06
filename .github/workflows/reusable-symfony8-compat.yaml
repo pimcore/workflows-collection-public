@@ -24,20 +24,34 @@ name: "Reusable Symfony 8 compatibility check"
 #         uses: pimcore/workflows-collection-public/.github/workflows/reusable-symfony8-compat.yaml@main
 #
 # HOW TO ADD A TEST (after a fix sweep has merged across the repos):
-#   Append ONE entry to jobs.api-scan.strategy.matrix.include below:
-#     - id:    kebab-case identifier          (becomes the check name on the PR)
-#       title: what is banned and since when  (one line, human-readable)
-#       regex: extended regex, PRECISE FORM ONLY (see rules below)
-#       hint:  what to use instead            (shown in the PR error annotation)
-#   Nothing else changes - the scan step below is generic.
+#   Pick the job that fits the rule and append ONE matrix entry. Nothing else changes -
+#   both scan engines are generic.
+#
+#   a) api-scan - "this text must not appear" (attribute usage, import line, method call):
+#        - id:    kebab-case identifier          (becomes the check name on the PR)
+#          title: what is banned and since when  (one line, human-readable)
+#          regex: extended regex, PRECISE FORM ONLY (see rules below)
+#          hint:  what to use instead            (shown in the PR error annotation)
+#
+#   b) signature-scan - "this method must DECLARE this parameter". Use it whenever a
+#      Symfony base class adds an argument to a method we override: a line-based grep
+#      cannot express that, and it silently misses signatures wrapped over several lines.
+#        - id:       kebab-case identifier
+#          title:    what is required and since when
+#          method:   the overridden method name, e.g. voteOnAttribute
+#          requires: ERE the whole parameter list must match, e.g. (^|[ (,?])Vote[[:blank:]]+[$]
+#          hint:     what to add
+#      (avoid hyphens in matrix key names - they are operators in ${{ }} expressions)
 #
 # PATTERN RULES:
 #   - Match the precise syntactic form (attribute call, import line), never a bare
 #     word: Pimcore names classes after Symfony concepts (TaggedIteratorAdapter,
 #     TaggedIteratorHydrator, ...) and those must never match.
 #   - One deprecated API often needs two entries: the usage and the import.
-#   - Non-grep checks (composer installability, PHPStan) are added as sibling
-#     jobs - see the scaffold at the bottom - not as matrix entries.
+#   - For signature-scan, anchor `requires` so a type merely ENDING in the name
+#     (LegacyVote) or a variable ($voteResult) does not satisfy the requirement.
+#   - Checks needing PHP, Composer or a static analyser are added as sibling jobs -
+#     see the scaffold at the bottom - not as matrix entries.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -112,9 +126,90 @@ jobs:
                   echo "::notice::$SCAN_TITLE - $count occurrence(s) found"
                   exit 1
 
-    # ── Scaffold for future NON-GREP checks ──────────────────────────────────────
-    # Grep rules belong in the matrix above. Checks that need PHP, Composer or a
-    # static analyser get their own job here, so they stay separately named on the PR.
+    signature-scan:
+        name: "signature-scan (${{ matrix.id }})"
+        runs-on: "ubuntu-latest"
+        strategy:
+            fail-fast: false            # every rule reports; none masks another
+            matrix:
+                include:
+                    # ── Symfony 8.0: Voter::voteOnAttribute() gains a $vote argument ──
+                    - id: "voter-vote-argument"
+                      title: "voteOnAttribute() must declare ?Vote $vote (required by Symfony 8.0)"
+                      method: "voteOnAttribute"
+                      requires: '(^|[ (,?])Vote[[:blank:]]+[$]'
+                      hint: "Add '?Vote $vote = null' as the last parameter and import Symfony\\Component\\Security\\Core\\Authorization\\Voter\\Vote (available since Symfony 7.3)"
+
+                    # ── NEXT ENTRIES LAND HERE, one block per completed fix sweep ──
+
+        steps:
+            - uses: actions/checkout@v5.0.1
+
+            - name: "${{ matrix.title }}"
+              shell: bash
+              env:
+                  SCAN_ID: ${{ matrix.id }}
+                  SCAN_TITLE: ${{ matrix.title }}
+                  SCAN_METHOD: ${{ matrix.method }}
+                  SCAN_PARAM: ${{ matrix.requires }}
+                  SCAN_HINT: ${{ matrix.hint }}
+                  SOURCE_DIRS: ${{ inputs.source-dirs }}
+              run: |
+                  # Fail loudly on a misconfigured entry: an empty pattern would match every
+                  # signature and turn this rule into a silent pass.
+                  if [ -z "$SCAN_METHOD" ] || [ -z "$SCAN_PARAM" ]; then
+                      echo "::error::signature-scan is misconfigured - method='$SCAN_METHOD' requires='$SCAN_PARAM' (both must be set)"
+                      exit 1
+                  fi
+
+                  DIRS=""
+                  for d in $SOURCE_DIRS; do
+                      [ -d "$d" ] && DIRS="$DIRS $d"
+                  done
+                  if [ -z "$DIRS" ]; then
+                      echo "No source dirs out of '$SOURCE_DIRS' present - nothing to scan."
+                      exit 0
+                  fi
+
+                  echo "Scanning$DIRS for declarations of $SCAN_METHOD() missing: $SCAN_PARAM"
+
+                  # Declaration-anchored and multiline-safe: collect every line of the
+                  # parameter list up to its closing paren, then test the WHOLE list.
+                  # Namespace separators are turned into gaps first, so a fully-qualified
+                  # ...\Voter\Vote counts while LegacyVote does not.
+                  # SCAN_* come from the environment (not -v) so awk cannot mangle escapes.
+                  hits=$(find $DIRS -name '*.php' -type f -exec awk '
+                      BEGIN { m = ENVIRON["SCAN_METHOD"]; req = ENVIRON["SCAN_PARAM"] }
+                      $0 ~ ("function[[:blank:]]+" m "[[:blank:]]*\\(") { collecting = 1; start = FNR; sig = "" }
+                      collecting {
+                          sig = sig $0 " "
+                          if (sig ~ /\)/) {
+                              collecting = 0
+                              probe = sig
+                              gsub(/\\/, " ", probe)
+                              if (probe !~ req) printf "%s:%d\n", FILENAME, start
+                          }
+                      }
+                  ' {} + 2>/dev/null | sort || true)
+
+                  if [ -z "$hits" ]; then
+                      echo "clean - every $SCAN_METHOD() declaration has the required parameter"
+                      exit 0
+                  fi
+
+                  while IFS= read -r hit; do
+                      file="${hit%%:*}"
+                      line="${hit##*:}"
+                      echo "::error file=$file,line=$line::Symfony 8 incompatibility ($SCAN_ID): $SCAN_HINT"
+                  done <<< "$hits"
+
+                  count=$(printf '%s\n' "$hits" | wc -l | tr -d ' ')
+                  echo "::notice::$SCAN_TITLE - $count declaration(s) missing the parameter"
+                  exit 1
+
+    # ── Scaffold for future checks that need PHP, Composer or a static analyser ──
+    # Text rules belong in api-scan; "must declare parameter" rules in signature-scan.
+    # Anything needing a toolchain gets its own job here, so it stays separately named.
     #
     # composer-symfony8-installability:
     #     name: "composer why-not symfony/http-kernel ^8"
