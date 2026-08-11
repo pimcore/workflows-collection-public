@@ -27,6 +27,16 @@ on:
               required: false
               default: false
               type: boolean
+        # Declared so callers can pass only what they need instead of `secrets: inherit`.
+        # All optional: callers that inherit satisfy them implicitly, and the two private-repo
+        # secrets are only read when `private-repo: true`.
+        secrets:
+            TEAMS_GITHUB_WORKFLOW_NOTIFICATIONS_WEBHOOK_URI:
+              required: false
+            SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER:
+              required: false
+            COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
+              required: false
 
 permissions:
   contents: read
