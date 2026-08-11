@@ -86,21 +86,6 @@ test('getMarkerComments returns oldest first across several markers', async () =
   assert.deepStrictEqual(found.map((c) => c.id), [1, 2]);
 });
 
-test('getMarkerComments reuses a caller-supplied comment listing', async () => {
-  let paginated = false;
-  const github = fakeGithub({});
-  github.paginate = async () => { paginated = true; return []; };
-  const found = await lib.getMarkerComments({
-    github,
-    context: ctx,
-    issueNumber: 7,
-    markers: ['guardrail:stale-draft'],
-    comments: [comment({ id: 5, marker: 'guardrail:stale-draft' })],
-  });
-  assert.deepStrictEqual(found.map((c) => c.id), [5]);
-  assert.strictEqual(paginated, false, 'must not list comments when given them');
-});
-
 test('getMarkerComments with no markers returns empty without listing', async () => {
   const github = fakeGithub({});
   let paginated = false;

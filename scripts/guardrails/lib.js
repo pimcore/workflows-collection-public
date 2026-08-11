@@ -248,19 +248,17 @@ function markerTag(marker) {
  *
  * Only OUR OWN comments (authored by the guard bot) ever match, so a human
  * comment that happens to quote a marker is never picked up, mutated or deleted.
- * Pass `comments` to reuse a listing the caller already has (the stale-draft
- * sweeper lists each PR's comments once and derives several things from them).
  */
-async function getMarkerComments({ github, context, issueNumber, markers, comments }) {
+async function getMarkerComments({ github, context, issueNumber, markers }) {
   const tags = (Array.isArray(markers) ? markers : [markers]).map(markerTag);
   if (tags.length === 0) return [];
 
-  const all = comments || (await github.paginate(github.rest.issues.listComments, {
+  const all = await github.paginate(github.rest.issues.listComments, {
     owner: context.repo.owner,
     repo: context.repo.repo,
     issue_number: issueNumber || context.payload.pull_request.number,
     per_page: 100,
-  }));
+  });
 
   return all
     .filter((c) => c.user && c.user.login === GUARD_BOT && c.body && tags.some((t) => c.body.includes(t)))
@@ -299,9 +297,9 @@ async function upsertComment({ github, context, issueNumber, marker, body }) {
  * nothing to remove. A comment another job deleted first (404) is not an error.
  * Returns the number of comments deleted.
  */
-async function deleteMarkerComments({ github, context, issueNumber, markers, comments }) {
+async function deleteMarkerComments({ github, context, issueNumber, markers }) {
   const { owner, repo } = context.repo;
-  const matches = await getMarkerComments({ github, context, issueNumber, markers, comments });
+  const matches = await getMarkerComments({ github, context, issueNumber, markers });
   let deleted = 0;
   for (const c of matches) {
     try {
