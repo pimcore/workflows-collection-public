@@ -132,7 +132,7 @@ jobs:
                     exit 1
                 fi
 
-            # Posts to the "GitHub Workflow Notifications" channel. Same MessageCard + curl as
+            # Posts to the "Workflow Notifications" channel. Same MessageCard + curl as
             # reusable-teams-notify.yaml, inlined because a reusable workflow cannot be a step.
             # Replaces aliencube/microsoft-teams-actions, which POSTed to a retired O365 connector.
             - name: Send results of previous checks to Microsoft Teams
