@@ -1,0 +1,37 @@
+name: Guardrails CI
+
+# Runs the scripts/guardrails test suite (node:test). lib.js is loaded at runtime
+# by every guardrail across ~63 consumer repos, so a regression here is a fleet-wide
+# regression — it gets tested before it reaches `main`.
+
+on:
+  push:
+    paths:
+      - "scripts/guardrails/**"
+      - ".github/workflows/guardrails-ci.yml"
+  pull_request:
+    paths:
+      - "scripts/guardrails/**"
+      - ".github/workflows/guardrails-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 20 = the runtime actions/github-script@v7 runs on;
+        # 22 = forward-compat headroom.
+        node-version: ["20", "22"]
+    defaults:
+      run:
+        working-directory: scripts/guardrails
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Run tests
+        run: node --test
