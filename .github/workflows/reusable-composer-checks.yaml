@@ -149,7 +149,7 @@ jobs:
               if: steps.dependencies.outcome == 'failure'
               env:
                 WEBHOOK: ${{ secrets.TEAMS_GITHUB_WORKFLOW_NOTIFICATIONS_WEBHOOK_URI }}
-                TITLE: ${{ github.repository }}@${{ inputs.branch }} outdated - vulnerabilities report
+                TITLE: ${{ github.repository }}@${{ inputs.branch }} outdated dependencies report
                 RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
               run: |
                 set -o pipefail
