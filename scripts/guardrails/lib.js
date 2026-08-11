@@ -7,8 +7,9 @@
 //
 // Configuration can be overridden per workflow via environment variables
 // (GUARD_ORG, GUARD_TEAM_SLUG, GUARD_ISSUE_OWNER, GUARD_ISSUE_REPO,
-// GUARD_ISSUE_ALLOWLIST, and GUARD_BOT_LOGIN — the service account the
-// guardrails act as) without editing this file.
+// GUARD_ISSUE_ALLOWLIST, GUARD_SUPPORT_URL, GUARD_DISCUSSIONS_URL, and
+// GUARD_BOT_LOGIN — the service account the guardrails act as) without editing
+// this file.
 //
 // The `context` argument of the comment/label helpers is only ever read for
 // `context.repo` and `context.payload.pull_request.number`, so a cross-repo
@@ -41,6 +42,14 @@ const ISSUE_ALLOWLIST = (process.env.GUARD_ISSUE_ALLOWLIST || 'Copilot,claude,pi
   .split(',')
   .map((s) => s.trim().toLowerCase())
   .filter(Boolean);
+
+// Where contributors should go instead. These mirror the contact_links in every
+// consumer repo's .github/ISSUE_TEMPLATE/config.yml, so they are configurable
+// rather than hard-coded in the guardrail — a moved portal is then one env var,
+// not an edit to the workflow. (The public issue tracker is not here: it is
+// derived from ISSUE_REPO_OWNER/ISSUE_REPO_NAME above.)
+const SUPPORT_URL = process.env.GUARD_SUPPORT_URL || 'https://get.support.pimcore.com/';
+const DISCUSSIONS_URL = process.env.GUARD_DISCUSSIONS_URL || 'https://github.com/pimcore/pimcore/discussions';
 
 // GitHub's supported issue-closing keywords.
 const CLOSING_KEYWORDS = [
@@ -364,6 +373,8 @@ module.exports = {
   CLOSING_KEYWORDS,
   GUARDRAIL_MARKERS,
   ISSUE_ALLOWLIST,
+  SUPPORT_URL,
+  DISCUSSIONS_URL,
   REVALIDATE_HINT,
   isExemptByAge,
   isDevTeamMember,

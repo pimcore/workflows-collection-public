@@ -231,6 +231,13 @@ No consumer repo is touched unless step 3 applies.
   comma-separated logins treated as automation on top of the generic `Bot` /
   `…[bot]` detection, so their issues are never closed. Matched
   case-insensitively.
+- `GUARD_SUPPORT_URL` / `GUARD_DISCUSSIONS_URL` — the private-report and
+  discussion channels `external-issue` redirects to. They mirror the
+  `contact_links` in each consumer repo's `.github/ISSUE_TEMPLATE/config.yml`, so
+  they are configuration rather than literals in the workflow: if a portal moves,
+  it is one env var here instead of an edit to the guardrail. The public tracker
+  and the advisories link are not listed — both are derived from
+  `GUARD_ISSUE_OWNER`/`GUARD_ISSUE_REPO`.
 - `GUARD_START_DATE` (default `2026-07-07`) — only PRs **created on/after** this
   date are checked; older PRs are exempt (all PR guardrails skip). Set to empty to
   disable the date gate and check every PR. Does not apply to `external-issue`,
