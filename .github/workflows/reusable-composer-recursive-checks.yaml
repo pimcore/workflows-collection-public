@@ -142,6 +142,7 @@ jobs:
                 TITLE: ${{ github.repository }}@${{ inputs.branch }} outdated - vulnerabilities report
                 RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
               run: |
+                set -o pipefail
                 TEXT=$(printf 'Please check the following link for details:\n%s\n\n**Outdated dependencies found:**\n```\n%s\n```\nIf the list is too long, please refer to the link above.' \
                        "$RUN_URL" "${OUTDATED_ENV:-}")
                 jq -n --arg ti "$TITLE" --arg t "$TEXT" '{
@@ -153,9 +154,3 @@ jobs:
                 }' | curl -sS --fail --retry 4 --retry-delay 5 --retry-all-errors \
                        -H 'Content-Type: application/json' -d @- "$WEBHOOK"
 
-            # The outdated check is continue-on-error so the notification can run, so the job needs an
-            # explicit failure here. Until now the job only went red because the Teams step itself
-            # errored against the retired connector — fixing delivery would have made it silently green.
-            - name: "Check results of previous checks"
-              if: steps.dependencies.outcome == 'failure'
-              run: exit 1

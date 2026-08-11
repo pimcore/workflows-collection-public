@@ -24,6 +24,7 @@ jobs:
           TITLE: ${{ inputs.title }}
           TEXT: ${{ inputs.text }}
         run: |
+          set -o pipefail
           jq -n --arg ti "$TITLE" --arg t "$TEXT" '{
             "@type": "MessageCard",
             "@context": "http://schema.org/extensions",
