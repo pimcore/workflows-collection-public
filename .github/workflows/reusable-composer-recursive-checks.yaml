@@ -27,6 +27,16 @@ on:
               required: false
               default: false
               type: boolean
+        # Declared so callers can pass only what they need instead of `secrets: inherit`.
+        # All optional: callers that inherit satisfy them implicitly, and the two private-repo
+        # secrets are only read when `private-repo: true`.
+        secrets:
+            TEAMS_GITHUB_WORKFLOW_NOTIFICATIONS_WEBHOOK_URI:
+              required: false
+            SSH_PRIVATE_KEY_PIMCORE_DEPLOYMENTS_USER:
+              required: false
+            COMPOSER_PIMCORE_REPO_PACKAGIST_TOKEN:
+              required: false
 
 permissions:
   contents: read
@@ -132,19 +142,25 @@ jobs:
                     exit 1
                 fi
 
+            # Posts to the "Workflow Notifications" channel. Same MessageCard + curl as
+            # reusable-teams-notify.yaml, inlined because a reusable workflow cannot be a step.
+            # Replaces aliencube/microsoft-teams-actions, which POSTed to a retired O365 connector.
             - name: Send results of previous checks to Microsoft Teams
               if: steps.dependencies.outcome == 'failure'
-              uses: aliencube/microsoft-teams-actions@v0.8.0
-              with:
-                webhook_uri: ${{ secrets.TEAMS_COMPOSER_OUTDATED_URI }}
-                title: ${{ github.repository }}@${{ inputs.branch }} outdated - vulnerabilities report
-                summary: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}} 
-                text: |
-                  Please check the following link for details: 
-                  ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
-                  
-                  **Outdated dependencies found:**
-                  ```
-                  ${{ env.OUTDATED_ENV }}
-                  ```            
-                  If the list is too long, please refer to the link above.
+              env:
+                WEBHOOK: ${{ secrets.TEAMS_GITHUB_WORKFLOW_NOTIFICATIONS_WEBHOOK_URI }}
+                TITLE: ${{ github.repository }}@${{ inputs.branch }} outdated - vulnerabilities report
+                RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+              run: |
+                set -o pipefail
+                TEXT=$(printf 'Please check the following link for details:\n%s\n\n**Outdated dependencies found:**\n```\n%s\n```\nIf the list is too long, please refer to the link above.' \
+                       "$RUN_URL" "${OUTDATED_ENV:-}")
+                jq -n --arg ti "$TITLE" --arg t "$TEXT" '{
+                  "@type": "MessageCard",
+                  "@context": "http://schema.org/extensions",
+                  summary: $ti,
+                  title: $ti,
+                  text: $t
+                }' | curl -sS --fail --retry 4 --retry-delay 5 --retry-all-errors \
+                       -H 'Content-Type: application/json' -d @- "$WEBHOOK"
+
