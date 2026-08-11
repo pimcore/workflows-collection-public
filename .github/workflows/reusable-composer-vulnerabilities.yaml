@@ -151,6 +151,6 @@ jobs:
         if: ${{ needs.composer-checks.outputs.has_vulnerabilities == 'true' }}
         uses: pimcore/workflows-collection-public/.github/workflows/reusable-teams-notify.yaml@main
         with:
-          title: "${{ github.repository }}@${{ inputs.branch }} outdated - vulnerabilities report"
+          title: "${{ github.repository }}@${{ inputs.branch }} vulnerabilities report"
           text: ${{ needs.composer-checks.outputs.vulnerabilities_text }}
         secrets: inherit
