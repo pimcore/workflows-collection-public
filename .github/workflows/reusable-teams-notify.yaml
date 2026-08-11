@@ -11,8 +11,11 @@ on:
         description: 'Message body (markdown)'
         type: string
         required: true
-    # Callers use `secrets: inherit`; this reads TEAMS_GITHUB_WORKFLOW_NOTIFICATIONS_WEBHOOK_URI
-    # directly — the webhook of the "Workflow Notifications" channel (org secret).
+    # Callers use `secrets: inherit`; this reads TEAMS_WORKFLOWS_WEBHOOK_URI directly — the
+    # caller's webhook for the "github-vulnerabilities-report" channel. Both callers
+    # (reusable-osv-checks, reusable-composer-vulnerabilities) are vulnerability reports, which
+    # deliberately stay in that channel; only workflow-status reports moved to the new
+    # "Workflow Notifications" channel (service-operations#1135).
 
 jobs:
   notify:
@@ -20,7 +23,7 @@ jobs:
     steps:
       - name: Post to Teams
         env:
-          WEBHOOK: ${{ secrets.TEAMS_GITHUB_WORKFLOW_NOTIFICATIONS_WEBHOOK_URI }}
+          WEBHOOK: ${{ secrets.TEAMS_WORKFLOWS_WEBHOOK_URI }}
           TITLE: ${{ inputs.title }}
           TEXT: ${{ inputs.text }}
         run: |
