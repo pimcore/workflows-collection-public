@@ -11,7 +11,8 @@ on:
         description: 'Message body (markdown)'
         type: string
         required: true
-    # Callers use `secrets: inherit`; this reads TEAMS_WORKFLOWS_WEBHOOK_URI directly.
+    # Callers use `secrets: inherit`; this reads TEAMS_GITHUB_WORKFLOW_NOTIFICATIONS_WEBHOOK_URI
+    # directly — the webhook of the "GitHub Workflow Notifications" channel (org secret).
 
 jobs:
   notify:
@@ -19,7 +20,7 @@ jobs:
     steps:
       - name: Post to Teams
         env:
-          WEBHOOK: ${{ secrets.TEAMS_WORKFLOWS_WEBHOOK_URI }}
+          WEBHOOK: ${{ secrets.TEAMS_GITHUB_WORKFLOW_NOTIFICATIONS_WEBHOOK_URI }}
           TITLE: ${{ inputs.title }}
           TEXT: ${{ inputs.text }}
         run: |
