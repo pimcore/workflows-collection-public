@@ -1,14 +1,26 @@
-// Shared helpers for the PR guardrail workflows.
+// Shared helpers for the PR and repo guardrail workflows.
 //
-// SECURITY: These helpers are invoked only from `pull_request_target` workflows
-// that check out the trusted base ref. PR head code is NEVER checked out or
-// executed. PR title/body are treated strictly as untrusted data (regex-parsed
-// only), never interpolated as code or commands.
+// SECURITY: These helpers are invoked only from `pull_request_target` / `issues`
+// workflows that check out the trusted base ref. PR head code is NEVER checked
+// out or executed. PR and issue titles/bodies are treated strictly as untrusted
+// data (regex-parsed only), never interpolated as code or commands.
 //
-// Configuration can be overridden per workflow via environment variables
-// (GUARD_ORG, GUARD_TEAM_SLUG, GUARD_ISSUE_OWNER, GUARD_ISSUE_REPO, and
-// GUARD_BOT_LOGIN — the service account the guardrails act as) without editing
-// this file.
+// The GUARD_* constants below read from the environment, but NOTHING currently
+// sets them: no guardrail workflow defines a GUARD_* env var, so every value comes
+// from the default here and a repo/org variable of the same name has no effect.
+// Treat them as central defaults, not deployment configuration.
+//
+// That is deliberate. `vars` in a *called* reusable workflow resolves against the
+// CALLER's repo/org, so wiring these from `vars` would let a consumer-repo admin
+// repoint GUARD_ISSUE_REPO or set GUARD_BOT_LOGIN so the guardrails trust marker
+// comments from an account they control. These guardrails exist to constrain those
+// repos, so their configuration stays here. See README → Configuration.
+//
+// The `context` argument of the comment/label helpers is only ever read for
+// `context.repo` and `context.payload.pull_request.number`, so a cross-repo
+// caller (e.g. the stale-draft sweeper in pimcore/workflows-centralized) can
+// pass a shim `{ repo: { owner, repo }, payload: {} }` together with an explicit
+// `issueNumber` and reuse them unchanged.
 
 const ORG = process.env.GUARD_ORG || 'pimcore';
 const TEAM_SLUG = process.env.GUARD_TEAM_SLUG || 'dev-team'; // slug of the "Dev-Team" GitHub team
@@ -23,7 +35,26 @@ const START_DATE = process.env.GUARD_START_DATE || '2026-07-07';
 
 // Marker tags of every guardrail that posts a failure comment. Kept here so a
 // bypass can clear all of them without each caller re-listing the markers.
+// Their presence on a draft PR is also what proves a guardrail drafted it, which
+// is how the stale-draft sweeper tells a guardrail-drafted PR apart from a
+// contributor's own work-in-progress draft.
 const GUARDRAIL_MARKERS = ['guardrail:issue-link', 'guardrail:ci-status'];
+
+// Accounts whose issues/PRs the guardrails never act on, beyond the generic bot
+// detection below: automation that legitimately files issues in these repos.
+// Mirrors the allowlist in reusable-cla-check.yaml.
+const ISSUE_ALLOWLIST = (process.env.GUARD_ISSUE_ALLOWLIST || 'Copilot,claude,pimcore-deployments')
+  .split(',')
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
+// Where contributors should go instead. These mirror the contact_links in every
+// consumer repo's .github/ISSUE_TEMPLATE/config.yml, so they are configurable
+// rather than hard-coded in the guardrail — a moved portal is then one env var,
+// not an edit to the workflow. (The public issue tracker is not here: it is
+// derived from ISSUE_REPO_OWNER/ISSUE_REPO_NAME above.)
+const SUPPORT_URL = process.env.GUARD_SUPPORT_URL || 'https://get.support.pimcore.com/';
+const DISCUSSIONS_URL = process.env.GUARD_DISCUSSIONS_URL || 'https://github.com/pimcore/pimcore/discussions';
 
 // GitHub's supported issue-closing keywords.
 const CLOSING_KEYWORDS = [
@@ -58,6 +89,69 @@ async function isDevTeamMember({ github, username, org = ORG, teamSlug = TEAM_SL
     if (err.status === 404) return false; // not a member
     throw err;
   }
+}
+
+/**
+ * Assert that the token can see `org`'s FULL membership, including members whose
+ * membership is private.
+ *
+ * `GET /orgs/{org}/members/{username}` answers 302 when the requester is not an
+ * org member, redirecting to the public-members endpoint — and Octokit follows
+ * that redirect transparently. A non-member token therefore returns clean
+ * 204/404 answers that only reflect *public* membership, which would report every
+ * privately-listed Pimcore employee as an outsider. Nothing in the response
+ * distinguishes that from a real answer, so the only safe check is up front:
+ * confirm the token's own account is a member of the org.
+ *
+ * Throws when it is not, so a mis-scoped token fails the guardrail loudly instead
+ * of closing employees' issues.
+ */
+async function assertCanReadOrgMembership({ github, org = ORG }) {
+  try {
+    const res = await github.rest.orgs.getMembershipForAuthenticatedUser({ org });
+    if (res.data.state !== 'active') {
+      throw new Error(`token's account has state "${res.data.state}" in ${org}, not "active"`);
+    }
+  } catch (err) {
+    if (err.status === 404 || err.status === 403) {
+      throw new Error(
+        `token cannot read ${org} membership: its account is not an active member of the org ` +
+          `(needs read:org). Refusing to classify anyone as a non-member.`,
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * Returns true if `username` is a member of `org`, public or private membership.
+ * Call `assertCanReadOrgMembership` once first — see its note on the 302 redirect;
+ * without that preflight a mis-scoped token reports private members as outsiders.
+ */
+async function isOrgMember({ github, username, org = ORG }) {
+  try {
+    await github.rest.orgs.checkMembershipForUser({ org, username });
+    return true; // 204 = member
+  } catch (err) {
+    if (err.status === 404) return false; // not a member
+    throw err;
+  }
+}
+
+/**
+ * True if `user` (a GitHub user object) is automation rather than a person:
+ * a Bot account, a `…[bot]` login, the guard service account, or an explicitly
+ * allowlisted automation login. Guardrails never act on these.
+ */
+function isBotActor(user, allowlist = ISSUE_ALLOWLIST) {
+  if (!user || !user.login) return false;
+  const login = user.login.toLowerCase();
+  return (
+    user.type === 'Bot' ||
+    login.endsWith('[bot]') ||
+    login === GUARD_BOT.toLowerCase() ||
+    allowlist.includes(login)
+  );
 }
 
 /**
@@ -158,6 +252,33 @@ async function convertToDraft({ github, pullRequestNodeId }) {
   }
 }
 
+/** The HTML tag a marker comment is identified by. */
+function markerTag(marker) {
+  return `<!-- ${marker} -->`;
+}
+
+/**
+ * Find the guard bot's marker comments for one or more markers, oldest first.
+ *
+ * Only OUR OWN comments (authored by the guard bot) ever match, so a human
+ * comment that happens to quote a marker is never picked up, mutated or deleted.
+ */
+async function getMarkerComments({ github, context, issueNumber, markers }) {
+  const tags = (Array.isArray(markers) ? markers : [markers]).map(markerTag);
+  if (tags.length === 0) return [];
+
+  const all = await github.paginate(github.rest.issues.listComments, {
+    owner: context.repo.owner,
+    repo: context.repo.repo,
+    issue_number: issueNumber || context.payload.pull_request.number,
+    per_page: 100,
+  });
+
+  return all
+    .filter((c) => c.user && c.user.login === GUARD_BOT && c.body && tags.some((t) => c.body.includes(t)))
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+}
+
 /**
  * Create or update a single marker comment so re-runs update in place instead
  * of posting duplicate comments.
@@ -165,30 +286,22 @@ async function convertToDraft({ github, pullRequestNodeId }) {
 async function upsertComment({ github, context, issueNumber, marker, body }) {
   const { owner, repo } = context.repo;
   const issue_number = issueNumber || context.payload.pull_request.number;
-  const tag = `<!-- ${marker} -->`;
-  const fullBody = `${body}\n\n${tag}`;
+  const fullBody = `${body}\n\n${markerTag(marker)}`;
 
-  const comments = await github.paginate(github.rest.issues.listComments, {
-    owner,
-    repo,
-    issue_number,
-    per_page: 100,
-  });
-  // Only manage OUR own marker comments (authored by the guard bot), so a human
-  // comment that happens to contain the marker is never mutated. Handle duplicates
-  // (e.g. from a prior race): update the first and delete any extras.
-  const matches = comments.filter(
-    (c) => c.user && c.user.login === GUARD_BOT && c.body && c.body.includes(tag),
-  );
+  // Handle duplicates (e.g. from a prior race): update the first and delete any extras.
+  const matches = await getMarkerComments({ github, context, issueNumber: issue_number, markers: [marker] });
 
   if (matches.length === 0) {
-    await github.rest.issues.createComment({ owner, repo, issue_number, body: fullBody });
-    return;
+    const { data } = await github.rest.issues.createComment({ owner, repo, issue_number, body: fullBody });
+    return data;
   }
-  await github.rest.issues.updateComment({ owner, repo, comment_id: matches[0].id, body: fullBody });
+  const { data } = await github.rest.issues.updateComment({
+    owner, repo, comment_id: matches[0].id, body: fullBody,
+  });
   for (const dup of matches.slice(1)) {
     await github.rest.issues.deleteComment({ owner, repo, comment_id: dup.id });
   }
+  return data;
 }
 
 /**
@@ -200,22 +313,7 @@ async function upsertComment({ github, context, issueNumber, marker, body }) {
  */
 async function deleteMarkerComments({ github, context, issueNumber, markers }) {
   const { owner, repo } = context.repo;
-  const issue_number = issueNumber || context.payload.pull_request.number;
-  const tags = (Array.isArray(markers) ? markers : [markers]).map((m) => `<!-- ${m} -->`);
-  if (tags.length === 0) return 0;
-
-  const comments = await github.paginate(github.rest.issues.listComments, {
-    owner,
-    repo,
-    issue_number,
-    per_page: 100,
-  });
-  // Delete ALL of OUR matching marker comments (authored by the guard bot), so
-  // duplicates do not leave a stale comment behind and human comments containing
-  // the marker are never deleted.
-  const matches = comments.filter(
-    (c) => c.user && c.user.login === GUARD_BOT && c.body && tags.some((t) => c.body.includes(t)),
-  );
+  const matches = await getMarkerComments({ github, context, issueNumber, markers });
   let deleted = 0;
   for (const c of matches) {
     try {
@@ -279,13 +377,21 @@ module.exports = {
   START_DATE,
   CLOSING_KEYWORDS,
   GUARDRAIL_MARKERS,
+  ISSUE_ALLOWLIST,
+  SUPPORT_URL,
+  DISCUSSIONS_URL,
   REVALIDATE_HINT,
   isExemptByAge,
   isDevTeamMember,
+  assertCanReadOrgMembership,
+  isOrgMember,
+  isBotActor,
   parseIssueReferences,
   validateIssue,
   getMergeablePullRequest,
   convertToDraft,
+  markerTag,
+  getMarkerComments,
   upsertComment,
   deleteMarkerComment,
   deleteMarkerComments,

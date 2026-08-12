@@ -1,0 +1,31 @@
+name: "Repo Guardrails pipeline"
+
+# Orchestrator for the guardrails that react to REPO events rather than pull
+# request events. Consumer repos call this from a thin, generic trigger workflow
+# (.github/workflows/repo-guardrails.yml); the github context here is inherited
+# from the caller's event.
+#
+# This is the non-PR sibling of parent-pr-guardrails.yml. It exists so that
+# adding the next repo-level guardrail is a change here, not another rollout PR
+# across every consumer repo.
+#
+# Pipeline:
+#   external-issue  (issues:opened)  close + redirect issues from outside the org
+#
+# Note: the stale draft-PR lifecycle (reminder after two weeks, close after four)
+# deliberately does NOT live here. It needs a schedule, and it runs as a single
+# central sweep in the private pimcore/workflows-centralized repo so that draft
+# PR details from private repos never land in a public Actions log.
+
+on:
+  workflow_call:
+    secrets:
+      MEMBERSHIP_GUARD_TOKEN:
+        required: true
+
+jobs:
+  external-issue:
+    if: ${{ github.event_name == 'issues' && github.event.action == 'opened' }}
+    uses: ./.github/workflows/reusable-guardrail-external-issue.yml
+    secrets:
+      MEMBERSHIP_GUARD_TOKEN: ${{ secrets.MEMBERSHIP_GUARD_TOKEN }}

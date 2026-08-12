@@ -1,0 +1,122 @@
+name: "Reusable Guardrail: External issue"
+
+# Enforcing guardrail. Issue creation through the web UI is disabled in these
+# repos (.github/ISSUE_TEMPLATE/config.yml sets blank_issues_enabled: false with
+# contact links only), but the REST API and `gh issue create` still work. All
+# public reports belong in pimcore/platform-version, so an issue opened here by
+# somebody outside the Pimcore org is closed immediately with a comment pointing
+# at the right channel.
+#
+# Never acts on: issues in the issue-of-record repo itself, bot/automation
+# authors, or members of the Pimcore org.
+#
+# Called by parent-repo-guardrails.yml in the caller's `issues` context.
+
+on:
+  workflow_call:
+    secrets:
+      MEMBERSHIP_GUARD_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  external-issue:
+    name: "Guardrail: External issue"
+    runs-on: ubuntu-latest
+    steps:
+      # Load lib.js from this collection on `main` (stable ref). Changing logic is
+      # just edit + push to main — no ref change needed here. Public repo, trusted
+      # ref (never any contributor-supplied ref) → no token needed for checkout.
+      - uses: actions/checkout@v4
+        with:
+          repository: pimcore/workflows-collection-public
+          ref: main
+          path: _central
+
+      - uses: actions/github-script@v7
+        with:
+          # Needs read:org (org membership) + issues:write. The token's own
+          # account must be an active org member — see the preflight below.
+          github-token: ${{ secrets.MEMBERSHIP_GUARD_TOKEN }}
+          script: |
+            const lib = require(`${process.env.GITHUB_WORKSPACE}/_central/scripts/guardrails/lib.js`);
+            const marker = 'guardrail:external-issue';
+            const LABEL = 'guardrails:wrong-repo';
+
+            const issue = context.payload.issue;
+            if (!issue) {
+              core.info('No issue in this event payload; nothing to do.');
+              return;
+            }
+            // `issues` never fires for pull requests, but the payload shape is
+            // shared — be explicit rather than relying on that.
+            if (issue.pull_request) {
+              core.info(`#${issue.number} is a pull request, not an issue; skipping.`);
+              return;
+            }
+
+            // The issue-of-record repo is where reports are SUPPOSED to go.
+            // Derived from config (GUARD_ISSUE_OWNER / GUARD_ISSUE_REPO) rather
+            // than a hard-coded exclusion list, so there is nothing to keep in sync.
+            if (
+              context.repo.owner.toLowerCase() === lib.ISSUE_REPO_OWNER.toLowerCase() &&
+              context.repo.repo.toLowerCase() === lib.ISSUE_REPO_NAME.toLowerCase()
+            ) {
+              core.info(`${context.repo.owner}/${context.repo.repo} is the issue-of-record repo; skipping.`);
+              return;
+            }
+
+            if (lib.isBotActor(issue.user)) {
+              core.info(`@${issue.user.login} is automation (bot or allowlisted); skipping.`);
+              return;
+            }
+
+            // Fail loud on a mis-scoped token instead of classifying members as
+            // outsiders: without an org-member token GitHub answers membership
+            // lookups from PUBLIC membership only, so every privately-listed
+            // employee would look external and get their issue closed.
+            await lib.assertCanReadOrgMembership({ github, org: lib.ORG });
+
+            if (await lib.isOrgMember({ github, username: issue.user.login })) {
+              core.info(`@${issue.user.login} is a ${lib.ORG} org member; leaving issue #${issue.number} alone.`);
+              return;
+            }
+
+            // Close + redirect. The three channels mirror the contact_links in
+            // each repo's .github/ISSUE_TEMPLATE/config.yml, so the bot and the
+            // templates tell contributors the same thing.
+            const issueRepo = `${lib.ISSUE_REPO_OWNER}/${lib.ISSUE_REPO_NAME}`;
+            await lib.upsertComment({
+              github, context, issueNumber: issue.number, marker,
+              body: [
+                `👋 Thanks for taking the time to report this — but this repository does not track issues.`,
+                ``,
+                `All reports for the Pimcore platform are collected in one place, so this issue has been closed. Please use the channel that fits:`,
+                ``,
+                `- 🐛 **Reproducible public bug report** → https://github.com/${issueRepo}/issues`,
+                `- 🔒 **Private bug report** (visible only to you and Pimcore) → ${lib.SUPPORT_URL}`,
+                `- 💬 **Question, idea or general discussion** → ${lib.DISCUSSIONS_URL}`,
+                `- 🔐 **Security vulnerability** → https://github.com/${issueRepo}/security/advisories`,
+                ``,
+                `Please search for an existing report before opening a new one. Nothing is lost by re-filing in \`${issueRepo}\` — thanks for your understanding!`,
+              ].join('\n'),
+            });
+
+            // Best-effort label: a repo may have issue labels restricted, and a
+            // failure here must not leave the issue open.
+            try {
+              await lib.addLabel({ github, context, issueNumber: issue.number, label: LABEL });
+            } catch (err) {
+              core.warning(`Could not add the "${LABEL}" label: ${err.message}`);
+            }
+
+            await github.rest.issues.update({
+              ...context.repo,
+              issue_number: issue.number,
+              state: 'closed',
+              state_reason: 'not_planned',
+            });
+            core.info(`Closed issue #${issue.number} by non-member @${issue.user.login}; redirected to ${issueRepo}.`);

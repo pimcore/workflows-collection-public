@@ -41,3 +41,81 @@ group:
       pimcore/translations-provider-interfaces
       pimcore/workflow-automation-integration-bundle
       pimcore/workflow-designer
+
+  # Repo-level guardrail trigger (service-operations#1125). Target set = every
+  # repo carrying .github/workflows/pr-guardrails.yml, so the repo guardrails run
+  # wherever the PR guardrails already do, minus two deliberate exclusions:
+  #   - pimcore/platform-version — the issue-of-record repo, where the guardrail is
+  #     a config-driven no-op; running it on every issue there is pure noise.
+  #   - pimcore/pimcore_test — validation target, wired up by hand ahead of rollout.
+  # Re-derive the list with:
+  #   gh api --paginate 'orgs/pimcore/repos?per_page=100&type=all' \
+  #     --jq '.[]|select(.archived==false)|.full_name' | while read -r r; do \
+  #       gh api "repos/$r/contents/.github/workflows/pr-guardrails.yml" >/dev/null 2>&1 \
+  #         && echo "$r"; done
+  - files:
+      - source: .github/sync-templates/repo-guardrails.yml
+        dest: .github/workflows/repo-guardrails.yml
+
+    repos: |
+      pimcore/admin-ui-classic-bundle
+      pimcore/admin-ui-classic-light-theme-bundle
+      pimcore/advanced-object-search
+      pimcore/asset-metadata-class-definitions
+      pimcore/backend-power-tools-bundle
+      pimcore/copilot-bundle
+      pimcore/data-hub
+      pimcore/data-hub-file-export
+      pimcore/data-hub-productsup
+      pimcore/data-hub-simple-rest
+      pimcore/data-hub-webhooks
+      pimcore/data-importer
+      pimcore/data-quality-management-bundle
+      pimcore/direct-edit
+      pimcore/docker
+      pimcore/ee-admin-ui-classic-bundle
+      pimcore/ee-customer-data-framework
+      pimcore/ee-ecommerce-framework-bundle
+      pimcore/ee-personalization-bundle
+      pimcore/ee-pimcore
+      pimcore/ee-tinymce-bundle
+      pimcore/ee-web-to-print-bundle
+      pimcore/elasticsearch-client
+      pimcore/file-explorer-bundle
+      pimcore/frontend-permission-toolkit
+      pimcore/generic-data-index-bundle
+      pimcore/google-marketing-bundle
+      pimcore/headless-documents
+      pimcore/newsletter-bundle
+      pimcore/number-sequence-generator
+      pimcore/object-merger
+      pimcore/openid-connect
+      pimcore/opensearch-client
+      pimcore/output-data-config-toolkit
+      pimcore/paas-skeleton
+      pimcore/payment-provider-datatrans
+      pimcore/payment-provider-hobex
+      pimcore/payment-provider-klarna
+      pimcore/payment-provider-mpay24-seamless
+      pimcore/payment-provider-ogone
+      pimcore/payment-provider-paypal-smart-payment-button
+      pimcore/payment-provider-payu
+      pimcore/payment-provider-unzer
+      pimcore/perspective-editor
+      pimcore/pimcore
+      pimcore/pimcore-agent-bundle
+      pimcore/portal-engine
+      pimcore/quill-bundle
+      pimcore/search-query-parser
+      pimcore/skeleton
+      pimcore/static-resolver-bundle
+      pimcore/statistics-explorer
+      pimcore/studio-backend-bundle
+      pimcore/studio-dashboards-bundle
+      pimcore/studio-ui-bundle
+      pimcore/system-info-bundle
+      pimcore/tinymce-bundle
+      pimcore/translations-provider-interfaces
+      pimcore/web2print-tools
+      pimcore/workflow-automation-integration-bundle
+      pimcore/workflow-designer
