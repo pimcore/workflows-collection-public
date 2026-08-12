@@ -47,7 +47,7 @@ group:
   # wherever the PR guardrails already do, minus two deliberate exclusions:
   #   - pimcore/platform-version — the issue-of-record repo, where the guardrail is
   #     a config-driven no-op; running it on every issue there is pure noise.
-  #   - pimcore/pimcore_test — validation target, wired up by hand ahead of rollout.
+
   # Re-derive the list with:
   #   gh api --paginate 'orgs/pimcore/repos?per_page=100&type=all' \
   #     --jq '.[]|select(.archived==false)|.full_name' | while read -r r; do \
@@ -104,6 +104,7 @@ group:
       pimcore/perspective-editor
       pimcore/pimcore
       pimcore/pimcore-agent-bundle
+      pimcore/pimcore_test
       pimcore/portal-engine
       pimcore/quill-bundle
       pimcore/search-query-parser
