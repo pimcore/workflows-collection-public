@@ -5,11 +5,16 @@
 // out or executed. PR and issue titles/bodies are treated strictly as untrusted
 // data (regex-parsed only), never interpolated as code or commands.
 //
-// Configuration can be overridden per workflow via environment variables
-// (GUARD_ORG, GUARD_TEAM_SLUG, GUARD_ISSUE_OWNER, GUARD_ISSUE_REPO,
-// GUARD_ISSUE_ALLOWLIST, GUARD_SUPPORT_URL, GUARD_DISCUSSIONS_URL, and
-// GUARD_BOT_LOGIN — the service account the guardrails act as) without editing
-// this file.
+// The GUARD_* constants below read from the environment, but NOTHING currently
+// sets them: no guardrail workflow defines a GUARD_* env var, so every value comes
+// from the default here and a repo/org variable of the same name has no effect.
+// Treat them as central defaults, not deployment configuration.
+//
+// That is deliberate. `vars` in a *called* reusable workflow resolves against the
+// CALLER's repo/org, so wiring these from `vars` would let a consumer-repo admin
+// repoint GUARD_ISSUE_REPO or set GUARD_BOT_LOGIN so the guardrails trust marker
+// comments from an account they control. These guardrails exist to constrain those
+// repos, so their configuration stays here. See README → Configuration.
 //
 // The `context` argument of the comment/label helpers is only ever read for
 // `context.repo` and `context.payload.pull_request.number`, so a cross-repo

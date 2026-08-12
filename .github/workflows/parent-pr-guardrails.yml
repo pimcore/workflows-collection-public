@@ -1,9 +1,15 @@
 name: "PR Guardrails pipeline"
 
-# Orchestrator for the PR guardrail pipeline. Consumer repos call this via a
-# thin, generic trigger workflow with `secrets: inherit` (so adding a guardrail
-# or token never requires editing the consumer repos). The github context here
-# is inherited from the caller's pull_request_target / check_suite event.
+# Orchestrator for the PR guardrail pipeline. Consumer repos call this via a thin,
+# generic trigger workflow (.github/workflows/pr-guardrails.yml) that names no
+# guardrails, so adding or changing one never requires editing the consumer repos.
+# The github context here is inherited from the caller's pull_request_target /
+# check_suite event.
+#
+# The trigger passes the three token secrets explicitly rather than using
+# `secrets: inherit` — inherit would hand every org secret the consumer can see to
+# a workflow in another repository. The trade-off is that adding a NEW token does
+# require touching each consumer repo; see scripts/guardrails/README.md.
 #
 # Pipeline:
 #   membership  (all events) ─► outputs.bypass

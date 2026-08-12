@@ -75,11 +75,20 @@ jobs:
       MEMBERSHIP_GUARD_TOKEN: ${{ secrets.MEMBERSHIP_GUARD_TOKEN }}
 ```
 
-Both are kept in sync from `.github/sync-templates/` via
-`.github/workflows/sync-github-files.yml` — edit the template here, not the copy
-in a consumer repo. Secrets are named rather than inherited: `secrets: inherit`
-would hand every org secret the consumer can see to a workflow in another repo,
-which is more than these guardrails need.
+Both examples above match what is actually deployed, but only **one** of them is
+centrally managed today:
+
+- `repo-guardrails.yml` — synced from `.github/sync-templates/repo-guardrails.yml`
+  via `.github/workflows/sync-github-files.yml`. Edit the template here, not the
+  copy in a consumer repo.
+- `pr-guardrails.yml` — **not** synced. It was rolled out per repo by hand and is
+  not under `sync-templates/`, so changing it means a PR per consumer repo. Adopting
+  it into the sync config would also let the sync action overwrite any local drift
+  in ~63 existing files, so it has deliberately been left alone.
+
+Both name their secrets rather than inheriting them. `secrets: inherit` would hand
+every org secret the consumer can see to a workflow in another repository, which is
+more than these guardrails need.
 
 ## PR pipeline
 
@@ -205,7 +214,9 @@ Two consequences worth knowing when changing things here:
 2. Add a job to `parent-pr-guardrails.yml` (PR events) or
    `parent-repo-guardrails.yml` (repo events) and pass it the token.
 3. If it needs a new token, add **one** org-level secret **and** add it to the
-   matching `.github/sync-templates/{pr,repo}-guardrails.yml` trigger.
+   matching consumer trigger — `.github/sync-templates/repo-guardrails.yml` for a
+   repo-event guardrail (one edit, the sync rolls it out), or `pr-guardrails.yml`
+   in every consumer repo for a PR guardrail (that one is not synced).
 4. If it posts a failure comment, add its marker to `GUARDRAIL_MARKERS` in
    `lib.js` — otherwise its comments are never cleared when a PR is bypassed.
 5. Cover the logic you added to `lib.js` in `scripts/guardrails/tests/`.
@@ -214,7 +225,9 @@ No consumer repo is touched unless step 3 applies.
 
 ## Configuration
 
-`lib.js` reads these from the environment:
+These are the tunables `lib.js` recognises. **Read the note below before treating
+any of them as deployment configuration** — today they are effectively central
+defaults, not knobs a consumer repo can turn.
 
 - `GUARD_ORG` (default `pimcore`) — used for Dev-Team lookups **and** for the
   org-membership check in `external-issue`.
@@ -231,17 +244,35 @@ No consumer repo is touched unless step 3 applies.
   comma-separated logins treated as automation on top of the generic `Bot` /
   `…[bot]` detection, so their issues are never closed. Matched
   case-insensitively.
-- `GUARD_SUPPORT_URL` / `GUARD_DISCUSSIONS_URL` — the private-report and
-  discussion channels `external-issue` redirects to. They mirror the
-  `contact_links` in each consumer repo's `.github/ISSUE_TEMPLATE/config.yml`, so
-  they are configuration rather than literals in the workflow: if a portal moves,
-  it is one env var here instead of an edit to the guardrail. The public tracker
-  and the advisories link are not listed — both are derived from
-  `GUARD_ISSUE_OWNER`/`GUARD_ISSUE_REPO`.
+- `GUARD_SUPPORT_URL` / `GUARD_DISCUSSIONS_URL` (defaults
+  `https://get.support.pimcore.com/` and `https://github.com/pimcore/pimcore/discussions`)
+  — the private-report and discussion channels `external-issue` redirects to. They
+  mirror the `contact_links` in each consumer repo's
+  `.github/ISSUE_TEMPLATE/config.yml`, and live here as named constants so the two
+  URLs have a single definition instead of being repeated inline in the workflow
+  body. The public tracker and the advisories link are not listed — both are derived
+  from `GUARD_ISSUE_OWNER`/`GUARD_ISSUE_REPO`.
 - `GUARD_START_DATE` (default `2026-07-07`) — only PRs **created on/after** this
-  date are checked; older PRs are exempt (all PR guardrails skip). Set to empty to
-  disable the date gate and check every PR. Does not apply to `external-issue`,
-  which only ever sees freshly opened issues.
+  date are checked; older PRs are exempt (all PR guardrails skip). Does not apply to
+  `external-issue`, which only ever sees freshly opened issues. Note that setting it
+  to an *empty* value does **not** disable the gate: `lib.js` reads
+  `process.env.GUARD_START_DATE || '2026-07-07'`, so an empty string selects the
+  default. Disabling the gate means editing that default.
+
+> **None of these are wired to anything today.** No guardrail workflow sets a
+> `GUARD_*` env var, so every value above comes from the default in `lib.js`, and
+> setting a repository or organization variable named `GUARD_ORG`,
+> `GUARD_SUPPORT_URL`, … has **no effect**. Changing one means editing `lib.js`.
+>
+> That is deliberate, not an oversight. `vars` inside a *called* reusable workflow
+> resolves against the **caller's** repository and organization, so wiring
+> `env: GUARD_*: ${{ vars.GUARD_* }}` would let any consumer-repo admin override
+> guardrail behaviour — repointing `GUARD_ISSUE_REPO`, or setting `GUARD_BOT_LOGIN`
+> so the guardrails trust marker comments from an account they control. These
+> guardrails exist to constrain those repositories, so their configuration stays
+> central. If a per-repo override is ever genuinely needed, add it as an explicit
+> `workflow_call` input on the specific guardrail that needs it, and think about the
+> trust implications of that one value — do not blanket-wire the whole set.
 
 ## Security
 
