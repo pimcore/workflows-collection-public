@@ -55,6 +55,16 @@ on:
         required: false
         type: string
         default: "package-build"
+      test:
+        description: "Run tests after build"
+        required: false
+        type: boolean
+        default: false
+      test-script:
+        description: "NPM script to run for tests"
+        required: false
+        type: string
+        default: "test"
       commit-lint-output:
         description: "Automatically commit lint fixes"
         required: false
@@ -335,3 +345,39 @@ jobs:
           branch: ${{ env.BRANCH_NAME }}
           file_pattern: ${{ inputs.build-output-path }}
           commit_message: Automatic frontend build
+
+  # Read-only: runs the repo's test script after the build (and after any build
+  # output has been committed). No write token here.
+  # NOTE: this job checks out the branch fresh and does NOT re-run the build. If
+  # the test script consumes build artifacts, enable commit-build-output so the
+  # output is committed first; otherwise (or on fork PRs, where commit-build is
+  # skipped) the checkout has no fresh build. studio-ui's jest runs against
+  # source, so it does not depend on the build output.
+  test:
+    needs:
+      - build
+      - commit-build
+    if: ${{ !cancelled() && inputs.test && !startsWith(github.ref, 'refs/tags/') && needs.build.result == 'success' && (needs.commit-build.result == 'success' || needs.commit-build.result == 'skipped') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5.0.1
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
+          # Runs repo-provided code (npm hooks + test script); no authenticated
+          # git needed after checkout.
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+
+      - name: Run tests
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run ${{ inputs.test-script }}
