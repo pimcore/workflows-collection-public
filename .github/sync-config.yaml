@@ -9,9 +9,6 @@ group:
       - source: .github/sync-templates/pimcore-review.instructions.md
         dest: .github/instructions/pimcore-review.instructions.md
 
-      - source: .github/sync-templates/pr-policy.yml
-        dest: .github/workflows/pr-policy.yml
-
     repos: |
       pimcore/asset-metadata-class-definitions
       pimcore/backend-power-tools-bundle

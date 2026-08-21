@@ -1,0 +1,43 @@
+name: "Reusable: PR Policy"
+
+# Central PR-policy logic. Consumer repos carry a thin caller
+# (.github/workflows/pr-policy.yml) pinned to @main, so changes here apply
+# everywhere immediately — do not rename or delete this file without a
+# deprecation cycle. Required-check context: "PR Policy / Milestone assigned".
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  milestone:
+    name: Milestone assigned
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check milestone
+        env:
+          MILESTONE: ${{ github.event.pull_request.milestone.title }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          SKIP_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'Skip Milestone Check') }}
+        run: |
+          # Automated sync PRs (repo-file-sync-action) never carry a milestone.
+          if [ "$AUTHOR" = "pimcore-deployments" ]; then
+            echo "Skipping milestone check for automated PR by $AUTHOR"
+            exit 0
+          fi
+
+          if [ "$SKIP_LABEL" = "true" ]; then
+            echo "Skipping milestone check: PR carries the 'Skip Milestone Check' label"
+            exit 0
+          fi
+
+          if [ -z "$MILESTONE" ]; then
+            echo "::error::A milestone must be assigned before this pull request can be merged (or apply the 'Skip Milestone Check' label for internal changes)."
+            exit 1
+          fi
+
+          echo "Milestone assigned: $MILESTONE"
