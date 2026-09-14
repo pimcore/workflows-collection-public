@@ -201,8 +201,17 @@ jobs:
 
       - name: Publish to npm
         working-directory: ${{ inputs.working-directory }}
+        shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           PUBLISH_TAG: ${{ steps.version.outputs.tag }}
           NPM_CLI_VERSION: ${{ inputs.npm-cli-version }}
-        run: npx "npm@${NPM_CLI_VERSION}" publish --provenance --tag "$PUBLISH_TAG" --access public
+          # npm rejects provenance from private/internal source repos (E422).
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          PROVENANCE=(--provenance)
+          if [[ "$REPO_PRIVATE" == "true" ]]; then
+            echo "::notice::Private source repository, publishing without provenance"
+            PROVENANCE=()
+          fi
+          npx "npm@${NPM_CLI_VERSION}" publish "${PROVENANCE[@]}" --tag "$PUBLISH_TAG" --access public
