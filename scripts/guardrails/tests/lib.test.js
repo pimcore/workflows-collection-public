@@ -244,3 +244,15 @@ test('isExemptByAge only exempts PRs opened before the start date', () => {
   assert.ok(!lib.isExemptByAge({ created_at: '2026-07-06T00:00:00Z' }, ''), 'empty start date disables the gate');
   assert.ok(!lib.isExemptByAge({}, '2026-07-07'));
 });
+
+test('isIgnoredCheck drops guardrail checks and the milestone check', () => {
+  assert.ok(lib.isIgnoredCheck('guardrails / ci / Guardrail: CI & merge readiness'));
+  assert.ok(lib.isIgnoredCheck('guardrails / issue-link'));
+  assert.ok(lib.isIgnoredCheck('PR Policy / Milestone assigned'));
+});
+
+test('isIgnoredCheck keeps everything else', () => {
+  assert.ok(!lib.isIgnoredCheck('Static Analysis / phpstan'));
+  assert.ok(!lib.isIgnoredCheck('Codeception / tests (8.3)'));
+  assert.ok(!lib.isIgnoredCheck('PR Policy / Some other policy'));
+});
