@@ -5,9 +5,11 @@ name: "Reusable Guardrail: CI & merge readiness"
 # checks or the mergeability computation are still in progress the guardrail stays
 # neutral (it does not draft). On a definitive failure the PR is converted to
 # draft with an explanatory comment. The guardrail ignores its own "Guardrail:"
-# checks to avoid self-deadlock. Runs on PR events and POLLS the head commit until
-# CI is decisive — it does NOT rely on check_suite completion, which GitHub does not
-# re-deliver for check suites created by GitHub Actions (Pimcore CI is Actions-based).
+# checks (self-deadlock) and the "PR Policy / Milestone assigned" check, which
+# external contributors cannot satisfy. Runs on PR events and POLLS the head
+# commit until CI is decisive — it does NOT rely on check_suite completion, which
+# GitHub does not re-deliver for check suites created by GitHub Actions (Pimcore
+# CI is Actions-based).
 #
 # Called by parent-pr-guardrails.yml in the caller's event context.
 
@@ -58,10 +60,7 @@ jobs:
             // run; skip those individual PRs here so an exempt PR is never drafted.
             let bypassedPrs = [];
             try { bypassedPrs = JSON.parse(process.env.BYPASSED_PRS || '[]'); } catch (_) { bypassedPrs = []; }
-            // Ignore our own guardrail checks. Their check-run names look like
-            // "guardrails / issue-link / Guardrail: Issue link", so match the
-            // "guardrail" token anywhere in the name (not just as a prefix).
-            const isGuardrailCheck = (name) => /guardrail/i.test(name);
+            const isIgnoredCheck = lib.isIgnoredCheck;
 
             // Resolve the set of PRs to evaluate for this event.
             async function resolvePrNumbers() {
@@ -175,7 +174,7 @@ jobs:
                     const prev = latestByName.get(c.name);
                     if (!prev || c.id > prev.id) latestByName.set(c.name, c);
                   }
-                  const others = [...latestByName.values()].filter((c) => !isGuardrailCheck(c.name));
+                  const others = [...latestByName.values()].filter((c) => !isIgnoredCheck(c.name));
                   const pendingChecks = others.filter((c) => c.status !== 'completed');
                   const failedChecks = others.filter(
                     (c) => c.status === 'completed' && !isFinalConclusion(c.conclusion),

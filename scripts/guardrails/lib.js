@@ -154,6 +154,13 @@ function isBotActor(user, allowlist = ISSUE_ALLOWLIST) {
   );
 }
 
+// Check runs the CI guardrail leaves out of its verdict: our own guardrail
+// checks (would deadlock) and the milestone policy check, which external
+// contributors have no way to satisfy.
+function isIgnoredCheck(name) {
+  return /guardrail/i.test(name) || name === 'PR Policy / Milestone assigned';
+}
+
 /**
  * Parse closing-keyword issue references from arbitrary text.
  * Matches `keyword #123`, `keyword owner/repo#123`, and
@@ -386,6 +393,7 @@ module.exports = {
   assertCanReadOrgMembership,
   isOrgMember,
   isBotActor,
+  isIgnoredCheck,
   parseIssueReferences,
   validateIssue,
   getMergeablePullRequest,
