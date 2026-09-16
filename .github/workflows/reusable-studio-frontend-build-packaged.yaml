@@ -81,6 +81,16 @@ on:
         type: string
         default: "./build-dist/"
 
+    secrets:
+      SYNC_TOKEN:
+        description: >-
+          PAT of the pimcore-deployments service account. Used ONLY to push the
+          commits made by the commit-* jobs. Without it those pushes come from
+          github-actions[bot], which the org's Actions approval policy treats as
+          external, so every later run on that PR waits for manual approval
+          (pimcore/DevOps-Tasks#45). Falls back to GITHUB_TOKEN when unset.
+        required: false
+
 # NOTE: Do NOT request `actions: write` here. The caller workflows grant only
 # `contents: write`, and a reusable workflow's permissions can only be reduced,
 # never elevated, relative to the caller — requesting a scope the caller lacks
@@ -99,6 +109,17 @@ on:
 # `github.event.pull_request.head.repo.full_name` check in each `commit-*` job's
 # `if:`), so a caller wiring this into `pull_request_target` can never hand a
 # fork's code a write-capable token.
+#
+# PUSH IDENTITY: the commit-* jobs check out with `secrets.SYNC_TOKEN` (the
+# pimcore-deployments PAT) when the caller passes it, and then also commit as
+# that account, so author, committer AND pusher are an org member instead of
+# github-actions[bot] — see DevOps-Tasks#45. Without the secret the defaults
+# (bot identity, GITHUB_TOKEN push) are kept unchanged. Unlike
+# a GITHUB_TOKEN push, a PAT push DOES trigger a new workflow run, so every
+# commit-* job is also gated on `github.actor != 'pimcore-deployments'`: the run
+# started by our own push still validates (lint/typecheck/build/test) but never
+# commits again. Do NOT remove that guard — the build output is not
+# byte-reproducible, so without it the workflow would commit in a loop.
 permissions:
   contents: read
 
@@ -180,7 +201,7 @@ jobs:
     needs: lint
     # `!cancelled()` is REQUIRED: skipped upstream jobs otherwise cascade their
     # `skipped` onto this job even though `lint` succeeded. Do NOT remove it.
-    if: ${{ !cancelled() && needs.lint.result == 'success' && inputs.commit-lint-output && needs.lint.outputs.has_changes == 'true' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.lint.result == 'success' && inputs.commit-lint-output && needs.lint.outputs.has_changes == 'true' && github.actor != 'pimcore-deployments' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -192,6 +213,9 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.repository }}
+          # Push as pimcore-deployments when the caller provides the PAT (see
+          # PUSH IDENTITY in the header); otherwise the default GITHUB_TOKEN.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Download lint-fix patch
         uses: actions/download-artifact@v4
@@ -206,6 +230,11 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
+          # Commit as pimcore-deployments too when the PAT is present, so author,
+          # committer and pusher all belong to an org member (see PUSH IDENTITY).
+          commit_user_name: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments' || 'github-actions[bot]' }}
+          commit_user_email: ${{ secrets.SYNC_TOKEN && '71881008+pimcore-deployments@users.noreply.github.com' || '41898282+github-actions[bot]@users.noreply.github.com' }}
+          commit_author: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments <71881008+pimcore-deployments@users.noreply.github.com>' || format('{0} <{1}+{0}@users.noreply.github.com>', github.actor, github.actor_id) }}
           commit_message: Apply eslint-fixer changes
 
   check-types:
@@ -298,7 +327,7 @@ jobs:
     # `!cancelled()` is REQUIRED: `build`'s skipped upstreams otherwise cascade
     # their `skipped` onto this job even though `build` succeeded — which
     # silently prevents the build archive from being committed. Do NOT remove it.
-    if: ${{ !cancelled() && needs.build.result == 'success' && inputs.commit-build-output && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.build.result == 'success' && inputs.commit-build-output && github.actor != 'pimcore-deployments' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -310,6 +339,9 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.repository }}
+          # Push as pimcore-deployments when the caller provides the PAT (see
+          # PUSH IDENTITY in the header); otherwise the default GITHUB_TOKEN.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       # Guard the destructive `git rm` below: build-output-path is a caller
       # input, and a value of "." / "" / "/" / an absolute or parent path would
@@ -343,6 +375,11 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
+          # Commit as pimcore-deployments too when the PAT is present, so author,
+          # committer and pusher all belong to an org member (see PUSH IDENTITY).
+          commit_user_name: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments' || 'github-actions[bot]' }}
+          commit_user_email: ${{ secrets.SYNC_TOKEN && '71881008+pimcore-deployments@users.noreply.github.com' || '41898282+github-actions[bot]@users.noreply.github.com' }}
+          commit_author: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments <71881008+pimcore-deployments@users.noreply.github.com>' || format('{0} <{1}+{0}@users.noreply.github.com>', github.actor, github.actor_id) }}
           file_pattern: ${{ inputs.build-output-path }}
           commit_message: Automatic frontend build
 
