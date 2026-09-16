@@ -74,6 +74,16 @@ on:
         type: string
         default: "."
 
+    secrets:
+      SYNC_TOKEN:
+        description: >-
+          PAT of the pimcore-deployments service account. Used ONLY to push the
+          commits made by the commit-* jobs. Without it those pushes come from
+          github-actions[bot], which the org's Actions approval policy treats as
+          external, so every later run on that PR waits for manual approval
+          (pimcore/DevOps-Tasks#45). Falls back to GITHUB_TOKEN when unset.
+        required: false
+
 # NOTE: Do NOT request `actions: write` here. The caller workflows grant only
 # `contents: write`, and a reusable workflow's permissions can only be reduced,
 # never elevated, relative to the caller — requesting a scope the caller lacks
@@ -91,6 +101,15 @@ on:
 # commit jobs are additionally gated to non-fork contexts, so a caller wiring
 # this into `pull_request_target` can never hand a fork's code a write-capable
 # token.
+#
+# PUSH IDENTITY: the commit-* jobs check out with `secrets.SYNC_TOKEN` (the
+# pimcore-deployments PAT) when the caller passes it, so the push is attributed
+# to an org member instead of github-actions[bot] — see DevOps-Tasks#45. Unlike
+# a GITHUB_TOKEN push, a PAT push DOES trigger a new workflow run, so every
+# commit-* job is also gated on `github.actor != 'pimcore-deployments'`: the run
+# started by our own push still validates (lint/typecheck/build/test) but never
+# commits again. Do NOT remove that guard — the build output is not
+# byte-reproducible, so without it the workflow would commit in a loop.
 permissions:
   contents: read
 
@@ -172,7 +191,7 @@ jobs:
     # check-types, and — when enabled — the other commit-* jobs) are frequently
     # `skipped`, and without a status-check function that skip cascades onto this
     # job even though `api-client` itself succeeded. Do NOT remove it.
-    if: ${{ !cancelled() && needs.api-client.result == 'success' && inputs.api-client && needs.api-client.outputs.has_changes == 'true' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.api-client.result == 'success' && inputs.api-client && needs.api-client.outputs.has_changes == 'true' && github.actor != 'pimcore-deployments' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -184,6 +203,9 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.repository }}
+          # Push as pimcore-deployments when the caller provides the PAT (see
+          # PUSH IDENTITY in the header); otherwise the default GITHUB_TOKEN.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Download API client patch
         uses: actions/download-artifact@v4
@@ -280,7 +302,7 @@ jobs:
     # `!cancelled()` is REQUIRED: skipped upstream jobs (e.g. commit-api-client,
     # or api-client when disabled) otherwise cascade their `skipped` onto this
     # job even though `lint` succeeded. Do NOT remove it.
-    if: ${{ !cancelled() && needs.lint.result == 'success' && inputs.commit-lint-output && needs.lint.outputs.has_changes == 'true' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.lint.result == 'success' && inputs.commit-lint-output && needs.lint.outputs.has_changes == 'true' && github.actor != 'pimcore-deployments' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -292,6 +314,9 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.repository }}
+          # Push as pimcore-deployments when the caller provides the PAT (see
+          # PUSH IDENTITY in the header); otherwise the default GITHUB_TOKEN.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Download lint-fix patch
         uses: actions/download-artifact@v4
@@ -432,7 +457,7 @@ jobs:
     # status-check function that skip cascades onto this job even though `build`
     # itself succeeded — which silently prevents built assets from being
     # committed. Do NOT remove it.
-    if: ${{ !cancelled() && needs.build.result == 'success' && inputs.commit-build-output && needs.build.outputs.has_changes == 'true' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.build.result == 'success' && inputs.commit-build-output && needs.build.outputs.has_changes == 'true' && github.actor != 'pimcore-deployments' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -444,6 +469,9 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.repository }}
+          # Push as pimcore-deployments when the caller provides the PAT (see
+          # PUSH IDENTITY in the header); otherwise the default GITHUB_TOKEN.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Download build-output patch
         uses: actions/download-artifact@v4
