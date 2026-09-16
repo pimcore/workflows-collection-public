@@ -103,8 +103,10 @@ on:
 # token.
 #
 # PUSH IDENTITY: the commit-* jobs check out with `secrets.SYNC_TOKEN` (the
-# pimcore-deployments PAT) when the caller passes it, so the push is attributed
-# to an org member instead of github-actions[bot] — see DevOps-Tasks#45. Unlike
+# pimcore-deployments PAT) when the caller passes it, and then also commit as
+# that account, so author, committer AND pusher are an org member instead of
+# github-actions[bot] — see DevOps-Tasks#45. Without the secret the defaults
+# (bot identity, GITHUB_TOKEN push) are kept unchanged. Unlike
 # a GITHUB_TOKEN push, a PAT push DOES trigger a new workflow run, so every
 # commit-* job is also gated on `github.actor != 'pimcore-deployments'`: the run
 # started by our own push still validates (lint/typecheck/build/test) but never
@@ -220,6 +222,11 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
+          # Commit as pimcore-deployments too when the PAT is present, so author,
+          # committer and pusher all belong to an org member (see PUSH IDENTITY).
+          commit_user_name: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments' || 'github-actions[bot]' }}
+          commit_user_email: ${{ secrets.SYNC_TOKEN && '71881008+pimcore-deployments@users.noreply.github.com' || '41898282+github-actions[bot]@users.noreply.github.com' }}
+          commit_author: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments <71881008+pimcore-deployments@users.noreply.github.com>' || format('{0} <{1}+{0}@users.noreply.github.com>', github.actor, github.actor_id) }}
           # Rebase onto the remote tip before pushing so a concurrent push to the
           # same branch doesn't fail this with a non-fast-forward rejection.
           # NB: `pull:` is not a valid input on git-auto-commit-action@v7 (it was
@@ -331,6 +338,11 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
+          # Commit as pimcore-deployments too when the PAT is present, so author,
+          # committer and pusher all belong to an org member (see PUSH IDENTITY).
+          commit_user_name: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments' || 'github-actions[bot]' }}
+          commit_user_email: ${{ secrets.SYNC_TOKEN && '71881008+pimcore-deployments@users.noreply.github.com' || '41898282+github-actions[bot]@users.noreply.github.com' }}
+          commit_author: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments <71881008+pimcore-deployments@users.noreply.github.com>' || format('{0} <{1}+{0}@users.noreply.github.com>', github.actor, github.actor_id) }}
           # Rebase onto the remote tip before pushing so a concurrent push to the
           # same branch doesn't fail this with a non-fast-forward rejection.
           # NB: `pull:` is not a valid input on git-auto-commit-action@v7 (it was
@@ -486,6 +498,11 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
+          # Commit as pimcore-deployments too when the PAT is present, so author,
+          # committer and pusher all belong to an org member (see PUSH IDENTITY).
+          commit_user_name: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments' || 'github-actions[bot]' }}
+          commit_user_email: ${{ secrets.SYNC_TOKEN && '71881008+pimcore-deployments@users.noreply.github.com' || '41898282+github-actions[bot]@users.noreply.github.com' }}
+          commit_author: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments <71881008+pimcore-deployments@users.noreply.github.com>' || format('{0} <{1}+{0}@users.noreply.github.com>', github.actor, github.actor_id) }}
           file_pattern: ${{ inputs.build-output-path }}
           # Rebase onto the remote tip before pushing so a concurrent push to the
           # same branch doesn't fail this with a non-fast-forward rejection.
