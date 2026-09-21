@@ -74,6 +74,16 @@ on:
         type: string
         default: "."
 
+    secrets:
+      SYNC_TOKEN:
+        description: >-
+          PAT of the pimcore-deployments service account. Used ONLY to push the
+          commits made by the commit-* jobs. Without it those pushes come from
+          github-actions[bot], which the org's Actions approval policy treats as
+          external, so every later run on that PR waits for manual approval
+          (pimcore/DevOps-Tasks#45). Falls back to GITHUB_TOKEN when unset.
+        required: false
+
 # NOTE: Do NOT request `actions: write` here. The caller workflows grant only
 # `contents: write`, and a reusable workflow's permissions can only be reduced,
 # never elevated, relative to the caller — requesting a scope the caller lacks
@@ -91,6 +101,17 @@ on:
 # commit jobs are additionally gated to non-fork contexts, so a caller wiring
 # this into `pull_request_target` can never hand a fork's code a write-capable
 # token.
+#
+# PUSH IDENTITY: the commit-* jobs check out with `secrets.SYNC_TOKEN` (the
+# pimcore-deployments PAT) when the caller passes it, and then also commit as
+# that account, so author, committer AND pusher are an org member instead of
+# github-actions[bot] — see DevOps-Tasks#45. Without the secret the defaults
+# (bot identity, GITHUB_TOKEN push) are kept unchanged. Unlike
+# a GITHUB_TOKEN push, a PAT push DOES trigger a new workflow run, so every
+# commit-* job is also gated on `github.actor != 'pimcore-deployments'`: the run
+# started by our own push still validates (lint/typecheck/build/test) but never
+# commits again. Do NOT remove that guard — the build output is not
+# byte-reproducible, so without it the workflow would commit in a loop.
 permissions:
   contents: read
 
@@ -172,7 +193,7 @@ jobs:
     # check-types, and — when enabled — the other commit-* jobs) are frequently
     # `skipped`, and without a status-check function that skip cascades onto this
     # job even though `api-client` itself succeeded. Do NOT remove it.
-    if: ${{ !cancelled() && needs.api-client.result == 'success' && inputs.api-client && needs.api-client.outputs.has_changes == 'true' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.api-client.result == 'success' && inputs.api-client && needs.api-client.outputs.has_changes == 'true' && github.actor != 'pimcore-deployments' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -184,6 +205,9 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.repository }}
+          # Push as pimcore-deployments when the caller provides the PAT (see
+          # PUSH IDENTITY in the header); otherwise the default GITHUB_TOKEN.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Download API client patch
         uses: actions/download-artifact@v4
@@ -198,6 +222,11 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
+          # Commit as pimcore-deployments too when the PAT is present, so author,
+          # committer and pusher all belong to an org member (see PUSH IDENTITY).
+          commit_user_name: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments' || 'github-actions[bot]' }}
+          commit_user_email: ${{ secrets.SYNC_TOKEN && '71881008+pimcore-deployments@users.noreply.github.com' || '41898282+github-actions[bot]@users.noreply.github.com' }}
+          commit_author: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments <71881008+pimcore-deployments@users.noreply.github.com>' || format('{0} <{1}+{0}@users.noreply.github.com>', github.actor, github.actor_id) }}
           # Rebase onto the remote tip before pushing so a concurrent push to the
           # same branch doesn't fail this with a non-fast-forward rejection.
           # NB: `pull:` is not a valid input on git-auto-commit-action@v7 (it was
@@ -280,7 +309,7 @@ jobs:
     # `!cancelled()` is REQUIRED: skipped upstream jobs (e.g. commit-api-client,
     # or api-client when disabled) otherwise cascade their `skipped` onto this
     # job even though `lint` succeeded. Do NOT remove it.
-    if: ${{ !cancelled() && needs.lint.result == 'success' && inputs.commit-lint-output && needs.lint.outputs.has_changes == 'true' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.lint.result == 'success' && inputs.commit-lint-output && needs.lint.outputs.has_changes == 'true' && github.actor != 'pimcore-deployments' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -292,6 +321,9 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.repository }}
+          # Push as pimcore-deployments when the caller provides the PAT (see
+          # PUSH IDENTITY in the header); otherwise the default GITHUB_TOKEN.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Download lint-fix patch
         uses: actions/download-artifact@v4
@@ -306,6 +338,11 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
+          # Commit as pimcore-deployments too when the PAT is present, so author,
+          # committer and pusher all belong to an org member (see PUSH IDENTITY).
+          commit_user_name: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments' || 'github-actions[bot]' }}
+          commit_user_email: ${{ secrets.SYNC_TOKEN && '71881008+pimcore-deployments@users.noreply.github.com' || '41898282+github-actions[bot]@users.noreply.github.com' }}
+          commit_author: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments <71881008+pimcore-deployments@users.noreply.github.com>' || format('{0} <{1}+{0}@users.noreply.github.com>', github.actor, github.actor_id) }}
           # Rebase onto the remote tip before pushing so a concurrent push to the
           # same branch doesn't fail this with a non-fast-forward rejection.
           # NB: `pull:` is not a valid input on git-auto-commit-action@v7 (it was
@@ -432,7 +469,7 @@ jobs:
     # status-check function that skip cascades onto this job even though `build`
     # itself succeeded — which silently prevents built assets from being
     # committed. Do NOT remove it.
-    if: ${{ !cancelled() && needs.build.result == 'success' && inputs.commit-build-output && needs.build.outputs.has_changes == 'true' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.build.result == 'success' && inputs.commit-build-output && needs.build.outputs.has_changes == 'true' && github.actor != 'pimcore-deployments' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -444,6 +481,9 @@ jobs:
         with:
           ref: ${{ env.BRANCH_NAME }}
           repository: ${{ github.repository }}
+          # Push as pimcore-deployments when the caller provides the PAT (see
+          # PUSH IDENTITY in the header); otherwise the default GITHUB_TOKEN.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Download build-output patch
         uses: actions/download-artifact@v4
@@ -458,6 +498,11 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           branch: ${{ env.BRANCH_NAME }}
+          # Commit as pimcore-deployments too when the PAT is present, so author,
+          # committer and pusher all belong to an org member (see PUSH IDENTITY).
+          commit_user_name: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments' || 'github-actions[bot]' }}
+          commit_user_email: ${{ secrets.SYNC_TOKEN && '71881008+pimcore-deployments@users.noreply.github.com' || '41898282+github-actions[bot]@users.noreply.github.com' }}
+          commit_author: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments <71881008+pimcore-deployments@users.noreply.github.com>' || format('{0} <{1}+{0}@users.noreply.github.com>', github.actor, github.actor_id) }}
           file_pattern: ${{ inputs.build-output-path }}
           # Rebase onto the remote tip before pushing so a concurrent push to the
           # same branch doesn't fail this with a non-fast-forward rejection.
@@ -465,7 +510,7 @@ jobs:
           # silently ignored, emitting an "Unexpected input(s) 'pull'" warning);
           # v7's `before_push_hook` is the supported way to do this.
           before_push_hook: git pull --rebase --autostash origin ${{ env.BRANCH_NAME }}
-          commit_message: Automatic frontend build
+          commit_message: "Automatic frontend build [skip ci]"
 
   # Read-only: runs the repo's test script after the build (and after any build
   # output has been committed). No write token here.
