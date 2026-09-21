@@ -381,7 +381,7 @@ jobs:
           commit_user_email: ${{ secrets.SYNC_TOKEN && '71881008+pimcore-deployments@users.noreply.github.com' || '41898282+github-actions[bot]@users.noreply.github.com' }}
           commit_author: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments <71881008+pimcore-deployments@users.noreply.github.com>' || format('{0} <{1}+{0}@users.noreply.github.com>', github.actor, github.actor_id) }}
           file_pattern: ${{ inputs.build-output-path }}
-          commit_message: Automatic frontend build
+          commit_message: "Automatic frontend build [skip ci]"
 
   # Read-only: runs the repo's test script after the build (and after any build
   # output has been committed). No write token here.

@@ -510,7 +510,7 @@ jobs:
           # silently ignored, emitting an "Unexpected input(s) 'pull'" warning);
           # v7's `before_push_hook` is the supported way to do this.
           before_push_hook: git pull --rebase --autostash origin ${{ env.BRANCH_NAME }}
-          commit_message: Automatic frontend build
+          commit_message: "Automatic frontend build [skip ci]"
 
   # Read-only: runs the repo's test script after the build (and after any build
   # output has been committed). No write token here.
