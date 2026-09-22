@@ -1,11 +1,8 @@
+# False positive: the SBOM reports the dev-branch pseudo-version "2026.x-dev",
+# which sorts below the advisory's catch-all range (introduced: 0 -> fixed:
+# 2026.1.6). The fix is on the branch: the class-definition CreateController is
+# #[IsGranted(CLASS_DEFINITION)] on both 2026.2 and 2026.x.
 [[IgnoredVulns]]
-id = "GHSA-vg35-5wq7-3x7w"
-reason = "Already fixed"
-
-[[IgnoredVulns]]
-id = "GHSA-q742-qvgc-gc2f"
-reason = "Already fixed"
-
-[[IgnoredVulns]]
-id = "GHSA-v98h-vmpc-fpqv"
-reason = "Already fixed"
+id = "GHSA-f97c-ph8j-8vff"
+ignoreUntil = 2026-12-31
+reason = "Fixed on 2026.x: CreateController guarded by CLASS_DEFINITION (studio-backend-bundle #1886, released as 2026.1.6)"
