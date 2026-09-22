@@ -1,0 +1,4 @@
+# No known false positives on the 2026.2 line yet. This file exists so that
+# osv-checks callers can add a v2026.2.0 leg — reusable-osv-checks.yaml sparse-
+# checks out osv/<platform-version>.toml and osv-scanner exits 127 without it.
+[[IgnoredVulns]]

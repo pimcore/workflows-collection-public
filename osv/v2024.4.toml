@@ -27,3 +27,24 @@ reason = "Fixed in LTS"
 id = "GHSA-7p36-fq2r-4h7r"
 reason = "Fixed in LTS"
 
+
+# The three entries below are false positives caused by the advisories' catch-all
+# range (introduced: 0 -> fixed: 12.3.9 / 12.3.10). Pimcore publishes two parallel
+# version schemes on the same Packagist package (semver 11.5.x / 12.3.x and
+# calendar 2026.1.x), so every 11.5.x LTS release sorts below the 12.3.x patch
+# version and gets swept up, even though the 11.5 LTS line carries the backports.
+# Verified against pimcore/ee-pimcore v11.5.25, the version this leg installs.
+[[IgnoredVulns]]
+id = "GHSA-2mhj-fhvg-v428"
+ignoreUntil = 2026-12-31
+reason = "Fixed in LTS: ClassDefinition id regex is anchored in v11.5.25, unanchored in v11.5.14"
+
+[[IgnoredVulns]]
+id = "GHSA-9x44-4gxf-8c25"
+ignoreUntil = 2026-12-31
+reason = "Fixed in LTS: field-name hardening backported to 11.5 on 2026-06-12 (ee-pimcore #844)"
+
+[[IgnoredVulns]]
+id = "GHSA-w23p-wrp7-ch38"
+ignoreUntil = 2026-12-31
+reason = "Fixed in LTS: Hotspotimage unserialize restricted to MarkerHotspotItem in v11.5.25, unrestricted in v11.5.14 (backport of pimcore #19181)"

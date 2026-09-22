@@ -1,1 +1,10 @@
 [[IgnoredVulns]]
+
+# False positive: the advisory's first range has no lower bound and names the
+# 2026.1 patch (introduced: 0 -> fixed: 2026.1.6), so every 2025.4.x release
+# sorts below it. The 2025.4 line was patched in v2025.4.6; this leg installs
+# pimcore/studio-backend-bundle 2025.4.14.
+[[IgnoredVulns]]
+id = "GHSA-f97c-ph8j-8vff"
+ignoreUntil = 2026-12-31
+reason = "Fixed in 2025.4.6: CreateController is IsGranted(CLASS_DEFINITION) in v2025.4.14, DATA_OBJECTS in v2025.4.5"
