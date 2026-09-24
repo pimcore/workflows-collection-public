@@ -5,8 +5,12 @@ base. When a PR changes translation keys, CI translates the missing ones, commit
 PR branch, and posts a single comment explaining what it did.
 
 The design principle: **deterministic scripts decide everything; the model only writes translations.**
-Scripts choose what needs work, and scripts decide whether the result is acceptable. Nothing the
-model produces is committed unless it passes checks the model cannot influence.
+Scripts choose what needs work, scripts collect what the model needs to know (the source lines using
+each key, reviewed classic-admin translations for each English value), and scripts decide whether
+the result is acceptable. Nothing the model produces is committed unless it passes checks the model
+cannot influence. The scripts are the `scripts/` of the `pimcore-studio-ui-i18n-translation-workflow`
+skill in `pimcore/claude-code`: `key_diff.py`, `key_context.py`, `harvest_lookup.py`,
+`delta_check.py`, `validate_translations.py`.
 
 ## The flow
 
@@ -15,13 +19,13 @@ flowchart TD
     A[PR touches translations] --> B{Same-repo PR?}
     B -- fork --> Z[Skip, green]
     B -- yes --> C[Scan: key delta vs merge base,<br/>validation, staleness, baseline]
-    C --> D{Any work?<br/>delta, stale pairs, or errors}
+    C --> D{Work left for THIS PR?<br/>delta keys not yet in every language,<br/>stale pairs, or errors above baseline}
     D -- no --> Y[Green, no-op]
     D -- yes --> E[Claude translates<br/>tool-restricted]
     E --> F[Gate 1: English base untouched]
     F --> G[Gate 2: errors ≤ baseline]
     G --> H[Gate 3: every delta key<br/>present in every language]
-    H --> I[Comment, then commit to the PR branch]
+    H --> I[Comment, replay onto the current branch tip,<br/>commit to the PR branch]
 ```
 
 Each gate can only fail the job — never soften it. A failure stops the run before anything is
@@ -45,27 +49,32 @@ Removals behave the same way, via "extra key not in English".
 
 ### 2. Counts alone can't prove the PR's own keys landed
 
-The model also repairs pre-existing errors when it can (see *Scope* below), which creates a trap: a
-legacy error it fixes can offset a delta key it missed, leaving the total unchanged and the job
-green while your key is absent.
+Counts can cancel out: a legacy error that happens to get fixed can offset a delta key that was
+missed, leaving the total unchanged and the job green while your key is absent.
 
-So a second, independent check runs after the count comparison. `delta_check.py` asserts, per key and
-per language, that every added key is **present** and every removed key is **gone**. It enumerates
-the languages configured in the skill's `languages.yaml` rather than the files on disk, because a
-language file that doesn't exist at all costs the validator only a single `MISSING FILE` error —
-which the count comparison cannot see.
+So a second, independent check exists. `delta_check.py` asserts, per key and per language, that
+every added key is **present** and every removed key is **gone**. It enumerates the languages
+configured in the skill's `languages.yaml` rather than the files on disk, because a language file
+that doesn't exist at all costs the validator only a single `MISSING FILE` error — which the count
+comparison cannot see.
+
+It runs twice. **Before** the model, it decides whether there is any delta work left at all: the raw
+key delta against the merge base stays non-empty for the whole life of a PR (the bot never touches
+`studio.en.yaml`), so deciding on it would re-run the model on every later push to the branch — a
+code fix, a rebase, a frontend build commit — only to find nothing to do. **After** the model, it is
+Gate 3.
 
 ## Scope: what it will and won't do
 
 | | |
 |---|---|
 | **Mandatory** | Keys this PR adds or removes, applied to every configured language. The job fails if they're missing. |
-| **Best effort** | Pre-existing validation errors elsewhere in the files. The model fixes what it can; partial progress is green, and successive PRs converge the repo toward zero. |
+| **Not touched** | Pre-existing validation errors (present at the merge base). They neither trigger the model nor are repaired by PR runs — the model is told to leave them alone — and they never block a PR. They are listed in the PR comment. Clear them in a dedicated PR; note that drift often originates in `studio.en.yaml` itself (e.g. an unquoted `yes:` key), which the model may not edit. |
 | **Left alone** | Values identical to English ("untranslated"). Those are *warnings*, not errors — technical terms legitimately stay in English, so they are never mass-rewritten. |
 | **Human-judged** | Reworded English values. Nothing structural changes, so no gate can verify the translation was updated. Any translation the model chose to keep is listed in the PR comment for review. |
 
-Because backlog cleanup is in scope, a PR's commit may touch keys unrelated to your change. The PR
-comment breaks down what was your delta and what was cleanup.
+A PR's commit therefore only touches the keys of your own delta (plus stale pairs of keys you
+reworded). The PR comment lists what was done and what pre-existing errors remain.
 
 ## Why the model can't go off the rails
 
@@ -82,7 +91,16 @@ comment breaks down what was your delta and what was cleanup.
 
 The bot's own commit re-triggers CI. That run detects its own commit subject and exits green without
 invoking the model, so there is **at most one bot commit per human push** — regardless of whether the
-model's output is stable.
+model's output is stable. Later human pushes find the delta already applied (the pre-model
+`delta_check.py` run) and exit green as well.
+
+## Pushes during the model step
+
+The model step takes minutes. If a human pushes to the PR branch in that window, the bot's commit
+would be non-fast-forward. Instead of failing the push and discarding the run, the workflow fetches
+the new tip, replays the generated language-file changes onto it with a 3-way apply, and commits on
+top. A genuine conflict (someone edited the same language lines) fails the job loudly and pushes
+nothing; the next human push simply re-runs the model.
 
 ## Using it
 
