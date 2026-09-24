@@ -5,8 +5,12 @@ base. When a PR changes translation keys, CI translates the missing ones, commit
 PR branch, and posts a single comment explaining what it did.
 
 The design principle: **deterministic scripts decide everything; the model only writes translations.**
-Scripts choose what needs work, and scripts decide whether the result is acceptable. Nothing the
-model produces is committed unless it passes checks the model cannot influence.
+Scripts choose what needs work, scripts collect what the model needs to know (the source lines using
+each key, reviewed classic-admin translations for each English value), and scripts decide whether
+the result is acceptable. Nothing the model produces is committed unless it passes checks the model
+cannot influence. The scripts are the `scripts/` of the `pimcore-studio-ui-i18n-translation-workflow`
+skill in `pimcore/claude-code`: `key_diff.py`, `key_context.py`, `harvest_lookup.py`,
+`delta_check.py`, `validate_translations.py`.
 
 ## The flow
 

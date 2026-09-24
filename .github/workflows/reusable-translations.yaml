@@ -181,6 +181,17 @@ jobs:
             --path "$DIR/studio.en.yaml" \
             --base-ref "$MERGE_BASE" > "$RUNNER_TEMP/delta.json"
 
+          # Precompute what the skill's steps 3 and 4 would otherwise have the model do turn
+          # by turn: the source lines that use each new key (tone: button / label / tooltip),
+          # and reviewed classic-admin translations for each new English value. Both are
+          # deterministic, so they are handed to the model as inputs — see SKILL.md "CI mode".
+          # key_context.py skips node_modules, vendor, build output and dot-directories (which
+          # includes the private checkout).
+          python3 "$SKILL_PATH/scripts/key_context.py" --delta "$RUNNER_TEMP/delta.json" --src . \
+            --out "$RUNNER_TEMP/context.json"
+          python3 "$SKILL_PATH/scripts/harvest_lookup.py" --delta "$RUNNER_TEMP/delta.json" --dir "$DIR" \
+            --out "$RUNNER_TEMP/harvest.json"
+
           set +e
           python3 "$SKILL_PATH/scripts/validate_translations.py" --dir "$DIR" \
             > "$RUNNER_TEMP/validation.txt" 2>&1
@@ -291,143 +302,18 @@ jobs:
 
           cat "$RUNNER_TEMP/stale.json"
 
-          # Second RUNNER_TEMP script. It answers one question — is this PR's delta applied in
-          # every configured language? — and is run twice: here, to decide whether the model
-          # has any delta work left at all, and after the translate step, to judge the model's
-          # output. Same reasoning as stale_check.py for why it lives in RUNNER_TEMP — outside
-          # the workspace, so the model (workspace-scoped write rules, Bash limited to one
-          # exact command) cannot edit the check that judges it.
-          #
-          # Why it exists: error counts alone can no longer prove this PR's delta was applied.
-          # Now that the model also repairs the pre-existing backlog, a legacy error it fixed
-          # offsets an added key it skipped — the totals stay within the baseline and the job
-          # would go green with the PR's own keys still missing. So the delta is asserted
-          # directly, per key and per language, instead of inferred from arithmetic.
-          #
-          # It enumerates the CONFIGURED target languages, not the files on disk. A wholly
-          # absent studio.{lang}.yaml costs validate_translations.py exactly one MISSING FILE
-          # error no matter how many keys it lacks, so that error is identical before and
-          # after the model and the count gate cannot see an unapplied delta there — and a
-          # check that globbed only existing files would not see it either. Both gates would
-          # pass with the new key never reaching that language. This is the real
-          # "new bundle / newly added language" case the skill supports.
-          #
-          # delta.changed is deliberately NOT checked here. A changed English key whose
-          # existing translation legitimately still fits (an English-only typo fix) must stay
-          # green, and no mechanical test can tell that from a translation the model wrongly
-          # skipped — those pairs stay human-enforced, via the PR comment's "existing
-          # translations kept (verify these)" section.
-          cat > "$RUNNER_TEMP/delta_check.py" <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          import yaml
-
-          dir_path = Path(os.environ["DIR"])
-          temp = Path(os.environ["RUNNER_TEMP"])
-          # The scan step runs this before the install step has copied the skill into the
-          # workspace, so it passes LANGUAGES_FILE pointing at the private checkout; the
-          # re-validate step relies on the workspace copy (the default).
-          languages_file = Path(os.environ.get("LANGUAGES_FILE", ".translation-skill/data/languages.yaml"))
-
-          delta = json.loads((temp / "delta.json").read_text(encoding="utf-8"))
-          added = delta.get("added") or {}
-          removed = delta.get("removed") or []
-          # key_diff.py emits added as a mapping and removed as a list; accept either shape
-          # for both rather than depending on that.
-          added_keys = list(added.keys()) if isinstance(added, dict) else list(added)
-          removed_keys = list(removed.keys()) if isinstance(removed, dict) else list(removed)
-
-          MISSING = object()
-
-
-          def load(text):
-              """Parse translation YAML; missing, empty, or malformed files are empty mappings.
-
-              A malformed file makes every added key read as missing, which is the right
-              answer here: the delta was not applied to it.
-              """
-              if not text:
-                  return {}
-              try:
-                  return yaml.safe_load(text) or {}
-              except yaml.YAMLError:
-                  return {}
-
-
-          def lookup(doc, key):
-              """Resolve a key stored either flat ("a.b: x") or nested (a: {b: x})."""
-              if isinstance(doc, dict) and key in doc:
-                  return doc[key]
-              node = doc
-              for part in key.split("."):
-                  if not isinstance(node, dict) or part not in node:
-                      return MISSING
-                  node = node[part]
-              return node
-
-
-          def globbed_languages():
-              return [
-                  p.name[len("studio."):-len(".yaml")]
-                  for p in sorted(dir_path.glob("studio.*.yaml"))
-                  if p.name != "studio.en.yaml"
-              ]
-
-
-          def expected_languages():
-              """Target codes from the skill's languages.yaml, mirroring the validator's loader.
-
-              str() is not decorative: "no" (Norwegian) is quoted in that file precisely
-              because YAML parses a bare `no` as the boolean False, and the validator coerces
-              the same way. Dropping it would look for studio.False.yaml.
-
-              Falls back to whatever language files exist if the file is unreadable, is not
-              the expected shape, or lists no targets — a degraded check beats a crashed one,
-              but it is announced so the log shows which mode ran.
-              """
-              try:
-                  data = yaml.safe_load(languages_file.read_text(encoding="utf-8")) or {}
-                  codes = [str(t["code"]) for t in (data.get("targets") or [])]
-              except (OSError, yaml.YAMLError, AttributeError, TypeError, KeyError, IndexError):
-                  codes = []
-              if codes:
-                  return codes
-              print("WARNING: falling back to globbed language files")
-              return globbed_languages()
-
-
-          languages = expected_languages()
-          delta_has_keys = bool(added_keys or removed_keys)
-
-          violations = 0
-          for lang in languages:
-              if lang == "en":
-                  continue
-              path = dir_path / f"studio.{lang}.yaml"
-              if not path.is_file():
-                  # One MISSING FILE error in the validator regardless of key count, so the
-                  # count gate is blind here. With no added/removed keys to apply there is
-                  # nothing for THIS check to assert — an absent file on its own is the count
-                  # gate's business.
-                  if delta_has_keys:
-                      print(f"MISSING FILE studio.{lang}.yaml")
-                      violations += 1
-                  continue
-              now = load(path.read_text(encoding="utf-8"))
-              for key in added_keys:
-                  if lookup(now, key) is MISSING:
-                      print(f"MISSING {key} [{lang}]")
-                      violations += 1
-              for key in removed_keys:
-                  if lookup(now, key) is not MISSING:
-                      print(f"STILL PRESENT {key} [{lang}]")
-                      violations += 1
-
-          print(f"Delta violations: {violations}")
-          raise SystemExit(1 if violations else 0)
-          PY
+          # delta_check.py — the per-key, per-language "is this PR's delta applied?" check —
+          # ships with the skill (versioned and unit-tested in pimcore/claude-code). It is run
+          # twice: here, to decide whether the model has any delta work left at all, and after
+          # the translate step, to judge the model's output. Copied into RUNNER_TEMP — outside
+          # the workspace — for the same reason stale_check.py lives there: the model
+          # (workspace-scoped write rules, Bash limited to one exact command) cannot edit the
+          # check that judges it.
+          if [ ! -f "$SKILL_PATH/scripts/delta_check.py" ]; then
+            echo "::error::$SKILL_PATH/scripts/delta_check.py not found — the pimcore/claude-code ref checked out (claude_code_ref) predates the script"
+            exit 1
+          fi
+          cp "$SKILL_PATH/scripts/delta_check.py" "$RUNNER_TEMP/delta_check.py"
 
           STALE_EMPTY=$(jq -r 'if . == {} then "true" else "false" end' "$RUNNER_TEMP/stale.json")
 
@@ -440,8 +326,8 @@ jobs:
           # in any configured language? Any non-zero exit (violations, or a crash) counts as
           # "work remaining", so a broken check fails towards running the model, not away.
           set +e
-          LANGUAGES_FILE="$SKILL_PATH/data/languages.yaml" \
-            python3 "$RUNNER_TEMP/delta_check.py" > "$RUNNER_TEMP/delta-remaining.txt" 2>&1
+          python3 "$RUNNER_TEMP/delta_check.py" --delta "$RUNNER_TEMP/delta.json" --dir "$DIR" \
+            --languages "$SKILL_PATH/data/languages.yaml" > "$RUNNER_TEMP/delta-remaining.txt" 2>&1
           DELTA_CHECK_EXIT=$?
           set -e
           cat "$RUNNER_TEMP/delta-remaining.txt"
@@ -557,7 +443,8 @@ jobs:
           # this workflow made.
           rm -rf .translation-scan
           mkdir -p .translation-scan
-          cp "$RUNNER_TEMP/delta.json" "$RUNNER_TEMP/stale.json" "$RUNNER_TEMP/validation.txt" "$RUNNER_TEMP/baseline.txt" .translation-scan/
+          cp "$RUNNER_TEMP/delta.json" "$RUNNER_TEMP/stale.json" "$RUNNER_TEMP/context.json" "$RUNNER_TEMP/harvest.json" \
+             "$RUNNER_TEMP/validation.txt" "$RUNNER_TEMP/baseline.txt" .translation-scan/
 
           # claude-code-action snapshots the PR's versions of its sensitive config
           # paths into .claude-pr/ with dereference:true before replacing them from
@@ -602,10 +489,19 @@ jobs:
               entries to re-translate, and only into the languages listed for them;
               changed keys absent from stale.json are already up to date.
             - Validation report: read .translation-scan/validation.txt
+            - Usage context per key: read .translation-scan/context.json — the source lines
+              that use each added/changed key (button vs label vs tooltip decides tone and
+              length). This is the skill's "read the code first" step, already done: do NOT
+              grep the source for keys.
+            - Reviewed classic-admin translations: read .translation-scan/harvest.json — for
+              every key listed there, use the given per-language values verbatim. This is
+              the skill's "reuse admin translations" step, already done: do NOT open
+              data/admin-harvest.csv or the bundle's admin.*.yaml files.
 
-            Do not run key_diff.py. The skill's workflow tells you to run it, but in this
-            CI run that step is already done — the delta is precomputed in the files above,
-            and Bash has no permission to run anything except the validation command below.
+            Do not run key_diff.py, key_context.py or harvest_lookup.py. The skill's workflow
+            tells you to do those steps, but in this CI run they are already done — their
+            results are the files above — and Bash has no permission to run anything except
+            the validation command below.
 
             Fix as much as you can, in this priority order:
 
@@ -685,7 +581,7 @@ jobs:
             --max-turns 50
             ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
             --allowedTools "Read,Glob,Grep,TodoWrite,Write,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }})"
-            --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**),Edit(.translation-skill/**),Edit(.translation-scan/**)"
+            --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Read(.translation-skill/data/admin-harvest.csv),Edit(.git/**),Edit(.translation-skill/**),Edit(.translation-scan/**)"
 
       - name: Note model outcome
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
@@ -777,7 +673,8 @@ jobs:
           # credentials" all sit between here and the commit action, and a failure here aborts
           # the job before any of them, so nothing is pushed and no comment is posted.
           set +e
-          python3 "$RUNNER_TEMP/delta_check.py" > "$RUNNER_TEMP/delta-violations.txt" 2>&1
+          python3 "$RUNNER_TEMP/delta_check.py" --delta "$RUNNER_TEMP/delta.json" --dir "$DIR" \
+            --languages .translation-skill/data/languages.yaml > "$RUNNER_TEMP/delta-violations.txt" 2>&1
           DELTA_EXIT=$?
           set -e
           cat "$RUNNER_TEMP/delta-violations.txt"
