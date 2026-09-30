@@ -100,6 +100,12 @@ on:
     secrets:
       NPM_TOKEN:
         required: false
+      SYNC_TOKEN:
+        description: >-
+          Forwarded to the canary-build job (reusable-studio-frontend-build) so
+          automatic lint/build commits are pushed as pimcore-deployments instead
+          of github-actions[bot]. Optional; see that workflow for details.
+        required: false
 
 permissions:
   id-token: write
@@ -136,6 +142,8 @@ jobs:
       commit-lint-output: ${{ inputs.commit-lint-output }}
       commit-build-output: ${{ inputs.commit-build-output }}
       build-output-path: ${{ inputs.build-output-path }}
+    secrets:
+      SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
   publish:
     needs: canary-build
