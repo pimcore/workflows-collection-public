@@ -6,7 +6,7 @@ on:
       base_branch:
         required: true
         type: string
-        description: "Development branch (X.x format, e.g. 12.x)"
+        description: "Development branch (X.x, e.g. 12.x), or the already created release branch (X.Y, e.g. 12.4)"
       to_tag:
         required: true
         type: string
@@ -61,6 +61,7 @@ jobs:
       release_kind: ${{ steps.calc.outputs.release_kind }}
       tag_name: ${{ steps.calc.outputs.tag_name }}
       release_name: ${{ steps.calc.outputs.release_name }}
+      release_branch: ${{ steps.calc.outputs.release_branch }}
       prerelease: ${{ steps.calc.outputs.prerelease }}
       auto_changelog_norm: ${{ steps.calc.outputs.auto_changelog_norm }}
       targets_json: ${{ steps.resolve.outputs.targets_json }}
@@ -100,9 +101,10 @@ jobs:
             exit 1
           fi
 
-          # base_branch must be X.x format for major/minor releases
-          if ! [[ "${BASE}" =~ ^[0-9]+\.x$ ]]; then
-            echo "❌ base_branch must be in X.x format for major/minor releases, got: ${BASE}" >> "$GITHUB_STEP_SUMMARY"
+          # base_branch is the X.x development branch, or the X.Y release branch
+          # when it was already cut from X.x before releasing.
+          if ! [[ "${BASE}" =~ ^[0-9]+\.(x|[0-9]+)$ ]]; then
+            echo "❌ base_branch must be in X.x (or X.Y release branch) format for major/minor releases, got: ${BASE}" >> "$GITHUB_STEP_SUMMARY"
             echo "For bugfix/hotfix releases use the **Create bugfix/hotfix release** workflow instead." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -118,7 +120,14 @@ jobs:
           BASE_MAJOR="${BASE%%.*}"
 
           RELEASE_KIND=""
-          if [[ "${TAG_MAJOR}" != "${BASE_MAJOR}" ]]; then
+          if [[ "${BASE}" != *.x ]]; then
+            if [[ "${BASE}" != "${TAG_MAJOR}.${TAG_MINOR}" || "${TAG_PATCH}" != "0" ]]; then
+              echo "❌ Release branch ${BASE} only takes ${BASE}.0, got: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            RELEASE_KIND="minor"
+            [[ "${TAG_MINOR}" == "0" ]] && RELEASE_KIND="major"
+          elif [[ "${TAG_MAJOR}" != "${BASE_MAJOR}" ]]; then
             RELEASE_KIND="major"
             if [[ "${TAG_MINOR}" != "0" || "${TAG_PATCH}" != "0" ]]; then
               echo "❌ Major releases must use X.0.0 format, got: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
@@ -134,8 +143,13 @@ jobs:
 
           TAG_NAME="v${TAG}"
           RELEASE_NAME="${TAG}"
+          # Maintenance branch of this release (the one branch-automation creates).
+          # If it already exists in a repo, that repo is tagged from it instead of
+          # from base_branch, which has moved on past the release by then.
+          RELEASE_BRANCH="${TAG_MAJOR}.${TAG_MINOR}"
 
           echo "release_kind=${RELEASE_KIND}" >> "$GITHUB_OUTPUT"
+          echo "release_branch=${RELEASE_BRANCH}" >> "$GITHUB_OUTPUT"
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
           echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
           echo "prerelease=false" >> "$GITHUB_OUTPUT"
@@ -147,14 +161,35 @@ jobs:
           {
             echo "## ${RELEASE_KIND^} Release: ${TAG}"
             echo "Base branch: ${BASE}"
+            echo "Release branch (preferred when it already exists): ${RELEASE_BRANCH}"
             echo "Tag: ${TAG_NAME}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Resolve target repositories
         id: resolve
         shell: bash
+        env:
+          RELEASE_BRANCH: ${{ steps.calc.outputs.release_branch }}
         run: |
           set -euo pipefail
+
+          # Resolve an exact branch (not tag) to its HEAD SHA; prints nothing
+          # when the branch does not exist.
+          branch_sha() {
+            local resp status
+            resp=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
+              "https://api.github.com/repos/$1/$2/branches/$3" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}")
+            status=$(echo "${resp}" | tail -n 1 | cut -d: -f2)
+            if [[ "${status}" -eq 200 ]]; then
+              echo "${resp}" | sed '$d' | jq -r '.commit.sha // ""'
+            elif [[ "${status}" -ne 404 ]]; then
+              echo "❌ Failed to look up branch $3 on $1/$2 (HTTP ${status})" >> "$GITHUB_STEP_SUMMARY"
+              return 1
+            fi
+          }
 
           if [[ -n "${REPOSITORIES_OVERRIDE}" ]]; then
             SOURCE="manual-input"
@@ -163,6 +198,12 @@ jobs:
             SOURCE="platform-version-composer"
             PV_REPO="platform-version"
             PV_REF="${BASE_BRANCH}"
+            # Once the release branch exists, its composer.json is the release set.
+            PV_RELEASE_SHA=$(branch_sha pimcore "${PV_REPO}" "${RELEASE_BRANCH}")
+            if [[ -n "${PV_RELEASE_SHA}" ]]; then
+              PV_REF="${RELEASE_BRANCH}"
+            fi
+            SOURCE="${SOURCE}@${PV_REF}"
 
             COMP_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
               "https://api.github.com/repos/pimcore/${PV_REPO}/contents/composer.json?ref=${PV_REF}" \
@@ -207,29 +248,23 @@ jobs:
             R_REPO="${REPO_NAME}"
             FULL_NAME="${R_OWNER}/${R_REPO}"
 
-            SHA_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --location \
-              "https://api.github.com/repos/${R_OWNER}/${R_REPO}/commits/${BASE_BRANCH}" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${RELEASE_TOKEN}")
-
-            SHA_STATUS=$(echo "${SHA_RESP}" | tail -n 1 | cut -d: -f2)
-            if [[ "${SHA_STATUS}" -ne 200 ]]; then
-              echo "⚠️ Skipping ${FULL_NAME}: branch ${BASE_BRANCH} not found (HTTP ${SHA_STATUS})" >> "$GITHUB_STEP_SUMMARY"
-              SKIPPED="${SKIPPED}${FULL_NAME}\n"
-              continue
-            fi
-
-            LATEST_SHA=$(echo "${SHA_RESP}" | sed '$d' | jq -r '.sha // ""')
+            # Prefer an already existing release branch, else fall back to base_branch.
+            R_BRANCH="${RELEASE_BRANCH}"
+            LATEST_SHA=$(branch_sha "${R_OWNER}" "${R_REPO}" "${RELEASE_BRANCH}")
             if [[ -z "${LATEST_SHA}" ]]; then
-              echo "⚠️ Skipping ${FULL_NAME}: failed to parse SHA" >> "$GITHUB_STEP_SUMMARY"
+              R_BRANCH="${BASE_BRANCH}"
+              LATEST_SHA=$(branch_sha "${R_OWNER}" "${R_REPO}" "${BASE_BRANCH}")
+            fi
+            if [[ -z "${LATEST_SHA}" ]]; then
+              echo "⚠️ Skipping ${FULL_NAME}: neither branch ${RELEASE_BRANCH} nor ${BASE_BRANCH} found" >> "$GITHUB_STEP_SUMMARY"
               SKIPPED="${SKIPPED}${FULL_NAME}\n"
               continue
             fi
 
             TARGETS_ARRAY=$(echo "${TARGETS_ARRAY}" | jq -c \
               --arg fn "${FULL_NAME}" --arg o "${R_OWNER}" --arg r "${R_REPO}" --arg sha "${LATEST_SHA}" \
-              '. + [{full_name: $fn, owner: $o, repo: $r, latest_sha: $sha}]')
+              --arg b "${R_BRANCH}" --argjson existing "$([[ "${R_BRANCH}" == "${RELEASE_BRANCH}" ]] && echo true || echo false)" \
+              '. + [{full_name: $fn, owner: $o, repo: $r, latest_sha: $sha, branch: $b, release_branch_exists: $existing}]')
           done <<< "${TARGETS_TEXT}"
 
           TARGETS_JSON="${TARGETS_ARRAY}"
@@ -240,13 +275,22 @@ jobs:
               if ($t.repo | startswith("ee-")) then
                 ($t.repo | ltrimstr("ee-")) as $ce_repo |
                 (map(select(.owner == $t.owner and .repo == $ce_repo)) | first // null) as $ce |
-                if $ce then $t + {ce_owner: $ce.owner, ce_repo: $ce.repo}
+                if $ce then $t + {ce_owner: $ce.owner, ce_repo: $ce.repo, ce_branch: $ce.branch}
                 else $t end
               else $t end
             ]' <<< "${TARGETS_JSON}")
 
           # EE bundles that have a CE counterpart — the set the sync job acts on.
           SYNC_PAIRS_JSON=$(jq -c '[ .[] | select((.repo | startswith("ee-")) and ((.ce_repo // "") != "")) ]' <<< "${TARGETS_JSON}")
+
+          # Sync and merged notes compare EE and CE on one branch, so a pair
+          # where only one side already has the release branch cannot be released.
+          MISMATCHED=$(jq -r '[ .[] | select(.branch != .ce_branch) | "\(.full_name)@\(.branch) vs \(.ce_repo)@\(.ce_branch)" ] | join(", ")' <<< "${SYNC_PAIRS_JSON}")
+          if [[ -n "${MISMATCHED}" ]]; then
+            echo "❌ EE/CE pair(s) resolved to different branches: ${MISMATCHED}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Create (or delete) the ${RELEASE_BRANCH} branch on both sides before releasing." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
           # Fail closed: an EE bundle in the release set whose CE counterpart is
           # NOT also a target gets no sync pair, so releasing it would silently
@@ -270,7 +314,7 @@ jobs:
           TARGETS_COUNT=$(jq -r 'length' <<< "${TARGETS_JSON}")
 
           if [[ "${TARGETS_COUNT}" -eq 0 ]]; then
-            echo "❌ No target repositories resolved (all repos may be missing branch ${BASE_BRANCH})" >> "$GITHUB_STEP_SUMMARY"
+            echo "❌ No target repositories resolved (all repos may be missing branches ${RELEASE_BRANCH} and ${BASE_BRANCH})" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -284,11 +328,11 @@ jobs:
           {
             echo "### Resolved ${TARGETS_COUNT} repositories (source: ${SOURCE})"
             echo '```'
-            echo "${TARGETS_JSON}" | jq -r '.[].full_name'
+            echo "${TARGETS_JSON}" | jq -r '.[] | "\(.full_name) @ \(.branch)" + (if .release_branch_exists then " (existing release branch)" else "" end)'
             echo '```'
             if [[ -n "${SKIPPED}" ]]; then
               echo ""
-              echo "**Skipped** (branch ${BASE_BRANCH} not found):"
+              echo "**Skipped** (neither ${RELEASE_BRANCH} nor ${BASE_BRANCH} found):"
               echo '```'
               printf "%b" "${SKIPPED}"
               echo '```'
@@ -321,7 +365,7 @@ jobs:
         with:
           owner: ${{ matrix.target.owner }}
           repo: ${{ matrix.target.repo }}
-          base_branch: ${{ inputs.base_branch }}
+          base_branch: ${{ matrix.target.branch }}
           # Validate the exact post-sync commit that will be tagged, resolved once
           # by resolve-shas — not a fresh HEAD that may have advanced since.
           sha: ${{ matrix.target.sha }}
@@ -350,7 +394,8 @@ jobs:
           ce_repo: ${{ matrix.pair.ce_repo }}
           ee_owner: ${{ matrix.pair.owner }}
           ee_repo: ${{ matrix.pair.repo }}
-          base_branch: ${{ inputs.base_branch }}
+          # prepare guarantees EE and CE resolved to the same branch.
+          base_branch: ${{ matrix.pair.branch }}
           sync_token: ${{ secrets.SYNC_TOKEN }}
           git_name: ${{ secrets.GIT_NAME }}
           git_email: ${{ secrets.GIT_EMAIL }}
@@ -374,7 +419,6 @@ jobs:
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       TARGETS_JSON: ${{ needs.prepare.outputs.targets_json }}
-      BASE_BRANCH: ${{ inputs.base_branch }}
     outputs:
       targets_json: ${{ steps.resolve.outputs.targets_json }}
       targets_ee_json: ${{ steps.resolve.outputs.targets_ee_json }}
@@ -416,12 +460,13 @@ jobs:
             REPO=$(jq -r '.repo' <<< "${T}")
             CE_OWNER=$(jq -r '.ce_owner // ""' <<< "${T}")
             CE_REPO=$(jq -r '.ce_repo // ""' <<< "${T}")
+            BRANCH=$(jq -r '.branch' <<< "${T}")
 
-            SHA=$(resolve "${OWNER}" "${REPO}" "${BASE_BRANCH}")
+            SHA=$(resolve "${OWNER}" "${REPO}" "${BRANCH}")
             CE_SHA=""
             if [[ -n "${CE_REPO}" ]]; then
               # EE bundle with a CE counterpart: resolve CE HEAD for merged notes.
-              CE_SHA=$(resolve "${CE_OWNER}" "${CE_REPO}" "${BASE_BRANCH}")
+              CE_SHA=$(resolve "${CE_OWNER}" "${CE_REPO}" "${BRANCH}")
             fi
 
             T=$(jq -c --arg s "${SHA}" --arg c "${CE_SHA}" '. + {sha: $s, ce_sha: $c}' <<< "${T}")
@@ -438,7 +483,7 @@ jobs:
           {
             echo "### Resolved post-sync SHAs (tagged commit == validated commit)"
             echo '```'
-            jq -r '.[] | "\(.full_name // (.owner + "/" + .repo)) @ \(.sha)" + (if (.ce_sha // "") != "" then "  (CE " + .ce_sha + ")" else "" end)' <<< "${ENRICHED}"
+            jq -r '.[] | "\(.full_name // (.owner + "/" + .repo))@\(.branch) @ \(.sha)" + (if (.ce_sha // "") != "" then "  (CE " + .ce_sha + ")" else "" end)' <<< "${ENRICHED}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -465,13 +510,16 @@ jobs:
         with:
           owner: ${{ matrix.target.owner }}
           repo: ${{ matrix.target.repo }}
-          base_branch: ${{ inputs.base_branch }}
+          base_branch: ${{ matrix.target.branch }}
           # Tag the exact post-sync commit that validate-extjs checked (resolved
           # once by resolve-shas), so the tagged and validated commits cannot differ.
           sha: ${{ matrix.target.sha }}
           ce_sha: ${{ matrix.target.ce_sha }}
           tag_name: ${{ needs.prepare.outputs.tag_name }}
           release_name: ${{ needs.prepare.outputs.release_name }}
+          # The release branch was cut before this run, so the tag may already
+          # have been pushed by hand; leave such repos alone instead of failing.
+          skip_existing_tag: ${{ matrix.target.release_branch_exists }}
           draft: ${{ inputs.draft }}
           dry_run: ${{ inputs.dry_run }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
@@ -500,12 +548,15 @@ jobs:
         with:
           owner: ${{ matrix.target.owner }}
           repo: ${{ matrix.target.repo }}
-          base_branch: ${{ inputs.base_branch }}
+          base_branch: ${{ matrix.target.branch }}
           # Tag the exact post-sync commit resolve-shas resolved for this repo.
           sha: ${{ matrix.target.sha }}
           ce_sha: ${{ matrix.target.ce_sha }}
           tag_name: ${{ needs.prepare.outputs.tag_name }}
           release_name: ${{ needs.prepare.outputs.release_name }}
+          # The release branch was cut before this run, so the tag may already
+          # have been pushed by hand; leave such repos alone instead of failing.
+          skip_existing_tag: ${{ matrix.target.release_branch_exists }}
           draft: ${{ inputs.draft }}
           dry_run: ${{ inputs.dry_run }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
@@ -783,6 +834,7 @@ jobs:
       REPO: ${{ matrix.target.repo }}
     steps:
       - name: Create maintenance branch
+        if: ${{ !matrix.target.release_branch_exists }}
         shell: bash
         run: |
           set -euo pipefail

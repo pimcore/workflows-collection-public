@@ -30,6 +30,13 @@ inputs:
     required: true
   release_name:
     required: true
+  skip_existing_tag:
+    description: >
+      "true" skips (instead of failing) when the tag already exists at a commit
+      other than the one being released — used when releasing from a
+      maintenance branch cut before the release, where the tag may have been
+      pushed manually. No release is created in that case.
+    default: "false"
   draft:
     description: '"true" or "false"'
     required: true
@@ -121,6 +128,7 @@ runs:
         OWNER: ${{ inputs.owner }}
         REPO: ${{ inputs.repo }}
         TAG_NAME: ${{ inputs.tag_name }}
+        SKIP_EXISTING_TAG: ${{ inputs.skip_existing_tag }}
       run: |
         set -euo pipefail
 
@@ -192,6 +200,9 @@ runs:
           # missing release rather than skipping (which would leave it stuck).
           echo "exists=false" >> "$GITHUB_OUTPUT"
           echo "ℹ️ Tag ${TAG_NAME} exists at the release commit but has no release on ${OWNER}/${REPO}; will create release." >> "$GITHUB_STEP_SUMMARY"
+        elif [[ "${SKIP_EXISTING_TAG}" == "true" ]]; then
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+          echo "⚠️ Tag ${TAG_NAME} already exists on ${OWNER}/${REPO} at ${TAG_SHA:-<unresolved>} (branch head ${LATEST_SHA}); skipping release creation" >> "$GITHUB_STEP_SUMMARY"
         else
           echo "❌ Tag ${TAG_NAME} already exists on ${OWNER}/${REPO} at ${TAG_SHA:-<unresolved>}, but the branch head is ${LATEST_SHA}." >> "$GITHUB_STEP_SUMMARY"
           echo "A release would attach to the existing tag's commit, which this run did not validate or generate notes for. Move or delete the tag before re-running." >> "$GITHUB_STEP_SUMMARY"
