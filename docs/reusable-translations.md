@@ -19,11 +19,11 @@ flowchart TD
     A[PR touches translations] --> B{Same-repo PR?}
     B -- fork --> Z[Skip, green]
     B -- yes --> C[Scan: key delta vs merge base,<br/>validation, staleness, baseline]
-    C --> D{Work left for THIS PR?<br/>delta keys not yet in every language,<br/>stale pairs, or errors above baseline}
+    C --> D{Work left for THIS PR?<br/>delta keys not yet in every language,<br/>stale pairs, or errors absent from the merge base}
     D -- no --> Y[Green, no-op]
     D -- yes --> E[Claude translates<br/>tool-restricted]
     E --> F[Gate 1: English base untouched]
-    F --> G[Gate 2: errors ≤ baseline]
+    F --> G[Gate 2: no error absent from the merge base]
     G --> H[Gate 3: every delta key<br/>present in every language]
     H --> I[Comment, replay onto the current branch tip,<br/>commit to the PR branch]
 ```
@@ -40,23 +40,25 @@ errors before any of this existed. If the gate demanded zero errors, every PR in
 be red forever and adoption would be impossible.
 
 So the rule is **"no worse than the merge base"**: the workflow validates the merge base's own
-translation files, and the job passes when the final error count is less than or equal to that
-baseline. Pre-existing errors sit on both sides of the comparison and cancel out.
+translation files, and the job passes when every error in the final files was already there. Errors
+are compared one by one, not as totals — each is reduced to its language and message (dropping the
+parts that shift with unrelated edits: the key-order position, YAML line/column, the file path), and
+anything not in the baseline set is new. Comparing totals would let a PR that fixes one legacy error
+introduce a different one unnoticed.
 
-That rule is also self-tightening. Adding one English key makes it missing in six languages, so the
-count rises by six; it only returns to baseline if the model actually translates it everywhere.
-Removals behave the same way, via "extra key not in English".
+That rule is also self-tightening. Adding one English key makes it missing in six languages — six new
+errors, which only go away if the model actually translates it everywhere. Removals behave the same
+way, via "extra key not in English".
 
-### 2. Counts alone can't prove the PR's own keys landed
+### 2. The validator alone can't prove the PR's own keys landed
 
-Counts can cancel out: a legacy error that happens to get fixed can offset a delta key that was
-missed, leaving the total unchanged and the job green while your key is absent.
+A language file that doesn't exist at all is a single `MISSING FILE` error at the merge base and
+after the PR alike, so no key added to it can show up as a new error.
 
 So a second, independent check exists. `delta_check.py` asserts, per key and per language, that
 every added key is **present** and every removed key is **gone**. It enumerates the languages
 configured in the skill's `languages.yaml` rather than the files on disk, because a language file
-that doesn't exist at all costs the validator only a single `MISSING FILE` error — which the count
-comparison cannot see.
+that doesn't exist at all costs the validator only that single `MISSING FILE` error.
 
 It runs twice. **Before** the model, it decides whether there is any delta work left at all: the raw
 key delta against the merge base stays non-empty for the whole life of a PR (the bot never touches
