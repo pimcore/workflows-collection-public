@@ -177,9 +177,30 @@ jobs:
           echo "baseline_errors=$BASELINE_ERRORS" >> "$GITHUB_OUTPUT"
           echo "Baseline (merge base) validation errors: $BASELINE_ERRORS"
 
+          # Preflight every skill script this job needs before invoking any of them: a
+          # claude_code_ref that predates one would otherwise die under set -e on Python's
+          # generic "can't open file" instead of naming the actual misconfiguration.
+          for script in key_diff.py key_context.py harvest_lookup.py delta_check.py; do
+            if [ ! -f "$SKILL_PATH/scripts/$script" ]; then
+              echo "::error::$SKILL_PATH/scripts/$script not found — the pimcore/claude-code ref checked out (claude_code_ref) predates the script"
+              exit 1
+            fi
+          done
+
           python3 "$SKILL_PATH/scripts/key_diff.py" \
             --path "$DIR/studio.en.yaml" \
             --base-ref "$MERGE_BASE" > "$RUNNER_TEMP/delta.json"
+
+          # Precompute what the skill's steps 3 and 4 would otherwise have the model do turn
+          # by turn: the source lines that use each new key (tone: button / label / tooltip),
+          # and reviewed classic-admin translations for each new English value. Both are
+          # deterministic, so they are handed to the model as inputs — see SKILL.md "CI mode".
+          # key_context.py skips node_modules, vendor, build output and dot-directories (which
+          # includes the private checkout).
+          python3 "$SKILL_PATH/scripts/key_context.py" --delta "$RUNNER_TEMP/delta.json" --src . \
+            --out "$RUNNER_TEMP/context.json"
+          python3 "$SKILL_PATH/scripts/harvest_lookup.py" --delta "$RUNNER_TEMP/delta.json" --dir "$DIR" \
+            --out "$RUNNER_TEMP/harvest.json"
 
           set +e
           python3 "$SKILL_PATH/scripts/validate_translations.py" --dir "$DIR" \
@@ -197,6 +218,74 @@ jobs:
           CURRENT_ERRORS=$(grep -oE '[0-9]+ error\(s\)' "$RUNNER_TEMP/validation.txt" | tail -1 | grep -oE '^[0-9]+' || echo 0)
           echo "current_errors=$CURRENT_ERRORS" >> "$GITHUB_OUTPUT"
           echo "Current validation errors: $CURRENT_ERRORS (merge base baseline: $BASELINE_ERRORS)"
+
+          # "Introduced by this PR" is decided per error, not by comparing totals: a PR that
+          # fixes one baseline error and introduces a different one leaves the totals equal.
+          # Each error is reduced to a stable identity (language + message, minus the parts
+          # that move with unrelated edits: order position, YAML line/column, file path) and
+          # the new errors are the multiset difference current − baseline. Counts stay for
+          # reporting only. Written to RUNNER_TEMP for the same reason as stale_check.py below:
+          # the re-validate gate runs it again on the model's output, out of the model's reach.
+          cat > "$RUNNER_TEMP/new_errors.py" <<'PY'
+          import re
+          import sys
+          from collections import Counter
+
+          HEADER_RE = re.compile(r"^\[([^\]]+)\] (.*)$")
+          SUMMARY_RE = re.compile(r"(\d+) error\(s\)")
+          # Messages carrying a position that shifts when unrelated keys are added or removed.
+          POSITIONAL_PREFIXES = ("key order differs from English", "invalid YAML")
+
+
+          def identities(path):
+              """Error identities from a validate_translations.py report.
+
+              The validator prints "[lang] ..." per language, "  ERROR <message>" per error
+              (continuation lines of multi-line messages are ignored), "[lang] MISSING FILE:
+              <path>" for an absent language file, and a closing summary with the total.
+              """
+              ids = Counter()
+              summary = 0
+              lang = None
+              with open(path, encoding="utf-8") as fh:
+                  for line in fh.read().splitlines():
+                      header = HEADER_RE.match(line)
+                      if header:
+                          lang = header.group(1)
+                          if header.group(2).startswith("MISSING FILE"):
+                              ids[f"{lang}\tMISSING FILE"] += 1
+                          continue
+                      if line.startswith("  ERROR ") and lang is not None:
+                          message = line[len("  ERROR "):]
+                          for prefix in POSITIONAL_PREFIXES:
+                              if message.startswith(prefix):
+                                  message = prefix
+                          ids[f"{lang}\t{message}"] += 1
+                          continue
+                      found = SUMMARY_RE.findall(line)
+                      if found:
+                          summary = int(found[-1])
+              # A report this parser does not fully understand must fail the job, not read
+              # as "no new errors".
+              if sum(ids.values()) != summary:
+                  sys.exit(f"::error::parsed {sum(ids.values())} error(s) from {path}, "
+                           f"but its summary reports {summary} — validator output format changed?")
+              return ids
+
+
+          baseline_report, current_report, out = sys.argv[1:4]
+          new = identities(current_report) - identities(baseline_report)
+          with open(out, "w", encoding="utf-8") as fh:
+              for identity in sorted(new.elements()):
+                  fh.write(identity.replace("\t", ": ", 1) + "\n")
+          print(sum(new.values()))
+          PY
+
+          NEW_ERRORS=$(python3 "$RUNNER_TEMP/new_errors.py" "$RUNNER_TEMP/baseline.txt" \
+            "$RUNNER_TEMP/validation.txt" "$RUNNER_TEMP/new-errors.txt")
+          echo "new_errors=$NEW_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "Validation errors not present at the merge base: $NEW_ERRORS"
+          cat "$RUNNER_TEMP/new-errors.txt"
 
           # A changed English key is "stale" for a language while that language's value is
           # still exactly the value it had at the merge base. The bot's own commit rewrites
@@ -291,144 +380,31 @@ jobs:
 
           cat "$RUNNER_TEMP/stale.json"
 
-          # Second RUNNER_TEMP script, generated here but deliberately NOT run here: it judges
-          # the model's output, so it only means anything after the translate step, which runs
-          # it. Same reasoning as stale_check.py for why it lives in RUNNER_TEMP — outside the
-          # workspace, so the model (workspace-scoped write rules, Bash limited to one exact
-          # command) cannot edit the check that judges it.
-          #
-          # Why it exists: error counts alone can no longer prove this PR's delta was applied.
-          # Now that the model also repairs the pre-existing backlog, a legacy error it fixed
-          # offsets an added key it skipped — the totals stay within the baseline and the job
-          # would go green with the PR's own keys still missing. So the delta is asserted
-          # directly, per key and per language, instead of inferred from arithmetic.
-          #
-          # It enumerates the CONFIGURED target languages, not the files on disk. A wholly
-          # absent studio.{lang}.yaml costs validate_translations.py exactly one MISSING FILE
-          # error no matter how many keys it lacks, so that error is identical before and
-          # after the model and the count gate cannot see an unapplied delta there — and a
-          # check that globbed only existing files would not see it either. Both gates would
-          # pass with the new key never reaching that language. This is the real
-          # "new bundle / newly added language" case the skill supports.
-          #
-          # delta.changed is deliberately NOT checked here. A changed English key whose
-          # existing translation legitimately still fits (an English-only typo fix) must stay
-          # green, and no mechanical test can tell that from a translation the model wrongly
-          # skipped — those pairs stay human-enforced, via the PR comment's "existing
-          # translations kept (verify these)" section.
-          cat > "$RUNNER_TEMP/delta_check.py" <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          import yaml
-
-          dir_path = Path(os.environ["DIR"])
-          temp = Path(os.environ["RUNNER_TEMP"])
-          # Copied into the workspace by the install step, so it is on disk by the time the
-          # re-validate step runs this — the only step that does.
-          languages_file = Path(".translation-skill/data/languages.yaml")
-
-          delta = json.loads((temp / "delta.json").read_text(encoding="utf-8"))
-          added = delta.get("added") or {}
-          removed = delta.get("removed") or []
-          # key_diff.py emits added as a mapping and removed as a list; accept either shape
-          # for both rather than depending on that.
-          added_keys = list(added.keys()) if isinstance(added, dict) else list(added)
-          removed_keys = list(removed.keys()) if isinstance(removed, dict) else list(removed)
-
-          MISSING = object()
-
-
-          def load(text):
-              """Parse translation YAML; missing, empty, or malformed files are empty mappings.
-
-              A malformed file makes every added key read as missing, which is the right
-              answer here: the delta was not applied to it.
-              """
-              if not text:
-                  return {}
-              try:
-                  return yaml.safe_load(text) or {}
-              except yaml.YAMLError:
-                  return {}
-
-
-          def lookup(doc, key):
-              """Resolve a key stored either flat ("a.b: x") or nested (a: {b: x})."""
-              if isinstance(doc, dict) and key in doc:
-                  return doc[key]
-              node = doc
-              for part in key.split("."):
-                  if not isinstance(node, dict) or part not in node:
-                      return MISSING
-                  node = node[part]
-              return node
-
-
-          def globbed_languages():
-              return [
-                  p.name[len("studio."):-len(".yaml")]
-                  for p in sorted(dir_path.glob("studio.*.yaml"))
-                  if p.name != "studio.en.yaml"
-              ]
-
-
-          def expected_languages():
-              """Target codes from the skill's languages.yaml, mirroring the validator's loader.
-
-              str() is not decorative: "no" (Norwegian) is quoted in that file precisely
-              because YAML parses a bare `no` as the boolean False, and the validator coerces
-              the same way. Dropping it would look for studio.False.yaml.
-
-              Falls back to whatever language files exist if the file is unreadable, is not
-              the expected shape, or lists no targets — a degraded check beats a crashed one,
-              but it is announced so the log shows which mode ran.
-              """
-              try:
-                  data = yaml.safe_load(languages_file.read_text(encoding="utf-8")) or {}
-                  codes = [str(t["code"]) for t in (data.get("targets") or [])]
-              except (OSError, yaml.YAMLError, AttributeError, TypeError, KeyError, IndexError):
-                  codes = []
-              if codes:
-                  return codes
-              print("WARNING: falling back to globbed language files")
-              return globbed_languages()
-
-
-          languages = expected_languages()
-          delta_has_keys = bool(added_keys or removed_keys)
-
-          violations = 0
-          for lang in languages:
-              if lang == "en":
-                  continue
-              path = dir_path / f"studio.{lang}.yaml"
-              if not path.is_file():
-                  # One MISSING FILE error in the validator regardless of key count, so the
-                  # count gate is blind here. With no added/removed keys to apply there is
-                  # nothing for THIS check to assert — an absent file on its own is the count
-                  # gate's business.
-                  if delta_has_keys:
-                      print(f"MISSING FILE studio.{lang}.yaml")
-                      violations += 1
-                  continue
-              now = load(path.read_text(encoding="utf-8"))
-              for key in added_keys:
-                  if lookup(now, key) is MISSING:
-                      print(f"MISSING {key} [{lang}]")
-                      violations += 1
-              for key in removed_keys:
-                  if lookup(now, key) is not MISSING:
-                      print(f"STILL PRESENT {key} [{lang}]")
-                      violations += 1
-
-          print(f"Delta violations: {violations}")
-          raise SystemExit(1 if violations else 0)
-          PY
-
+          # delta_check.py — the per-key, per-language "is this PR's delta applied?" check —
+          # ships with the skill (versioned and unit-tested in pimcore/claude-code). It is run
+          # twice: here, to decide whether the model has any delta work left at all, and after
+          # the translate step, to judge the model's output (from the trusted skill copy in
+          # RUNNER_TEMP, see the install step). Existence was preflighted above.
           STALE_EMPTY=$(jq -r 'if . == {} then "true" else "false" end' "$RUNNER_TEMP/stale.json")
-          DELTA_EMPTY=$(jq -r 'if .added == {} and .changed == {} and .removed == [] then "true" else "false" end' "$RUNNER_TEMP/delta.json")
+
+          # Is the PR's own delta already applied? delta.json is computed against the merge
+          # base, so once a PR adds a key it stays non-empty for the PR's whole life — also
+          # after the bot has translated that key. Deciding on the raw delta made every later
+          # human push (a code fix, a rebase, an "Automatic frontend build" commit) pay a full
+          # model run that ended in "Nothing to commit". delta_check.py asks the question that
+          # actually matters: are any added keys still missing, or removed keys still present,
+          # in any configured language? Any non-zero exit (violations, or a crash) counts as
+          # "work remaining", so a broken check fails towards running the model, not away.
+          set +e
+          python3 "$SKILL_PATH/scripts/delta_check.py" --delta "$RUNNER_TEMP/delta.json" --dir "$DIR" \
+            --languages "$SKILL_PATH/data/languages.yaml" > "$RUNNER_TEMP/delta-remaining.txt" 2>&1
+          DELTA_CHECK_EXIT=$?
+          set -e
+          cat "$RUNNER_TEMP/delta-remaining.txt"
+          DELTA_DONE=false
+          if [ "$DELTA_CHECK_EXIT" -eq 0 ]; then
+            DELTA_DONE=true
+          fi
 
           # Circuit breaker: the workflow's own commit never re-enters the translate arm —
           # at most one bot commit per human push, even if the model's output is unstable.
@@ -437,14 +413,15 @@ jobs:
             BOT_HEAD=true
           fi
 
-          # The model runs whenever there is any work at all: keys this PR added/changed/
-          # removed, changed keys whose translations are still the pre-change ones, or any
-          # validation error already sitting in the files. Errors DO invoke the model —
-          # that is what lets a drifted repo converge to zero over successive runs instead
-          # of merely holding steady — but they still do NOT decide pass/fail. That stays
-          # the baseline comparison in the gates further down, so cleanup is best-effort:
-          # clearing part of the backlog is green, clearing none of it is green too.
-          if { [ "$DELTA_EMPTY" = "false" ] || [ "$STALE_EMPTY" = "false" ] || [ "$CURRENT_ERRORS" -gt 0 ]; } && [ "$BOT_HEAD" = "false" ]; then
+          # The model runs when THIS PR left work behind: added/removed keys not yet applied
+          # in every language, changed keys whose translations are still the pre-change ones,
+          # or validation errors this PR introduced (absent from the merge-base baseline). It
+          # does NOT run for the pre-existing backlog: those errors are present at the merge
+          # base too, the model is not allowed to touch studio.en.yaml (where such
+          # drift often originates), and a backlog it cannot clear would otherwise invoke it
+          # on every push of every PR forever. Legacy drift is a deliberate human task, not a
+          # per-PR tax. Pass/fail is unchanged: the baseline comparison in the gates below.
+          if { [ "$DELTA_DONE" = "false" ] || [ "$STALE_EMPTY" = "false" ] || [ "$NEW_ERRORS" -gt 0 ]; } && [ "$BOT_HEAD" = "false" ]; then
             echo "needs_translation=true" >> "$GITHUB_OUTPUT"
           else
             echo "needs_translation=false" >> "$GITHUB_OUTPUT"
@@ -456,11 +433,9 @@ jobs:
         env:
           CURRENT_ERRORS: ${{ steps.scan.outputs.current_errors }}
         run: |
-          # "In sync" is only true at zero errors. The other branch must describe THIS RUN, not
-          # the PR: now that any validation error invokes the model, the only way to reach it
-          # with errors outstanding is the circuit breaker — the re-run of the workflow's own
-          # sync commit — where the PR itself may well have changed English keys, and where
-          # the remaining errors are simply what the previous run did not get to.
+          # "In sync" is only true at zero errors. With errors outstanding this run still did
+          # nothing on purpose: every one of them is also present at the merge base, so the
+          # model is not invoked for them — see the trigger in the scan step.
           if [ "$CURRENT_ERRORS" -eq 0 ]; then
             {
               echo "### ✅ Translations in sync"
@@ -469,39 +444,43 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           else
             {
-              echo "### ✅ No translation work triggered for this run"
+              echo "### ✅ No translation work left for this PR"
               echo ""
-              echo "Nothing invoked the translation step here — either there were no key changes"
-              echo "and no stale translations to refresh, or this run is the re-run of the"
-              echo "workflow's own sync commit. ${CURRENT_ERRORS} validation error(s) remain in the"
-              echo "translation files. They are not blocking this PR; a later run will keep"
-              echo "working through them."
+              echo "This PR's own key changes are applied in every target language (or it has"
+              echo "none), and it introduced no validation errors. ${CURRENT_ERRORS} pre-existing"
+              echo "validation error(s) remain in the translation files; they are not blocking"
+              echo "this PR and are not repaired by PR runs — fix them in a dedicated PR."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       # The model did not run, so the workflow has nothing to regenerate — but the PR must
-      # still not leave validation worse than it found it. Pre-existing errors sit in both
-      # numbers and cancel out; only errors this PR introduced can make the difference grow.
+      # still not leave validation worse than it found it: no error absent from the merge
+      # base. Only reachable on a bot-authored head (the circuit breaker), since new errors
+      # otherwise route to the model.
       - name: Guard — no new validation errors
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'false'
         shell: bash
         env:
-          BASELINE_ERRORS: ${{ steps.scan.outputs.baseline_errors }}
-          CURRENT_ERRORS: ${{ steps.scan.outputs.current_errors }}
+          NEW_ERRORS: ${{ steps.scan.outputs.new_errors }}
         run: |
-          if [ "$CURRENT_ERRORS" -gt "$BASELINE_ERRORS" ]; then
+          if [ "$NEW_ERRORS" -gt 0 ]; then
             {
               echo "### ❌ This PR adds validation errors to the translation files"
               echo ""
-              echo "Validation errors went from ${BASELINE_ERRORS} at the merge base to ${CURRENT_ERRORS}."
-              echo "This PR does not change studio.en.yaml, so the workflow has no key delta to"
-              echo "regenerate the language files from — fix them in this PR."
+              echo "${NEW_ERRORS} validation error(s) are not present at the merge base. The workflow"
+              echo "does not re-run the model on its own commit, so fix them in this PR:"
+              echo ""
+              echo '```'
+              cat "$RUNNER_TEMP/new-errors.txt"
+              echo '```'
+              echo ""
+              echo "Full report:"
               echo ""
               echo '```'
               cat "$RUNNER_TEMP/validation.txt"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::error::This PR introduces $((CURRENT_ERRORS - BASELINE_ERRORS)) new translation validation error(s) (merge base: $BASELINE_ERRORS, now: $CURRENT_ERRORS)"
+            echo "::error::This PR introduces ${NEW_ERRORS} translation validation error(s) not present at the merge base"
             exit 1
           fi
 
@@ -517,6 +496,11 @@ jobs:
           # wiped. Install the skill at a neutral workspace path instead.
           rm -rf .translation-skill
           cp -r "$SKILL_PATH" .translation-skill
+          # Second copy outside the workspace for everything that runs after the model: the
+          # replay step's `git reset --hard` materializes the fetched tip, which may track its
+          # own .translation-skill/, so the gates must never execute the workspace copy.
+          rm -rf "$RUNNER_TEMP/trusted-skill"
+          cp -r "$SKILL_PATH" "$RUNNER_TEMP/trusted-skill"
           # The private checkout must not be on disk while the model runs; the skill
           # copy above is the only piece it needs.
           rm -rf .claude-code
@@ -539,7 +523,8 @@ jobs:
           # this workflow made.
           rm -rf .translation-scan
           mkdir -p .translation-scan
-          cp "$RUNNER_TEMP/delta.json" "$RUNNER_TEMP/stale.json" "$RUNNER_TEMP/validation.txt" "$RUNNER_TEMP/baseline.txt" .translation-scan/
+          cp "$RUNNER_TEMP/delta.json" "$RUNNER_TEMP/stale.json" "$RUNNER_TEMP/context.json" "$RUNNER_TEMP/harvest.json" \
+             "$RUNNER_TEMP/validation.txt" "$RUNNER_TEMP/baseline.txt" "$RUNNER_TEMP/new-errors.txt" .translation-scan/
 
           # claude-code-action snapshots the PR's versions of its sensitive config
           # paths into .claude-pr/ with dereference:true before replacing them from
@@ -584,10 +569,19 @@ jobs:
               entries to re-translate, and only into the languages listed for them;
               changed keys absent from stale.json are already up to date.
             - Validation report: read .translation-scan/validation.txt
+            - Usage context per key: read .translation-scan/context.json — the source lines
+              that use each added/changed key (button vs label vs tooltip decides tone and
+              length). This is the skill's "read the code first" step, already done: do NOT
+              grep the source for keys.
+            - Reviewed classic-admin translations: read .translation-scan/harvest.json — for
+              every key listed there, use the given per-language values verbatim. This is
+              the skill's "reuse admin translations" step, already done: do NOT open
+              data/admin-harvest.csv or the bundle's admin.*.yaml files.
 
-            Do not run key_diff.py. The skill's workflow tells you to run it, but in this
-            CI run that step is already done — the delta is precomputed in the files above,
-            and Bash has no permission to run anything except the validation command below.
+            Do not run key_diff.py, key_context.py or harvest_lookup.py. The skill's workflow
+            tells you to do those steps, but in this CI run they are already done — their
+            results are the files above — and Bash has no permission to run anything except
+            the validation command below.
 
             Fix as much as you can, in this priority order:
 
@@ -597,14 +591,15 @@ jobs:
                keys from all language files. Insert each key at the same position it has
                in studio.en.yaml. This part is mandatory — the job fails if it is not
                completed.
-            2. THEN, repair as many of the remaining validation errors in
-               .translation-scan/validation.txt as you can: missing keys, extra keys that
-               are not in English, non-string values that need quoting, key order,
-               placeholder mismatches, and plural pairs.
-            3. .translation-scan/baseline.txt lists the errors that already existed before
-               this PR. Those are legacy drift: you are welcome to fix them — that is what
-               step 2 is for — but they are not required. If you run short of turns, leave
-               them rather than leaving the step 1 delta unfinished.
+            2. THEN, fix the validation errors this PR introduced, listed in
+               .translation-scan/new-errors.txt (the errors in validation.txt that are NOT
+               also in .translation-scan/baseline.txt, the errors that already existed at the
+               merge base): missing keys, extra keys that are not in English, non-string
+               values that need quoting, key order, placeholder mismatches, and plural pairs.
+            3. Leave the errors listed in .translation-scan/baseline.txt alone. They are
+               legacy drift that predates this PR, are not blocking it, and are cleaned up
+               in dedicated PRs — not here. Spending turns on them is the difference between
+               finishing step 1 inside the turn budget and running out.
             4. Missing keys are usually clustered: a feature's keys typically sit together
                in studio.en.yaml (for example operational-grid.csv-import.title/description/
                ok/cancel are four adjacent keys). Insert a whole run of adjacent missing
@@ -631,9 +626,10 @@ jobs:
               listing them (key, chosen reading, alternative) to it. If there were none,
               leave it empty.
             - Before finishing, re-run validation and confirm two things: (a) none of the
-              delta keys you were assigned in step 1 appear as errors, and (b) the total
-              error count has not increased. Anything you cleared beyond that is a bonus;
-              the total does not have to reach zero. Use exactly this command,
+              delta keys you were assigned in step 1 appear as errors, and (b) every error
+              still reported is also listed in .translation-scan/baseline.txt — the gate
+              compares individual errors, so fixing a legacy error does not pay for a new
+              one. The total does not have to reach zero. Use exactly this command,
               byte for byte:
               python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }}
               Any other variant is denied — do not add quotes, extra flags, redirects, or
@@ -657,16 +653,16 @@ jobs:
           # unwritable under either reading. Neither is Read-denied — the model must read the
           # skill and its precomputed delta/stale/validation inputs.
           #
-          # --max-turns was 50, sized for a delta-only task. The model now also repairs the
-          # pre-existing validation backlog, which can span every language file, so 150.
-          # The gate is baseline-relative, not "must reach zero", so partial progress still
-          # passes: exhausting the budget mid-cleanup is not a failure — it just leaves the
-          # remainder for the next run.
+          # --max-turns is sized for the delta of one PR (measured: ~40–50 turns for an
+          # 18-key delta across 6 languages on Sonnet). It was 150 while PR runs also repaired
+          # the pre-existing backlog; that is no longer triggered per PR (see the scan step).
+          # Exhausting the budget on an unusually large delta fails the delta gate below
+          # loudly and the next push retries — it does not go green with keys missing.
           claude_args: |
-            --max-turns 150
+            --max-turns 50
             ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
             --allowedTools "Read,Glob,Grep,TodoWrite,Write,Edit(${{ inputs.translations_dir }}/studio.*.yaml),Edit(.translation-report.md),Bash(python3 .translation-skill/scripts/validate_translations.py --dir ${{ inputs.translations_dir }})"
-            --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Edit(.git/**),Edit(.translation-skill/**),Edit(.translation-scan/**)"
+            --disallowedTools "Edit(${{ inputs.translations_dir }}/studio.en.yaml),Read(.git/**),Read(.claude-code/**),Read(.translation-skill/data/admin-harvest.csv),Edit(.git/**),Edit(.translation-skill/**),Edit(.translation-scan/**)"
 
       - name: Note model outcome
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
@@ -674,12 +670,12 @@ jobs:
           OUTCOME: ${{ steps.translate.outcome }}
         run: |
           if [ "$OUTCOME" != "success" ]; then
-            echo "::warning::The translate step did not complete (outcome: ${OUTCOME}). Any work it did complete is still being validated by the gates below. A turn-limit stop means backlog cleanup was truncated, not that the run is broken."
+            echo "::warning::The translate step did not complete (outcome: ${OUTCOME}). Any work it did complete is still being validated by the gates below."
             {
               echo "### ⚠️ Model step did not complete (outcome: ${OUTCOME})"
               echo ""
-              echo "Any work it did complete is still being validated by the gates below."
-              echo "A turn-limit stop means backlog cleanup was truncated, not that the run is broken."
+              echo "Any work it did complete is still being validated by the gates below;"
+              echo "the delta gate fails the job if this PR's keys did not all land."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -693,6 +689,160 @@ jobs:
             exit 1
           fi
 
+      # The model step takes minutes; a human push to the PR branch in that window made the
+      # bot's push non-fast-forward and threw the whole run away (measured: the three most
+      # expensive runs in a fortnight, ~27% of spend, all ended in "! [rejected]"). The
+      # caller's cancel-in-progress only stops a run that has not reached this point yet.
+      # So: if the branch moved, replay the model's language-file output on top of the new
+      # tip with a 3-way apply. A real conflict (a human edited the same language lines) is
+      # loud — the job fails, nothing is pushed, and the next human push re-runs the model.
+      #
+      # This runs BEFORE the mechanical gates, so they judge the tree that is actually
+      # committed (new tip + replayed output), not the tree the model saw. A clean apply is
+      # not enough on its own: the gates reuse the scan's delta.json and merge-base baseline,
+      # and those are only valid while studio.en.yaml and the merge base are the ones the
+      # scan read. If either moved, the model's output answers an obsolete question — and
+      # committing it anyway would trip the bot-commit circuit breaker on the follow-up run,
+      # so the new English values would never be translated. The same holds for the model's
+      # other two inputs, context.json and harvest.json: they are recomputed on the new tip
+      # and must match. Refuse on any of these; nothing is pushed.
+      #
+      # The fetched tip is PR content that no check has seen yet. It is materialized only
+      # after the model has run and before any push credential exists in .git/config, the
+      # translations-dir containment checks are repeated on it, and everything executed from
+      # here on comes from RUNNER_TEMP — never from the reset workspace.
+      - name: Rebase model output onto the current branch tip
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        shell: bash
+        env:
+          DIR: ${{ inputs.translations_dir }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          MERGE_BASE: ${{ steps.scan.outputs.merge_base }}
+          TOKEN: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          DIR="${DIR%/}"
+          SKILL="$RUNNER_TEMP/trusted-skill"
+
+          # The PR comment reads the ambiguity report after this step; a reset onto a tip that
+          # tracks .translation-report.md would silently replace the model's report.
+          if [ -f .translation-report.md ] && [ ! -L .translation-report.md ]; then
+            cp .translation-report.md "$RUNNER_TEMP/translation-report.md"
+          fi
+
+          # One-shot credentials for this fetch only (private repos need them): passed through
+          # the environment, so the PAT lands neither in .git/config nor on a command line.
+          # claude-code-action's agent mode rewires origin to its own token, so fetch the
+          # explicit URL, and drop any leftover auth header so only this one is sent.
+          git config --unset-all "http.https://github.com/.extraheader" 2>/dev/null || true
+          AUTH=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          # FETCH_HEAD, not origin/<branch>: the checkout action may not have a remote-tracking
+          # refspec configured, so the remote-tracking ref is not guaranteed to be updated.
+          # The base ref is refreshed in the same fetch: against the checkout-time base tip, a
+          # branch that merged in base commits landing during the model step keeps its old
+          # merge base and the refusal below would miss it. HEAD_REF must stay the first
+          # refspec — FETCH_HEAD resolves to the first one fetched.
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH" \
+            git fetch --quiet "https://github.com/${REPO}.git" \
+              "$HEAD_REF" "+$BASE_REF:refs/remotes/origin/$BASE_REF"
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)" ]; then
+            echo "Branch tip unchanged since checkout; nothing to rebase."
+            exit 0
+          fi
+          echo "Branch moved from $(git rev-parse --short HEAD) to $(git rev-parse --short FETCH_HEAD) during the model step; replaying model output."
+
+          # Both inputs the scan derived its delta and baseline from must still hold on the
+          # new tip. `git diff --quiet` exits 1 on a difference and >1 on an error; either
+          # means the English base cannot be trusted to be unchanged, so both refuse.
+          EN_CHANGED=false
+          if ! git diff --quiet HEAD FETCH_HEAD -- "$DIR/studio.en.yaml"; then
+            EN_CHANGED=true
+          fi
+          NEW_MERGE_BASE=$(git merge-base "origin/$BASE_REF" FETCH_HEAD)
+          if [ "$EN_CHANGED" = "true" ] || [ "$NEW_MERGE_BASE" != "$MERGE_BASE" ]; then
+            {
+              echo "### ❌ Branch changed under the model — nothing committed"
+              echo ""
+              if [ "$EN_CHANGED" = "true" ]; then
+                echo "studio.en.yaml changed on this branch while the model was running, so the"
+                echo "generated translations were computed from an outdated English base."
+              else
+                echo "The merge base with \`${BASE_REF}\` moved while the model was running (base branch"
+                echo "merged in), so the key delta the model worked from is outdated."
+              fi
+              echo "Nothing was pushed. Push again (or re-run this workflow) to regenerate the"
+              echo "translations from the current state."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::studio.en.yaml or the merge base changed during the model step; generated translations are stale and were not committed"
+            exit 1
+          fi
+
+          # Stage first so a language file the model CREATED is part of the patch too.
+          git add -A -- "$DIR"/studio.*.yaml
+          git diff --cached --binary -- "$DIR"/studio.*.yaml > "$RUNNER_TEMP/model-output.patch"
+          git reset --quiet --hard FETCH_HEAD
+
+          # Same containment checks as the scan step, now on the fetched tree: the new tip may
+          # have turned the translations dir or a language file into a symlink.
+          if [ "$(realpath -e "$DIR" 2>/dev/null)" != "$GITHUB_WORKSPACE/$DIR" ]; then
+            echo "::error::translations_dir on the updated branch tip does not resolve to a real directory inside the workspace (missing, symlinked, or escaping)"
+            exit 1
+          fi
+          SYMLINKS=$(find "$DIR" -type l)
+          if [ -n "$SYMLINKS" ]; then
+            echo "::error::symlinks are not allowed inside the translations directory (updated branch tip):"
+            echo "$SYMLINKS"
+            exit 1
+          fi
+
+          # The model also worked from the usage context and the admin-harvest hits. Recompute
+          # both on the new tip with the trusted scripts; a code push that moved a key from a
+          # button to a tooltip (or changed a bundle admin translation) makes the output stale.
+          # Line numbers are dropped before comparing: an unrelated edit above a usage shifts
+          # them without changing what the model was told.
+          python3 "$SKILL/scripts/key_context.py" --delta "$RUNNER_TEMP/delta.json" --src . \
+            --out "$RUNNER_TEMP/context-tip.json"
+          python3 "$SKILL/scripts/harvest_lookup.py" --delta "$RUNNER_TEMP/delta.json" --dir "$DIR" \
+            --out "$RUNNER_TEMP/harvest-tip.json"
+          NO_LINES='map_values(.hits |= map(del(.line)))'
+          if ! diff -q <(jq -S "$NO_LINES" "$RUNNER_TEMP/context.json") <(jq -S "$NO_LINES" "$RUNNER_TEMP/context-tip.json") >/dev/null \
+            || ! diff -q <(jq -S . "$RUNNER_TEMP/harvest.json") <(jq -S . "$RUNNER_TEMP/harvest-tip.json") >/dev/null; then
+            {
+              echo "### ❌ Branch changed under the model — nothing committed"
+              echo ""
+              echo "Code using this PR's keys, or the bundle's admin translations, changed while the"
+              echo "model was running, so the generated translations were computed from outdated"
+              echo "usage context. Nothing was pushed. Push again (or re-run this workflow) to"
+              echo "regenerate the translations from the current state."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::key usage context or admin-harvest hits changed during the model step; generated translations are stale and were not committed"
+            exit 1
+          fi
+
+          if [ ! -s "$RUNNER_TEMP/model-output.patch" ]; then
+            echo "Model output patch is empty after staging; nothing to replay."
+            exit 0
+          fi
+          if ! git apply --3way --index "$RUNNER_TEMP/model-output.patch"; then
+            {
+              echo "### ❌ Could not replay generated translations onto the updated branch"
+              echo ""
+              echo "The branch received new commits while the model was running and the generated"
+              echo "language-file changes conflict with them. Nothing was pushed. Push again (or"
+              echo "re-run this workflow) to regenerate the translations on top of the current tip."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::generated translations conflict with commits pushed during the model step"
+            exit 1
+          fi
+          git reset --quiet -- "$DIR"   # leave the changes unstaged; the commit action stages by file_pattern
+          git status --short -- "$DIR"
+          # Concurrent human edits to language files that did not overlap the patch are now
+          # part of the working tree too; the gates below validate that combined result.
+
       - name: Re-validate (mechanical gate)
         id: revalidate
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
@@ -701,10 +851,14 @@ jobs:
           DIR: ${{ inputs.translations_dir }}
           BASELINE_ERRORS: ${{ steps.scan.outputs.baseline_errors }}
         run: |
-          # Runs the copied scripts in .translation-skill/: the private checkout is gone by
-          # now (deleted before the model step). No Edit allow rule covers
-          # .translation-skill/**, and the model's single Bash rule is an exact command
-          # match, so no redirect or extra argument can be smuggled into it.
+          # Runs on the tree that will be committed: the model's output, replayed onto the
+          # current branch tip by the step above if the branch moved meanwhile. The scan's
+          # delta.json and merge-base baseline are still valid here because that step refuses
+          # to continue when studio.en.yaml or the merge base changed.
+          #
+          # Runs the trusted skill copy in RUNNER_TEMP: the private checkout is gone by now
+          # (deleted before the model step), the model cannot write outside the workspace, and
+          # the workspace's .translation-skill/ may have been replaced by the replay's reset.
           #
           # The gate is baseline-relative, not "must exit 0": errors that already existed at
           # the merge base are not this PR's to fix, and demanding zero makes every PR in a
@@ -712,7 +866,7 @@ jobs:
           # its exit code cannot be the gate — capture it, and keep exit >= 2 (usage/IO
           # error, i.e. misconfiguration) as a hard failure.
           set +e
-          python3 .translation-skill/scripts/validate_translations.py --dir "$DIR" \
+          python3 "$RUNNER_TEMP/trusted-skill/scripts/validate_translations.py" --dir "$DIR" \
             > "$RUNNER_TEMP/revalidation.txt" 2>&1
           REVALIDATE_EXIT=$?
           set -e
@@ -727,17 +881,27 @@ jobs:
           echo "final_errors=$FINAL_ERRORS" >> "$GITHUB_OUTPUT"
           echo "Validation errors after translating: $FINAL_ERRORS (merge base baseline: $BASELINE_ERRORS)"
 
-          # Two independent gates, in this order. This first one is the count comparison, and
-          # it answers exactly one question: did this run leave the repo worse than it found
-          # it? It cannot answer "was this PR's delta applied?" — with backlog cleanup active,
-          # a legacy error the model fixed offsets an added key it skipped and the two cancel
-          # out. That second question is answered directly by delta_check.py below, per key
-          # and per language, so the delta guarantee is enforced rather than inferred.
-          if [ "$FINAL_ERRORS" -gt "$BASELINE_ERRORS" ]; then
+          # Two independent gates, in this order. This first one compares error identities
+          # with the merge base (new_errors.py, written by the scan step), and it answers
+          # exactly one question: did this run leave the repo worse than it found it? A total
+          # comparison could not — a legacy error the model fixed would offset one it
+          # introduced. It still cannot answer "was this PR's delta applied?": a language file
+          # that never existed is one MISSING FILE error on both sides. That second question
+          # is answered directly by delta_check.py below, per key and per language, so the
+          # delta guarantee is enforced rather than inferred.
+          FINAL_NEW_ERRORS=$(python3 "$RUNNER_TEMP/new_errors.py" "$RUNNER_TEMP/baseline.txt" \
+            "$RUNNER_TEMP/revalidation.txt" "$RUNNER_TEMP/final-new-errors.txt")
+          if [ "$FINAL_NEW_ERRORS" -gt 0 ]; then
             {
               echo "### ❌ Generated translations failed validation — nothing committed"
               echo ""
-              echo "Validation errors (${FINAL_ERRORS}) exceed the merge-base baseline (${BASELINE_ERRORS})."
+              echo "${FINAL_NEW_ERRORS} validation error(s) are not present at the merge base:"
+              echo ""
+              echo '```'
+              cat "$RUNNER_TEMP/final-new-errors.txt"
+              echo '```'
+              echo ""
+              echo "Full report:"
               echo ""
               echo '```'
               cat "$RUNNER_TEMP/revalidation.txt"
@@ -751,14 +915,14 @@ jobs:
             echo "::warning::${FINAL_ERRORS} validation error(s) remain, all pre-existing at the merge base — not introduced by this PR, and not blocking it"
           fi
 
-          # Second gate: the delta itself, asserted per key and per language. Generated in the
-          # scan step (see the rationale there); reads DIR and RUNNER_TEMP from this step's
-          # environment. Runs after the count comparison has passed, and three steps before
-          # anything is committed — "Detect changes", "Comment on PR" and "Configure push
-          # credentials" all sit between here and the commit action, and a failure here aborts
-          # the job before any of them, so nothing is pushed and no comment is posted.
+          # Second gate: the delta itself, asserted per key and per language (see the scan
+          # step for the rationale). Runs after the count comparison has passed. "Detect
+          # changes", "Configure push credentials" and "Comment on PR" sit between here and
+          # the commit action, and a failure here aborts the job before any of them, so
+          # nothing is pushed and no comment is posted.
           set +e
-          python3 "$RUNNER_TEMP/delta_check.py" > "$RUNNER_TEMP/delta-violations.txt" 2>&1
+          python3 "$RUNNER_TEMP/trusted-skill/scripts/delta_check.py" --delta "$RUNNER_TEMP/delta.json" --dir "$DIR" \
+            --languages "$RUNNER_TEMP/trusted-skill/data/languages.yaml" > "$RUNNER_TEMP/delta-violations.txt" 2>&1
           DELTA_EXIT=$?
           set -e
           cat "$RUNNER_TEMP/delta-violations.txt"
@@ -803,8 +967,23 @@ jobs:
           python3 "$RUNNER_TEMP/stale_check.py"
           cat "$STALE_OUT"
 
+      - name: Configure push credentials
+        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
+        env:
+          TOKEN: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # claude-code-action's agent mode strips checkout's auth header and rewires
+          # origin to its own (read-only) token — restore a push-capable remote for the
+          # commit step. Only now, after every gate has passed: nothing that reads the
+          # fetched tree runs while the PAT sits in .git/config.
+          git config --unset-all "http.https://github.com/.extraheader" 2>/dev/null || true
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
+
       # Comment BEFORE pushing: the bot commit re-enters the caller's per-PR concurrency
       # group with cancel-in-progress, which can cancel this run before a later step runs.
+      # But only AFTER the replay and the gates: the comment announces a commit, so it must
+      # not be posted for output that the replay refused or the gates rejected.
       - name: Comment on PR
         if: steps.gate.outputs.run == 'true' && steps.changes.outputs.any == 'true'
         uses: actions/github-script@v7
@@ -820,7 +999,9 @@ jobs:
             // "Re-translated" must reflect what was actually re-translated: the stale
             // changed-key/language pairs, not every changed key in the delta.
             let stale = {};
-            const stalePath = `${process.env.GITHUB_WORKSPACE}/.translation-scan/stale.json`;
+            // Read from RUNNER_TEMP, not the workspace: the replay's reset can replace
+            // workspace files with the fetched tip's.
+            const stalePath = `${process.env.RUNNER_TEMP}/stale.json`;
             if (fs.existsSync(stalePath)) {
               try {
                 stale = JSON.parse(fs.readFileSync(stalePath, 'utf8')) ?? {};
@@ -870,8 +1051,9 @@ jobs:
                 + `${keptItems.join('\n')}\n`;
             }
             // The file is pre-created empty, so existence proves nothing: only non-blank
-            // content means the model actually reported ambiguous keys.
-            const reportPath = `${process.env.GITHUB_WORKSPACE}/.translation-report.md`;
+            // content means the model actually reported ambiguous keys. The replay step
+            // snapshots it to RUNNER_TEMP before its reset.
+            const reportPath = `${process.env.RUNNER_TEMP}/translation-report.md`;
             const report = fs.existsSync(reportPath)
               ? fs.readFileSync(reportPath, 'utf8').trim()
               : '';
@@ -880,10 +1062,12 @@ jobs:
             }
             // Errors that already existed at the merge base are reported, never blocking:
             // the job's gate is "no worse than the merge base", so a legacy backlog stays
-            // visible to reviewers without turning every PR in the repo red. The model is
-            // asked to chip at that backlog after finishing the delta, so this section also
-            // reports how far it got. Both counts are parsed defensively — a missing or
-            // non-numeric value falls back to the plain "backlog exists" wording.
+            // visible to reviewers without turning every PR in the repo red. PR runs do not
+            // repair that backlog (the model is told to leave baseline errors alone), but if
+            // a run happened to clear some the count is reported — exact, because the
+            // re-validate gate only passes when every final error is a baseline one. Both
+            // counts are parsed defensively — a missing or non-numeric value falls back to
+            // the plain "backlog exists" wording.
             const baselineErrors = Number.parseInt(process.env.BASELINE_ERRORS ?? '', 10);
             const finalErrors = Number.parseInt(process.env.FINAL_ERRORS ?? '', 10);
             if (Number.isFinite(baselineErrors) && baselineErrors > 0) {
@@ -891,13 +1075,13 @@ jobs:
                 body += `\n#### 🧹 Pre-existing translation errors (backlog partly cleared)\n\n`
                   + `${baselineErrors} validation error(s) predating this PR were present at the`
                   + ` merge base. This run also fixed ${baselineErrors - finalErrors} of them;`
-                  + ` ${finalErrors} still remain. The remainder is not blocking — later runs`
-                  + ` keep chipping at it.\n`;
+                  + ` ${finalErrors} still remain. The remainder is not blocking; clearing it`
+                  + ` needs a dedicated PR.\n`;
               } else if (Number.isFinite(finalErrors) && finalErrors === baselineErrors) {
                 body += `\n#### ℹ️ Pre-existing translation errors (not from this PR)\n\n`
                   + `${baselineErrors} validation error(s) predating this PR are still present.`
-                  + ` They are not blocking it; clearing them needs another run or a dedicated`
-                  + ` backfill.\n`;
+                  + ` They are not blocking it and PR runs do not repair them; clearing them`
+                  + ` needs a dedicated PR.\n`;
               } else {
                 body += `\n#### ℹ️ Pre-existing translation errors (not from this PR)\n\n`
                   + `${baselineErrors} validation error(s) were already present in these files at`
@@ -931,18 +1115,6 @@ jobs:
             if (!updated) {
               await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
             }
-
-      - name: Configure push credentials
-        if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
-        env:
-          TOKEN: ${{ secrets.TRANSLATIONS_GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: |
-          # claude-code-action's agent mode strips checkout's auth header and rewires
-          # origin to its own (read-only) token — restore a push-capable remote here,
-          # after the model has run and just before the commit step needs it.
-          git config --unset-all "http.https://github.com/.extraheader" 2>/dev/null || true
-          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
 
       - name: Commit generated translations
         if: steps.gate.outputs.run == 'true' && steps.scan.outputs.needs_translation == 'true'
