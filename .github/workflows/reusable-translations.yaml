@@ -666,10 +666,15 @@ jobs:
           echo "::add-mask::$AUTH"
           # FETCH_HEAD, not origin/<branch>: the checkout action may not have a remote-tracking
           # refspec configured, so the remote-tracking ref is not guaranteed to be updated.
+          # The base ref is refreshed in the same fetch: against the checkout-time base tip, a
+          # branch that merged in base commits landing during the model step keeps its old
+          # merge base and the refusal below would miss it. HEAD_REF must stay the first
+          # refspec — FETCH_HEAD resolves to the first one fetched.
           GIT_CONFIG_COUNT=1 \
           GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
           GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH" \
-            git fetch --quiet "https://github.com/${REPO}.git" "$HEAD_REF"
+            git fetch --quiet "https://github.com/${REPO}.git" \
+              "$HEAD_REF" "+$BASE_REF:refs/remotes/origin/$BASE_REF"
           if [ "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)" ]; then
             echo "Branch tip unchanged since checkout; nothing to rebase."
             exit 0
