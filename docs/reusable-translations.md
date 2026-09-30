@@ -99,8 +99,16 @@ model's output is stable. Later human pushes find the delta already applied (the
 The model step takes minutes. If a human pushes to the PR branch in that window, the bot's commit
 would be non-fast-forward. Instead of failing the push and discarding the run, the workflow fetches
 the new tip, replays the generated language-file changes onto it with a 3-way apply, and commits on
-top. A genuine conflict (someone edited the same language lines) fails the job loudly and pushes
-nothing; the next human push simply re-runs the model.
+top. The replay runs **before** the gates, so they judge the tree that is actually committed.
+
+It refuses — fails loudly, pushes nothing — when the model's output no longer answers the current
+question: `studio.en.yaml` or the merge base changed, or the recomputed usage context / admin-harvest
+hits for the delta keys differ from what the model was given. A genuine conflict (someone edited the
+same language lines) fails the same way. Push again or re-run the workflow to regenerate.
+
+The fetched tip is treated as unchecked PR content: the translations-dir containment checks run
+again on it, the gates execute a skill copy kept outside the workspace, and the push credential is
+written only after every gate has passed.
 
 ## Using it
 
