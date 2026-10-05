@@ -71,7 +71,10 @@ on:
         type: boolean
         default: true
       commit-build-output:
-        description: "Automatically commit build archive"
+        description: >-
+          Commit the build archive. Happens only on push to a branch and on
+          workflow_dispatch; pull request runs build and upload the result as
+          the `frontend-build-archive` artifact but never commit.
         required: false
         type: boolean
         default: true
@@ -105,21 +108,26 @@ on:
 # `npm run …` runs repo scripts) run with `contents: read` ONLY. The
 # `contents: write` token lives exclusively in the `commit-*` jobs, which never
 # run project code — they only apply an artifact/patch and commit. Those commit
-# jobs are additionally gated to non-fork contexts (via the
-# `github.event.pull_request.head.repo.full_name` check in each `commit-*` job's
-# `if:`), so a caller wiring this into `pull_request_target` can never hand a
-# fork's code a write-capable token.
+# jobs are additionally gated: commit-build runs only on push/workflow_dispatch,
+# the other commit-* jobs check `github.event.pull_request.head.repo.full_name`,
+# so a caller wiring this into `pull_request_target` can never hand a fork's
+# code a write-capable token.
 #
-# PUSH IDENTITY: the commit-* jobs check out with `secrets.SYNC_TOKEN` (the
-# pimcore-deployments PAT) when the caller passes it, and then also commit as
-# that account, so author, committer AND pusher are an org member instead of
-# github-actions[bot] — see DevOps-Tasks#45. Without the secret the defaults
-# (bot identity, GITHUB_TOKEN push) are kept unchanged. Unlike
-# a GITHUB_TOKEN push, a PAT push DOES trigger a new workflow run, so every
-# commit-* job is also gated on `github.actor != 'pimcore-deployments'`: the run
-# started by our own push still validates (lint/typecheck/build/test) but never
-# commits again. Do NOT remove that guard — the build output is not
-# byte-reproducible, so without it the workflow would commit in a loop.
+# PUSH IDENTITY: commit-* jobs check out with `secrets.SYNC_TOKEN` (pimcore-deployments
+# PAT) when the caller passes it and commit as that account, so the push comes from an
+# org member instead of github-actions[bot] (DevOps-Tasks#45). A PAT push triggers a new
+# run, so the commit jobs guard against committing again: commit-build skips only when
+# pimcore-deployments pushed an "Automatic frontend build" commit (an actor check alone
+# would also skip CE->EE sync merges, which pimcore-deployments performs and which DO
+# need a build commit); commit-lint/commit-api-client skip runs by pimcore-deployments. Do NOT
+# remove these guards: build output is not byte-reproducible, without them the
+# workflow would commit in a loop.
+#
+# WHEN BUILD OUTPUT IS COMMITTED: only on `push` (version branches) and
+# `workflow_dispatch`. Pull request runs build and upload the archive as an artifact but
+# never commit (DevOps-Tasks#52, #65). The push by pimcore-deployments also triggers
+# downstream push workflows such as the monorepo split. Lint fixes are still committed
+# on pull requests.
 permissions:
   contents: read
 
@@ -314,20 +322,25 @@ jobs:
         with:
           name: frontend-build-archive
           path: ${{ inputs.build-output-path }}
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: error
           # v4 artifact names are immutable per run; allow re-running failed
           # jobs to re-upload instead of 409-ing on the second attempt.
           overwrite: true
 
+      - name: Note for pull requests
+        if: ${{ github.event_name == 'pull_request' && inputs.commit-build-output }}
+        run: |
+          echo "::notice::Build output is not committed on pull requests. Download the frontend-build-archive artifact of this run, or have a maintainer run this workflow manually on the branch to commit it."
+
   # Write-capable, but runs NO repo-provided code: it only downloads the build
-  # archive and commits it. Gated to non-fork contexts.
+  # archive and commits it. Runs only on push and workflow_dispatch, never on PRs.
   commit-build:
     needs: build
     # `!cancelled()` is REQUIRED: `build`'s skipped upstreams otherwise cascade
     # their `skipped` onto this job even though `build` succeeded — which
     # silently prevents the build archive from being committed. Do NOT remove it.
-    if: ${{ !cancelled() && needs.build.result == 'success' && inputs.commit-build-output && github.actor != 'pimcore-deployments' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.build.result == 'success' && inputs.commit-build-output && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && !(github.actor == 'pimcore-deployments' && startsWith(github.event.head_commit.message, 'Automatic frontend build')) }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -381,15 +394,14 @@ jobs:
           commit_user_email: ${{ secrets.SYNC_TOKEN && '71881008+pimcore-deployments@users.noreply.github.com' || '41898282+github-actions[bot]@users.noreply.github.com' }}
           commit_author: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments <71881008+pimcore-deployments@users.noreply.github.com>' || format('{0} <{1}+{0}@users.noreply.github.com>', github.actor, github.actor_id) }}
           file_pattern: ${{ inputs.build-output-path }}
-          commit_message: "Automatic frontend build [skip ci]"
+          commit_message: Automatic frontend build
 
   # Read-only: runs the repo's test script after the build (and after any build
   # output has been committed). No write token here.
-  # NOTE: this job checks out the branch fresh and does NOT re-run the build. If
-  # the test script consumes build artifacts, enable commit-build-output so the
-  # output is committed first; otherwise (or on fork PRs, where commit-build is
-  # skipped) the checkout has no fresh build. studio-ui's jest runs against
-  # source, so it does not depend on the build output.
+  # NOTE: this job checks out the branch fresh and does NOT re-run the build. On
+  # pull requests the checkout never contains a fresh build (build output is
+  # committed only on push/dispatch), so the test script must not depend on it.
+  # studio-ui's jest runs against source.
   test:
     needs:
       - build
