@@ -380,6 +380,9 @@ jobs:
       targets_ee_json: ${{ steps.resolve.outputs.targets_ee_json }}
       targets_ce_json: ${{ steps.resolve.outputs.targets_ce_json }}
     steps:
+      - name: Checkout workflow repo (for wait script)
+        uses: actions/checkout@v5.0.1
+
       - name: Resolve HEAD SHA for every target
         id: resolve
         shell: bash
@@ -417,6 +420,8 @@ jobs:
             CE_OWNER=$(jq -r '.ce_owner // ""' <<< "${T}")
             CE_REPO=$(jq -r '.ce_repo // ""' <<< "${T}")
 
+            # Let a pending frontend auto-commit land first (see scripts/release/).
+            scripts/release/wait-for-auto-commits.sh "${OWNER}" "${REPO}" "${BASE_BRANCH}" >/dev/null
             SHA=$(resolve "${OWNER}" "${REPO}" "${BASE_BRANCH}")
             CE_SHA=""
             if [[ -n "${CE_REPO}" ]]; then

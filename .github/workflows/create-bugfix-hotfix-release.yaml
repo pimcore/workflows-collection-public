@@ -378,6 +378,16 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
+      - name: Checkout workflow repo (for wait script)
+        uses: actions/checkout@v5.0.1
+
+      # The studio frontend build commits its output to the branch minutes after a
+      # merge or sync. Wait until no commit-* job is pending so the tag never ships
+      # stale frontend assets.
+      - name: Wait for pending frontend auto-commits
+        shell: bash
+        run: scripts/release/wait-for-auto-commits.sh "${OWNER}" "${REPO}" "${BASE_BRANCH}"
+
       - name: Resolve HEAD SHA
         id: resolve
         shell: bash
