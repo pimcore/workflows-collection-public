@@ -6,17 +6,26 @@ on:
       CLA_ACTION_ACCESS_TOKEN:
         required: true
 
-# The action still calls the workflow-runs API after the signature check
-# has passed, so a transient GitHub API error fails a PR whose CLA is fine.
-# The upstream action is archived, hence the retry lives here.
+# Runs the vendored copy of contributor-assistant/github-action from this
+# collection, see .github/actions/cla-assistant/README.md for the patch.
+# The retry covers transient API errors on the remaining calls.
 jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
     steps:
+      # Public repo, trusted ref (never the PR head), no token needed.
+      - name: "Checkout vendored action"
+        uses: actions/checkout@v5.0.1
+        with:
+          repository: pimcore/workflows-collection-public
+          ref: main
+          path: _central
+          sparse-checkout: .github/actions/cla-assistant
+
       - name: "CLA Assistant"
         id: cla
         continue-on-error: true
-        uses: contributor-assistant/github-action@v2.6.1
+        uses: ./_central/.github/actions/cla-assistant
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_ACTION_ACCESS_TOKEN }}
@@ -34,7 +43,7 @@ jobs:
 
       - name: "CLA Assistant (retry)"
         if: steps.cla.outcome == 'failure'
-        uses: contributor-assistant/github-action@v2.6.1
+        uses: ./_central/.github/actions/cla-assistant
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_ACTION_ACCESS_TOKEN }}
