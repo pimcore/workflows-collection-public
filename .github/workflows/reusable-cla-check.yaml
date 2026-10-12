@@ -13,12 +13,12 @@ jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
     steps:
-      # Public repo, trusted ref (never the PR head), no token needed.
+      # Same commit as this reusable workflow. Public repo, never the PR head, no token needed.
       - name: "Checkout vendored action"
         uses: actions/checkout@v5.0.1
         with:
           repository: pimcore/workflows-collection-public
-          ref: main
+          ref: ${{ github.workflow_sha }}
           path: _central
           sparse-checkout: .github/actions/cla-assistant
 
