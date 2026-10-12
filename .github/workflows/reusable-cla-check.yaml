@@ -2,6 +2,12 @@ name: "CLA Check Workflow"
 
 on:
   workflow_call:
+    inputs:
+      collection_ref:
+        description: "Ref of this collection to take the vendored action from"
+        type: string
+        required: false
+        default: main
     secrets:
       CLA_ACTION_ACCESS_TOKEN:
         required: true
@@ -13,21 +19,12 @@ jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
     steps:
-      # The ref this reusable workflow was called with, e.g. refs/heads/main.
-      - name: "Resolve collection ref"
-        id: collection
-        env:
-          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
-        run: |
-          echo "job_workflow_ref=$JOB_WORKFLOW_REF"
-          echo "ref=${JOB_WORKFLOW_REF##*@}" >> "$GITHUB_OUTPUT"
-
       # Public repo, never the PR head, no token needed.
       - name: "Checkout vendored action"
         uses: actions/checkout@v5.0.1
         with:
           repository: pimcore/workflows-collection-public
-          ref: ${{ steps.collection.outputs.ref }}
+          ref: ${{ inputs.collection_ref }}
           path: _central
           sparse-checkout: .github/actions/cla-assistant
 
