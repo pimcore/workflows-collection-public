@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v5.0.1
         with:
           repository: pimcore/workflows-collection-public
-          ref: ${{ github.workflow_sha }}
+          ref: ${{ github.job_workflow_sha }}
           path: _central
           sparse-checkout: .github/actions/cla-assistant
 
