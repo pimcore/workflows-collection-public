@@ -6,11 +6,34 @@ on:
       CLA_ACTION_ACCESS_TOKEN:
         required: true
 
+# The action still calls the workflow-runs API after the signature check
+# has passed, so a transient GitHub API error fails a PR whose CLA is fine.
+# The upstream action is archived, hence the retry lives here.
 jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
     steps:
       - name: "CLA Assistant"
+        id: cla
+        continue-on-error: true
+        uses: contributor-assistant/github-action@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_ACTION_ACCESS_TOKEN }}
+        with:
+          path-to-signatures: "signatures/version1/cla.json"
+          path-to-document: "https://github.com/pimcore/pimcore/blob/master/CLA.md"
+          branch: "main"
+          allowlist: user1,bot*,Copilot,claude,pimcore-deployments,Pimcore*,pimcore*
+          remote-organization-name: "pimcore"
+          remote-repository-name: "cla"
+
+      - name: "Wait before retrying"
+        if: steps.cla.outcome == 'failure'
+        run: sleep 30
+
+      - name: "CLA Assistant (retry)"
+        if: steps.cla.outcome == 'failure'
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
