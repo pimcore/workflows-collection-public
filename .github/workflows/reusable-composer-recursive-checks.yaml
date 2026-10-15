@@ -49,6 +49,7 @@ jobs:
           IGNORE_LIST_KEY: ${{ inputs.ignore-list }}
         steps:
             - name: "Checkout depdendent workflow code"
+              id: checkout
               uses: "actions/checkout@v5.0.1"
               with:
                   ref: ${{ inputs.branch }}
@@ -107,6 +108,7 @@ jobs:
                   key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
 
             - name: "Install dependencies with Composer"
+              id: install
               uses: "ramsey/composer-install@v3"
               with:
                   dependency-versions: "highest"
@@ -164,3 +166,61 @@ jobs:
                 }' | curl -sS --fail --retry 4 --retry-delay 5 --retry-all-errors \
                        -H 'Content-Type: application/json' -d @- "$WEBHOOK"
 
+            # Written on EVERY path, including a failed checkout or install: the daily
+            # summary in workflows-centralized (composer-checks-summary) reads one of these
+            # per leg and reports "clean", "findings" and "failed" alike. A Teams card
+            # only on findings cannot distinguish "nothing found" from "never got that
+            # far" (DevOps-Tasks#76). The `failed_step` names the first failed step so the
+            # summary can say why without opening the run.
+            - name: Write findings file for the daily summary
+              if: always()
+              id: findings
+              env:
+                CHECK: outdated
+                BRANCH: ${{ inputs.branch }}
+                PHP_VERSION: ${{ inputs.php-version }}
+                IGNORE_LIST: ${{ inputs.ignore-list }}
+                VERSION_TYPE: ${{ inputs.version-type }}
+                JOB_STATUS: ${{ job.status }}
+                OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
+                OUTCOME_INSTALL: ${{ steps.install.outcome }}
+                OUTCOME_OUTDATED: ${{ steps.dependencies.outcome }}
+                RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+              run: |
+                set -euo pipefail
+                STATUS=failed; FAILED_STEP=""
+                # The outdated step is continue-on-error, so its "failure" IS the finding
+                # and the job itself stays green.
+                if [[ "$OUTCOME_OUTDATED" == "failure" ]]; then
+                  STATUS=findings
+                elif [[ "$JOB_STATUS" == "success" ]]; then
+                  STATUS=clean
+                else
+                  for pair in "checkout=$OUTCOME_CHECKOUT" "install=$OUTCOME_INSTALL"; do
+                    if [[ "${pair#*=}" == "failure" ]]; then FAILED_STEP="${pair%%=*}"; break; fi
+                  done
+                fi
+                case "$VERSION_TYPE" in -M) SCOPE=major;; -m) SCOPE=minor;; -p) SCOPE=patch;; *) SCOPE="$VERSION_TYPE";; esac
+                jq -n \
+                  --arg check "$CHECK" --arg repository "$GITHUB_REPOSITORY" --arg branch "$BRANCH" \
+                  --arg php "$PHP_VERSION" --arg ignore_list "$IGNORE_LIST" --arg scope "$SCOPE" \
+                  --arg status "$STATUS" --arg failed_step "$FAILED_STEP" --arg summary "${OUTDATED_ENV:-}" \
+                  --arg run_url "$RUN_URL" --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+                  '{schema: 1, check: $check, repository: $repository, branch: $branch, php: $php,
+                    ignore_list: $ignore_list, scope: $scope, status: $status, failed_step: $failed_step,
+                    summary: $summary, run_url: $run_url, run_id: ($run_id | tonumber),
+                    run_attempt: ($run_attempt | tonumber), generated_at: (now | todate)}' \
+                  > composer-findings.json
+                cat composer-findings.json
+                # Artifact names must be unique per run and may not contain / \ " : < > | * ?
+                NAME=$(printf 'composer-findings-%s-%s-%s-php%s-%s' "$CHECK" "$SCOPE" "$BRANCH" "$PHP_VERSION" "${IGNORE_LIST:-none}" | tr -c 'A-Za-z0-9._-' '-')
+                echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+            - name: Upload findings file
+              if: always()
+              uses: actions/upload-artifact@v6
+              with:
+                name: ${{ steps.findings.outputs.name }}
+                path: composer-findings.json
+                retention-days: 7
+                if-no-files-found: error
