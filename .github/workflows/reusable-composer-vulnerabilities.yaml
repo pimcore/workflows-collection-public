@@ -122,12 +122,28 @@ jobs:
                 set +e
                 # Abandoned packages are still listed in the output, but no longer influence the
                 # exit code - otherwise they get reported as security vulnerabilities.
-                VULNERABILITIES=$(composer audit --abandoned=report)
+                VULNERABILITIES=$(composer audit --abandoned=report 2> composer-audit.err)
                 EXIT_CODE=$?
                 set -e
 
                 echo "Raw composer audit output:"
                 echo "$VULNERABILITIES"
+
+                # A nonzero exit is only a result when composer says so; otherwise it is an
+                # execution error (a network failure reaching the advisory API, say) and must
+                # fail the job rather than pass as "vulnerabilities found" with an empty list.
+                if [ "$EXIT_CODE" -ne 0 ] && ! echo "$VULNERABILITIES" | grep -qE 'Found [0-9]+ security vulnerability advisor'; then
+                    echo "composer audit failed (exit $EXIT_CODE):"
+                    cat composer-audit.err
+                    echo "composer audit failed (exit $EXIT_CODE), see the step log" >> $GITHUB_STEP_SUMMARY
+                    {
+                      echo "AUDIT_ENV<<EOF"
+                      cat composer-audit.err
+                      echo "$VULNERABILITIES"
+                      echo "EOF"
+                    } >> $GITHUB_ENV
+                    exit 1
+                fi
 
                 # Kept for the findings file below, whatever the exit code.
                 {

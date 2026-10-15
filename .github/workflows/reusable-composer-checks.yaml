@@ -137,8 +137,26 @@ jobs:
                   IGNORE_OPTIONS=$(echo "$IGNORE_PACKAGES" | sed 's/,/ --ignore /g' | sed 's/^/--ignore /')
                 fi
             
-                OUTDATED=$(composer outdated -D $VERSION_TYPE $IGNORE_OPTIONS || true)
+                # Exit code and stderr are kept apart from the package list: `|| true` used to
+                # turn a composer error (a Packagist hiccup, say) into an empty list, i.e. "clean".
+                set +e
+                OUTDATED=$(composer outdated -D $VERSION_TYPE $IGNORE_OPTIONS 2> composer-outdated.err)
+                EXIT_CODE=$?
+                set -e
+                if [[ "$EXIT_CODE" -ne 0 ]]; then
+                    echo "composer outdated failed (exit $EXIT_CODE):"
+                    cat composer-outdated.err
+                    echo "composer outdated failed (exit $EXIT_CODE), see the step log" >> $GITHUB_STEP_SUMMARY
+                    echo "result=error" >> $GITHUB_OUTPUT
+                    {
+                      echo "OUTDATED_ENV<<EOF"
+                      cat composer-outdated.err
+                      echo "EOF"
+                    } >> $GITHUB_ENV
+                    exit 1
+                fi
                 if [[ -n "$OUTDATED" ]] && echo "$OUTDATED" | grep -E ' [!~] '; then
+                    echo "result=findings" >> $GITHUB_OUTPUT
                     echo "Outdated dependencies found!" >> $GITHUB_STEP_SUMMARY
                     echo "$OUTDATED" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
                     {
@@ -168,13 +186,17 @@ jobs:
                 OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
                 OUTCOME_INSTALL: ${{ steps.install.outcome }}
                 OUTCOME_OUTDATED: ${{ steps.dependencies.outcome }}
+                RESULT_OUTDATED: ${{ steps.dependencies.outputs.result }}
                 RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
               run: |
                 set -euo pipefail
                 STATUS=failed; FAILED_STEP=""
-                # The outdated step is continue-on-error, so its "failure" IS the finding
-                # and the job itself stays green.
-                if [[ "$OUTCOME_OUTDATED" == "failure" ]]; then
+                # The outdated step is continue-on-error, so its "failure" is either the
+                # finding or a composer error; its `result` output tells the two apart, and
+                # the job itself stays green in both cases.
+                if [[ "$RESULT_OUTDATED" == "error" ]]; then
+                  STATUS=failed; FAILED_STEP=outdated
+                elif [[ "$OUTCOME_OUTDATED" == "failure" ]]; then
                   STATUS=findings
                 elif [[ "$JOB_STATUS" == "success" ]]; then
                   STATUS=clean
