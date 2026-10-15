@@ -30,6 +30,11 @@ on:
         # Declared so callers can pass only what they need instead of `secrets: inherit`.
         # All optional: callers that inherit satisfy them implicitly, and the two private-repo
         # secrets are only read when `private-repo: true`.
+        # TEAMS_GITHUB_WORKFLOW_NOTIFICATIONS_WEBHOOK_URI is no longer read — the daily summary
+        # in workflows-centralized (composer-checks-summary) posts instead, from the findings
+        # artifact uploaded below (DevOps-Tasks#76). It stays declared because a caller that
+        # passes a secret the workflow does not declare fails at startup
+        # (data-quality-management-bundle passes it explicitly).
         secrets:
             TEAMS_GITHUB_WORKFLOW_NOTIFICATIONS_WEBHOOK_URI:
               required: false
@@ -143,28 +148,6 @@ jobs:
                     } >> $GITHUB_ENV
                     exit 1
                 fi
-
-            # Posts to the "Workflow Notifications" channel. Same MessageCard + curl as
-            # reusable-teams-notify.yaml, inlined because a reusable workflow cannot be a step.
-            # Replaces aliencube/microsoft-teams-actions, which POSTed to a retired O365 connector.
-            - name: Send results of previous checks to Microsoft Teams
-              if: steps.dependencies.outcome == 'failure'
-              env:
-                WEBHOOK: ${{ secrets.TEAMS_GITHUB_WORKFLOW_NOTIFICATIONS_WEBHOOK_URI }}
-                TITLE: ${{ github.repository }}@${{ inputs.branch }} outdated dependencies report
-                RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-              run: |
-                set -o pipefail
-                TEXT=$(printf 'Please check the following link for details:\n%s\n\n**Outdated dependencies found:**\n```\n%s\n```\nIf the list is too long, please refer to the link above.' \
-                       "$RUN_URL" "${OUTDATED_ENV:-}")
-                jq -n --arg ti "$TITLE" --arg t "$TEXT" '{
-                  "@type": "MessageCard",
-                  "@context": "http://schema.org/extensions",
-                  summary: $ti,
-                  title: $ti,
-                  text: $t
-                }' | curl -sS --fail --retry 4 --retry-delay 5 --retry-all-errors \
-                       -H 'Content-Type: application/json' -d @- "$WEBHOOK"
 
             # Written on EVERY path, including a failed checkout or install: the daily
             # summary in workflows-centralized (composer-checks-summary) reads one of these

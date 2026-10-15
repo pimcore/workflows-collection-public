@@ -19,6 +19,10 @@ on:
               default: false
               type: boolean
 
+# No Teams post here any more: the daily summary in workflows-centralized
+# (composer-checks-summary) reads the findings artifact uploaded below and posts one
+# grouped message per day — clean, findings, failed and did-not-run alike
+# (DevOps-Tasks#76).
 permissions:
   contents: read
 
@@ -26,9 +30,6 @@ jobs:
     composer-checks:
         name: "Composer Checks"
         runs-on: "ubuntu-latest"
-        outputs:
-          has_vulnerabilities: ${{ steps.vulnerabilities.outputs.found }}
-          vulnerabilities_text: ${{ steps.vulnerabilities.outputs.text }}
         env:
           IGNORE_LIST_KEY: ${{ inputs.ignore-list }}
         steps:
@@ -140,19 +141,6 @@ jobs:
                     echo "$VULNERABILITIES" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
 
                     echo "found=true" >> $GITHUB_OUTPUT
-                    {
-                      echo "text<<EOF"
-                      echo "Please check the following link for details:"
-                      echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-                      echo ""
-                      echo "**Vulnerabilities found:**"
-                      echo '```'
-                      echo "$VULNERABILITIES"
-                      echo '```'
-                      echo ""
-                      echo "If the list is too long, please refer to the link above."
-                      echo "EOF"
-                    } >> $GITHUB_OUTPUT
                 fi
 
             # Written on EVERY path, including a failed checkout or install: the daily
@@ -210,12 +198,3 @@ jobs:
                 path: composer-findings.json
                 retention-days: 7
                 if-no-files-found: error
-
-    notify:
-        needs: composer-checks
-        if: ${{ needs.composer-checks.outputs.has_vulnerabilities == 'true' }}
-        uses: pimcore/workflows-collection-public/.github/workflows/reusable-teams-notify.yaml@main
-        with:
-          title: "${{ github.repository }}@${{ inputs.branch }} vulnerabilities report"
-          text: ${{ needs.composer-checks.outputs.vulnerabilities_text }}
-        secrets: inherit
