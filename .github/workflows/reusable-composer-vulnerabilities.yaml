@@ -214,3 +214,6 @@ jobs:
                 path: composer-findings.json
                 retention-days: 7
                 if-no-files-found: error
+                # A re-run keeps the earlier attempt's artifacts; without this the upload
+                # fails on "artifact already exists" and every re-run leg goes red here.
+                overwrite: true
