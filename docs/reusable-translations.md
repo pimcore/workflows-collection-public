@@ -112,6 +112,19 @@ The fetched tip is treated as unchecked PR content: the translations-dir contain
 again on it, the gates execute a skill copy kept outside the workspace, and the push credential is
 written only after every gate has passed.
 
+## The local pre-commit hook
+
+Bundle repos can run the same two gates before a commit exists. `precommit_check.py` in the
+translation skill (installed on developer machines as the `pimcore-studio` Claude Code plugin)
+compares the git index with `HEAD`: no new validation errors, and every added or removed English
+key applied in every configured language. When it blocks, it tells the developer to run
+`/translate <bundle>` in their IDE. A bundle enables it with a short `.githooks/pre-commit` shim and
+`git config core.hooksPath .githooks` — see `studio-ui-bundle`'s `CONTRIBUTING.md` for the
+reference setup.
+
+Commits that pass the hook make this workflow a no-op on the PR. That is the path to sunsetting it;
+until then the workflow stays the backstop for clones that never enabled the hook.
+
 ## Using it
 
 ```yaml
