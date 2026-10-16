@@ -19,6 +19,10 @@ on:
               default: false
               type: boolean
 
+# No Teams post here any more: the daily summary in workflows-centralized
+# (composer-checks-summary) reads the findings artifact uploaded below and posts one
+# grouped message per day — clean, findings, failed and did-not-run alike
+# (DevOps-Tasks#76).
 permissions:
   contents: read
 
@@ -26,9 +30,6 @@ jobs:
     composer-checks:
         name: "Composer Checks"
         runs-on: "ubuntu-latest"
-        outputs:
-          has_vulnerabilities: ${{ steps.vulnerabilities.outputs.found }}
-          vulnerabilities_text: ${{ steps.vulnerabilities.outputs.text }}
         env:
           IGNORE_LIST_KEY: ${{ inputs.ignore-list }}
         steps:
@@ -121,38 +122,48 @@ jobs:
                 set +e
                 # Abandoned packages are still listed in the output, but no longer influence the
                 # exit code - otherwise they get reported as security vulnerabilities.
-                VULNERABILITIES=$(composer audit --abandoned=report)
+                VULNERABILITIES=$(composer audit --abandoned=report 2> composer-audit.err)
                 EXIT_CODE=$?
                 set -e
 
+                # Composer writes its headings ("Found N security vulnerability advisories",
+                # "No security vulnerability advisories found.") through its error output, the
+                # tables through stdout. Which of the two a given runner captures has differed
+                # from what Composer's source suggests, so every decision below is taken on both
+                # streams together, never on stdout alone.
+                AUDIT_OUTPUT="$VULNERABILITIES"
+                if [ -s composer-audit.err ]; then
+                    AUDIT_OUTPUT="$(cat composer-audit.err)"$'\n'"$VULNERABILITIES"
+                fi
+
                 echo "Raw composer audit output:"
-                echo "$VULNERABILITIES"
+                echo "$AUDIT_OUTPUT"
+
+                # A nonzero exit is only a result when composer says so; otherwise it is an
+                # execution error (a network failure reaching the advisory API, say) and must
+                # fail the job rather than pass as "vulnerabilities found" with an empty list.
+                if [ "$EXIT_CODE" -ne 0 ] && ! echo "$AUDIT_OUTPUT" | grep -qE 'Found [0-9]+ security vulnerability advisor'; then
+                    echo "composer audit failed (exit $EXIT_CODE), see the step log" >> $GITHUB_STEP_SUMMARY
+                    {
+                      echo "AUDIT_ENV<<EOF"
+                      echo "$AUDIT_OUTPUT"
+                      echo "EOF"
+                    } >> $GITHUB_ENV
+                    exit 1
+                fi
 
                 # Kept for the findings file below, whatever the exit code.
                 {
                   echo "AUDIT_ENV<<EOF"
-                  echo "$VULNERABILITIES"
+                  echo "$AUDIT_OUTPUT"
                   echo "EOF"
                 } >> $GITHUB_ENV
 
                 if [ "$EXIT_CODE" -ne 0 ]; then
                     echo "Security vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
-                    echo "$VULNERABILITIES" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
+                    echo "$AUDIT_OUTPUT" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
 
                     echo "found=true" >> $GITHUB_OUTPUT
-                    {
-                      echo "text<<EOF"
-                      echo "Please check the following link for details:"
-                      echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-                      echo ""
-                      echo "**Vulnerabilities found:**"
-                      echo '```'
-                      echo "$VULNERABILITIES"
-                      echo '```'
-                      echo ""
-                      echo "If the list is too long, please refer to the link above."
-                      echo "EOF"
-                    } >> $GITHUB_OUTPUT
                 fi
 
             # Written on EVERY path, including a failed checkout or install: the daily
@@ -210,12 +221,6 @@ jobs:
                 path: composer-findings.json
                 retention-days: 7
                 if-no-files-found: error
-
-    notify:
-        needs: composer-checks
-        if: ${{ needs.composer-checks.outputs.has_vulnerabilities == 'true' }}
-        uses: pimcore/workflows-collection-public/.github/workflows/reusable-teams-notify.yaml@main
-        with:
-          title: "${{ github.repository }}@${{ inputs.branch }} vulnerabilities report"
-          text: ${{ needs.composer-checks.outputs.vulnerabilities_text }}
-        secrets: inherit
+                # A re-run keeps the earlier attempt's artifacts; without this the upload
+                # fails on "artifact already exists" and every re-run leg goes red here.
+                overwrite: true
