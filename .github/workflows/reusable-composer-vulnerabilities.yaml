@@ -126,20 +126,27 @@ jobs:
                 EXIT_CODE=$?
                 set -e
 
+                # Composer writes its headings ("Found N security vulnerability advisories",
+                # "No security vulnerability advisories found.") through its error output, the
+                # tables through stdout. Which of the two a given runner captures has differed
+                # from what Composer's source suggests, so every decision below is taken on both
+                # streams together, never on stdout alone.
+                AUDIT_OUTPUT="$VULNERABILITIES"
+                if [ -s composer-audit.err ]; then
+                    AUDIT_OUTPUT="$(cat composer-audit.err)"$'\n'"$VULNERABILITIES"
+                fi
+
                 echo "Raw composer audit output:"
-                echo "$VULNERABILITIES"
+                echo "$AUDIT_OUTPUT"
 
                 # A nonzero exit is only a result when composer says so; otherwise it is an
                 # execution error (a network failure reaching the advisory API, say) and must
                 # fail the job rather than pass as "vulnerabilities found" with an empty list.
-                if [ "$EXIT_CODE" -ne 0 ] && ! echo "$VULNERABILITIES" | grep -qE 'Found [0-9]+ security vulnerability advisor'; then
-                    echo "composer audit failed (exit $EXIT_CODE):"
-                    cat composer-audit.err
+                if [ "$EXIT_CODE" -ne 0 ] && ! echo "$AUDIT_OUTPUT" | grep -qE 'Found [0-9]+ security vulnerability advisor'; then
                     echo "composer audit failed (exit $EXIT_CODE), see the step log" >> $GITHUB_STEP_SUMMARY
                     {
                       echo "AUDIT_ENV<<EOF"
-                      cat composer-audit.err
-                      echo "$VULNERABILITIES"
+                      echo "$AUDIT_OUTPUT"
                       echo "EOF"
                     } >> $GITHUB_ENV
                     exit 1
@@ -148,13 +155,13 @@ jobs:
                 # Kept for the findings file below, whatever the exit code.
                 {
                   echo "AUDIT_ENV<<EOF"
-                  echo "$VULNERABILITIES"
+                  echo "$AUDIT_OUTPUT"
                   echo "EOF"
                 } >> $GITHUB_ENV
 
                 if [ "$EXIT_CODE" -ne 0 ]; then
                     echo "Security vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
-                    echo "$VULNERABILITIES" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
+                    echo "$AUDIT_OUTPUT" | awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY
 
                     echo "found=true" >> $GITHUB_OUTPUT
                 fi
