@@ -15,6 +15,13 @@ name: "Studio Frontend Build Packaged (reusable)"
 on:
   workflow_call:
     inputs:
+      runs-on:
+        description: >-
+          Runner label for this workflow's jobs, e.g. a self-hosted runner. Empty or
+          unset falls back to the GitHub-hosted ubuntu-latest.
+        required: false
+        type: string
+        default: "ubuntu-latest"
       working-directory:
         description: "Directory containing the frontend project"
         required: false
@@ -147,7 +154,7 @@ jobs:
   # patch of any lint fixes as an artifact; the write token is NOT present here.
   lint:
     if: ${{ inputs.lint && !startsWith(github.ref, 'refs/tags/') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on || 'ubuntu-latest' }}
     outputs:
       has_changes: ${{ steps.capture.outputs.has_changes }}
 
@@ -210,7 +217,7 @@ jobs:
     # `!cancelled()` is REQUIRED: skipped upstream jobs otherwise cascade their
     # `skipped` onto this job even though `lint` succeeded. Do NOT remove it.
     if: ${{ !cancelled() && needs.lint.result == 'success' && inputs.commit-lint-output && needs.lint.outputs.has_changes == 'true' && github.actor != 'pimcore-deployments' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on || 'ubuntu-latest' }}
 
     permissions:
       contents: write
@@ -247,7 +254,7 @@ jobs:
 
   check-types:
     if: ${{ inputs.typecheck && !startsWith(github.ref, 'refs/tags/') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on || 'ubuntu-latest' }}
 
     steps:
       - name: Checkout code
@@ -287,7 +294,7 @@ jobs:
       - commit-lint
       - check-types
     if: ${{ always() && !startsWith(github.ref, 'refs/tags/') && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.commit-lint.result == 'success' || needs.commit-lint.result == 'skipped') && (needs.check-types.result == 'success' || needs.check-types.result == 'skipped') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on || 'ubuntu-latest' }}
 
     steps:
       - name: Checkout code
@@ -341,7 +348,7 @@ jobs:
     # their `skipped` onto this job even though `build` succeeded — which
     # silently prevents the build archive from being committed. Do NOT remove it.
     if: ${{ !cancelled() && needs.build.result == 'success' && inputs.commit-build-output && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && !(github.actor == 'pimcore-deployments' && startsWith(github.event.head_commit.message, 'Automatic frontend build')) }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on || 'ubuntu-latest' }}
 
     permissions:
       contents: write
@@ -407,7 +414,7 @@ jobs:
       - build
       - commit-build
     if: ${{ !cancelled() && inputs.test && !startsWith(github.ref, 'refs/tags/') && needs.build.result == 'success' && (needs.commit-build.result == 'success' || needs.commit-build.result == 'skipped') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on || 'ubuntu-latest' }}
 
     steps:
       - name: Checkout code
