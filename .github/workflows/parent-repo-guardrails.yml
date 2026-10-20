@@ -19,6 +19,14 @@ name: "Repo Guardrails pipeline"
 
 on:
   workflow_call:
+    inputs:
+      runs-on:
+        description: >-
+          Runner label for this workflow's jobs, e.g. a self-hosted runner. Empty or
+          unset falls back to the GitHub-hosted ubuntu-latest.
+        required: false
+        type: string
+        default: "ubuntu-latest"
     secrets:
       MEMBERSHIP_GUARD_TOKEN:
         required: true
@@ -27,5 +35,7 @@ jobs:
   external-issue:
     if: ${{ github.event_name == 'issues' && github.event.action == 'opened' }}
     uses: ./.github/workflows/reusable-guardrail-external-issue.yml
+    with:
+      runs-on: ${{ inputs.runs-on }}
     secrets:
       MEMBERSHIP_GUARD_TOKEN: ${{ secrets.MEMBERSHIP_GUARD_TOKEN }}

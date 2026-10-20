@@ -3,6 +3,13 @@ name: "PHP-CS-Fixer"
 on:
   workflow_call:
     inputs:
+      runs-on:
+        description: >-
+          Runner label for this workflow's jobs, e.g. a self-hosted runner. Empty or
+          unset falls back to the GitHub-hosted ubuntu-latest.
+        required: false
+        type: string
+        default: "ubuntu-latest"
       head_ref:
         description: >
           Explicit commit/branch/SHA to checkout.
@@ -28,7 +35,7 @@ jobs:
   php-cs-fixer:
     permissions:
       contents: write # for stefanzweifel/git-auto-commit-action to push code in repo
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5.0.1
         with:

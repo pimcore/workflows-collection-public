@@ -32,6 +32,14 @@ name: "PR Guardrails pipeline"
 
 on:
   workflow_call:
+    inputs:
+      runs-on:
+        description: >-
+          Runner label for this workflow's jobs, e.g. a self-hosted runner. Empty or
+          unset falls back to the GitHub-hosted ubuntu-latest.
+        required: false
+        type: string
+        default: "ubuntu-latest"
     secrets:
       MEMBERSHIP_GUARD_TOKEN:
         required: true
@@ -48,6 +56,8 @@ jobs:
   membership:
     if: ${{ github.event_name == 'check_suite' || (github.event_name == 'pull_request_target' && (github.event.pull_request.draft == false || github.event.action == 'converted_to_draft')) }}
     uses: ./.github/workflows/reusable-guardrail-membership.yml
+    with:
+      runs-on: ${{ inputs.runs-on }}
     secrets:
       MEMBERSHIP_GUARD_TOKEN: ${{ secrets.MEMBERSHIP_GUARD_TOKEN }}
 
@@ -60,6 +70,8 @@ jobs:
     # skip instead of enforcing on an empty bypass.
     if: ${{ !cancelled() && needs.membership.result != 'cancelled' && github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && needs.membership.outputs.bypass != 'true' }}
     uses: ./.github/workflows/reusable-guardrail-issue-link.yml
+    with:
+      runs-on: ${{ inputs.runs-on }}
     secrets:
       ISSUE_LINK_GUARD_TOKEN: ${{ secrets.ISSUE_LINK_GUARD_TOKEN }}
 
@@ -71,6 +83,7 @@ jobs:
     if: ${{ !cancelled() && needs.membership.result != 'cancelled' && needs.membership.outputs.bypass != 'true' }}
     uses: ./.github/workflows/reusable-guardrail-ci.yml
     with:
+      runs-on: ${{ inputs.runs-on }}
       # Skip individually-bypassed PRs (e.g. a member PR sharing a check_suite
       # with a non-member PR, where the aggregate gate still lets CI run).
       bypassed_prs: ${{ needs.membership.outputs.bypassed_prs || '[]' }}
