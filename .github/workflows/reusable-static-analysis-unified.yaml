@@ -132,6 +132,12 @@ jobs:
         run: |
           .github/ci/scripts/setup-pimcore-environment.sh
 
+      - name: "Configure Composer audit block insecure to false"
+        # CI must be able to install the pinned dependency versions even when they are affected by
+        # published advisories — supported LTS lines (e.g. Pimcore 11.x) carry open advisories
+        # across their whole version range, so this applies to highest and lowest alike.
+        run: composer config audit.block-insecure false
+
       - name: "Update Pimcore version"
         if: ${{ inputs.INSTALL_PIMCORE == 'true' }}
         env:
