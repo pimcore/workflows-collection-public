@@ -1,0 +1,464 @@
+name: "API schema sync (reusable)"
+
+# Keeps a Studio frontend bundle's committed OpenAPI schema — and the RTK Query
+# client generated from it — in step with the backend, without anyone
+# remembering to do it by hand.
+#
+# For each maintained release line the job fetches that line's spec from its
+# nightly, regenerates the API client, and commits both straight to the branch
+# when they type-check. It falls back to a pull request when they do not.
+#
+# WHY THE NIGHTLY AND NOT BACKEND CI: the committed spec is the *aggregated*
+# document of a running instance — it carries every installed bundle's paths
+# (cmf, copilot, ecommerce, portal-engine, …), not just studio-backend-bundle's
+# own. Generating it from a single bundle's CI would silently drop all of them.
+#
+# TIMING: the nightly redeploys on its own cadence, so the spec this fetches can
+# lag a backend merge by up to a day. That is why the caller drives this from a
+# schedule rather than from a repository_dispatch on merge — a dispatch would
+# mostly fetch the pre-merge spec anyway, for a lot more machinery.
+#
+# SCHEMAS ARE NEVER FORWARD-MERGED between lines. Each line's spec is fetched
+# from its own nightly; bugfix is currently a strict subset of feature, so
+# merging one into the other would delete endpoints rather than mix versions.
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: >-
+          Release branch to sync, or 'all' for every mapped branch that exists
+          in the calling repository.
+        required: false
+        type: string
+        default: "all"
+      working-directory:
+        description: "Directory containing the frontend project (where npm runs)"
+        required: false
+        type: string
+        default: "assets/studio"
+      api-directory:
+        description: >-
+          Directory holding openapi-config.ts and the schema, relative to the
+          repository root.
+        required: false
+        type: string
+        default: "assets/studio/build/api"
+      schema-file:
+        description: "Schema file name inside api-directory"
+        required: false
+        type: string
+        default: "docs.jsonopenapi.json"
+      node-version:
+        description: "Node.js version to use"
+        required: false
+        type: string
+        default: "lts/*"
+      api-client-script:
+        description: "NPM script to run for API client generation"
+        required: false
+        type: string
+        default: "build-api-client"
+      typecheck-script:
+        description: "NPM script to run for type checks"
+        required: false
+        type: string
+        default: "check-types"
+
+    secrets:
+      SYNC_TOKEN:
+        description: >-
+          PAT of the pimcore-deployments service account. Required: a push or PR
+          made with GITHUB_TOKEN does not trigger other workflows, so Studio
+          Frontend Build would never run on the result. That failure is
+          invisible — the PR looks clean because nothing regenerated.
+        required: true
+
+# SECURITY: the `sync` job executes repo-provided code (`npm ci` runs install
+# hooks, `npm run …` runs repo scripts) and therefore holds `contents: read`
+# ONLY. SYNC_TOKEN is an org-wide PAT with write access across pimcore repos;
+# handing it to a job that runs branch-controlled code would be an escalation.
+# The token lives exclusively in `land`, which runs no project code — it applies
+# a patch produced upstream and commits or opens a PR.
+permissions:
+  contents: read
+
+# Branch in the CALLING repo -> nightly host serving that line's spec. Single
+# source of truth for every bundle: when a release line rolls over, this one map
+# changes instead of a workflow in each repository. The `targets` job rejects
+# anything not listed here, and intersects the map with the branches that
+# actually exist in the caller — bundles maintain different sets (some still
+# carry 2026.1/2026.2, which have no nightly and so are simply never synced).
+env:
+  SCHEMA_SOURCES: >-
+    {"2026.3":"bugfix.nightly.pimcore.app","2026.x":"feature.nightly.pimcore.app"}
+
+jobs:
+  targets:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Select target branches
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.branch }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          mapped="$(jq -rn --argjson m "$SCHEMA_SOURCES" '$m | keys | join(", ")')"
+
+          if [[ "$REQUESTED" == "all" ]]; then
+            candidates="$(jq -rn --argjson m "$SCHEMA_SOURCES" '$m | keys[]')"
+          else
+            if ! jq -en --argjson m "$SCHEMA_SOURCES" --arg b "$REQUESTED" \
+                 '$m | has($b)' >/dev/null; then
+              echo "::error::Unknown branch '${REQUESTED}'. Mapped: ${mapped}"
+              exit 1
+            fi
+            candidates="$REQUESTED"
+          fi
+
+          # Keep only branches this repository actually has. A bundle on an
+          # older line simply has nothing to sync, which is not an error.
+          selected=()
+          while read -r branch; do
+            [[ -n "$branch" ]] || continue
+            if gh api "repos/${REPOSITORY}/branches/${branch}" --silent 2>/dev/null; then
+              selected+=("$branch")
+            else
+              echo "Branch '${branch}' does not exist in ${REPOSITORY}; skipping."
+            fi
+          done <<<"$candidates"
+
+          if [[ ${#selected[@]} -eq 0 ]]; then
+            # Nothing mapped exists here. Not an error: downstream jobs are
+            # guarded on an empty matrix and simply do not run.
+            matrix='[]'
+          else
+            # NB: --args must come AFTER the filter, otherwise jq consumes the
+            # filter itself as the first positional argument.
+            matrix="$(jq -cn --argjson m "$SCHEMA_SOURCES" \
+              '[$ARGS.positional[] | {branch: ., host: $m[.]}]' \
+              --args "${selected[@]}")"
+          fi
+
+          echo "Targets: ${matrix}"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+  # Read-only. Produces, per branch, an artifact holding the outcome and — when
+  # there is something to land — a patch for the `land` job to apply.
+  sync:
+    needs: targets
+    if: ${{ needs.targets.outputs.matrix != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.targets.outputs.matrix) }}
+
+    steps:
+      - name: Checkout ${{ matrix.target.branch }}
+        uses: actions/checkout@v5.0.1
+        with:
+          ref: ${{ matrix.target.branch }}
+          # Runs repo-provided code; no authenticated git needed after checkout.
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Fetch the OpenAPI spec
+        env:
+          HOST: ${{ matrix.target.host }}
+        run: |
+          set -euo pipefail
+          url="https://${HOST}/pimcore-studio/api/docs/json"
+          echo "Fetching ${url}"
+          curl -sS --fail --retry 5 --retry-delay 10 --retry-all-errors -m 120 \
+            -o "${RUNNER_TEMP}/spec.json" "$url"
+
+      - name: Validate the spec
+        run: |
+          set -euo pipefail
+          # /docs without /json serves Swagger UI HTML. This guard is what stops
+          # a redirect, an error page or a maintenance page being committed as
+          # the schema.
+          jq -e '.openapi and (.paths | length) > 100' "${RUNNER_TEMP}/spec.json" >/dev/null \
+            || { echo "::error::Response from ${{ matrix.target.host }} is not a plausible OpenAPI document"; exit 1; }
+
+      - name: Record the current API surface
+        run: |
+          set -euo pipefail
+          # Baseline for the removal check below, taken before anything is
+          # regenerated. These hook names are what consuming code imports, so a
+          # name disappearing is the one direction that breaks other bundles.
+          #
+          # node_modules is excluded on BOTH snapshots: @pimcore/studio-ui-bundle
+          # ships generated slices of its own, and `npm ci` runs between the two
+          # — without this the second snapshot would pick them up and the
+          # comparison would be meaningless.
+          grep -rhoE 'use[A-Z][A-Za-z0-9_]*(Query|Mutation)\b' . \
+            --include='*.gen.ts' --exclude-dir=node_modules \
+            | sort -u > "${RUNNER_TEMP}/hooks-before.txt" || true
+          cp "${{ inputs.api-directory }}/${{ inputs.schema-file }}" "${RUNNER_TEMP}/old-spec.json"
+
+      - name: Apply the schema
+        run: |
+          set -euo pipefail
+          # Verbatim copy. The file is PHP json_encode output
+          # (JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE); a jq or node
+          # round-trip re-escapes it into a ~1.4 MB spurious diff.
+          cp "${RUNNER_TEMP}/spec.json" "${{ inputs.api-directory }}/${{ inputs.schema-file }}"
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+
+      - name: Regenerate the API client
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run ${{ inputs.api-client-script }}
+
+      - name: Decide whether there is anything to land
+        id: gate
+        run: |
+          set -euo pipefail
+          # Gate on the GENERATED CLIENT, not on the spec. Every bundle commits
+          # the same aggregated document, so gating on the spec would make any
+          # backend change anywhere produce a ~1.4 MB commit in every repository
+          # — including the ones it does not touch. The client only moves when
+          # that bundle's own contract moved.
+          if git diff --quiet -- '*.gen.ts'; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "The regenerated client is identical; the schema update is a no-op here."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --stat -- '*.gen.ts'
+          fi
+
+      - name: Check for removed endpoints
+        id: removals
+        if: ${{ steps.gate.outputs.changed == 'true' }}
+        run: |
+          set -euo pipefail
+          grep -rhoE 'use[A-Z][A-Za-z0-9_]*(Query|Mutation)\b' . \
+            --include='*.gen.ts' --exclude-dir=node_modules \
+            | sort -u > "${RUNNER_TEMP}/hooks-after.txt" || true
+          comm -23 "${RUNNER_TEMP}/hooks-before.txt" "${RUNNER_TEMP}/hooks-after.txt" \
+            > "${RUNNER_TEMP}/hooks-removed.txt"
+
+          if [[ -s "${RUNNER_TEMP}/hooks-removed.txt" ]]; then
+            echo "removed=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Endpoints disappeared from the generated client; opening a pull request instead of committing."
+            cat "${RUNNER_TEMP}/hooks-removed.txt"
+          else
+            echo "removed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Type-check against the new client
+        id: typecheck
+        if: ${{ steps.gate.outputs.changed == 'true' }}
+        run: |
+          set -uo pipefail
+          # The gate for committing straight to the branch. A backend change
+          # that drops or renames something this bundle still calls fails here,
+          # and we open a pull request rather than breaking the branch.
+          if (cd "${{ inputs.working-directory }}" && npm run "${{ inputs.typecheck-script }}") \
+               2>&1 | tee "${RUNNER_TEMP}/typecheck.log"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Type check failed against the new schema; opening a pull request instead of committing."
+          fi
+
+      - name: Summarise the change
+        if: ${{ steps.gate.outputs.changed == 'true' }}
+        env:
+          BRANCH: ${{ matrix.target.branch }}
+          HOST: ${{ matrix.target.host }}
+        run: |
+          set -euo pipefail
+          jq -r '.paths | keys[]' "${RUNNER_TEMP}/old-spec.json" | sort > "${RUNNER_TEMP}/old-paths.txt"
+          jq -r '.paths | keys[]' "${RUNNER_TEMP}/spec.json"     | sort > "${RUNNER_TEMP}/new-paths.txt"
+
+          {
+            echo "OpenAPI schema for \`${BRANCH}\` from \`${HOST}\`."
+            echo
+            echo "Paths in the spec: $(wc -l < "${RUNNER_TEMP}/old-paths.txt") -> $(wc -l < "${RUNNER_TEMP}/new-paths.txt")"
+            echo
+            if [[ -s "${RUNNER_TEMP}/hooks-removed.txt" ]]; then
+              echo "### Endpoints removed from the generated client"
+              echo
+              echo "These names are gone from \`*.gen.ts\`. Anything importing them stops compiling."
+              echo
+              echo '```'; cat "${RUNNER_TEMP}/hooks-removed.txt"; echo '```'
+              echo
+            fi
+            echo "<details><summary>Generated client diffstat</summary>"
+            echo
+            echo '```'; git diff --stat -- '*.gen.ts'; echo '```'
+            echo "</details>"
+          } > "${RUNNER_TEMP}/summary.md"
+
+          cat "${RUNNER_TEMP}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Capture the change as a patch
+        if: ${{ steps.gate.outputs.changed == 'true' }}
+        run: |
+          set -euo pipefail
+          # Scoped deliberately: only the schema and the generated slices. Even
+          # if npm or the codegen leaves anything else behind, it cannot ride
+          # along into the branch.
+          git add -- "${{ inputs.api-directory }}/${{ inputs.schema-file }}" '*.gen.ts'
+          git diff --cached --binary > "${RUNNER_TEMP}/schema-sync.patch"
+
+      - name: Record the outcome
+        env:
+          CHANGED: ${{ steps.gate.outputs.changed }}
+          REMOVED: ${{ steps.removals.outputs.removed }}
+          TYPECHECK_OK: ${{ steps.typecheck.outputs.ok }}
+          BRANCH: ${{ matrix.target.branch }}
+          HOST: ${{ matrix.target.host }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHANGED" != "true" ]]; then
+            outcome="unchanged"
+          elif [[ "$TYPECHECK_OK" != "true" ]]; then
+            outcome="pr-typecheck"
+          elif [[ "$REMOVED" == "true" ]]; then
+            outcome="pr-removed"
+          else
+            outcome="commit"
+          fi
+          echo "Outcome for ${BRANCH}: ${outcome}"
+
+          mkdir -p "${RUNNER_TEMP}/outcome"
+          jq -n --arg o "$outcome" --arg b "$BRANCH" --arg h "$HOST" \
+            '{outcome: $o, branch: $b, host: $h}' > "${RUNNER_TEMP}/outcome/status.json"
+
+          for f in schema-sync.patch summary.md typecheck.log; do
+            [[ -f "${RUNNER_TEMP}/${f}" ]] && cp "${RUNNER_TEMP}/${f}" "${RUNNER_TEMP}/outcome/"
+          done
+          true
+
+      - name: Upload the outcome
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-sync-${{ matrix.target.branch }}
+          path: ${{ runner.temp }}/outcome
+          retention-days: 1
+          if-no-files-found: error
+          # v4 artifact names are immutable per run; allow re-running a failed
+          # job to re-upload instead of 409-ing on the second attempt.
+          overwrite: true
+
+  # Write-capable, but runs NO repo-provided code: it applies the patch produced
+  # above and either commits it or opens a pull request.
+  land:
+    needs: [targets, sync]
+    if: ${{ !cancelled() && needs.sync.result == 'success' && needs.targets.outputs.matrix != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.targets.outputs.matrix) }}
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout ${{ matrix.target.branch }}
+        uses: actions/checkout@v5.0.1
+        with:
+          ref: ${{ matrix.target.branch }}
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Download the outcome
+        uses: actions/download-artifact@v4
+        with:
+          name: schema-sync-${{ matrix.target.branch }}
+          path: ${{ runner.temp }}/outcome
+
+      - name: Read the outcome
+        id: outcome
+        run: |
+          set -euo pipefail
+          outcome="$(jq -r '.outcome' "${RUNNER_TEMP}/outcome/status.json")"
+          echo "outcome=${outcome}" >> "$GITHUB_OUTPUT"
+          echo "Outcome: ${outcome}"
+
+      - name: Apply the change
+        if: ${{ steps.outcome.outputs.outcome != 'unchanged' }}
+        run: git apply "${RUNNER_TEMP}/outcome/schema-sync.patch"
+
+      - name: Commit to ${{ matrix.target.branch }}
+        if: ${{ steps.outcome.outputs.outcome == 'commit' }}
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          branch: ${{ matrix.target.branch }}
+          file_pattern: ${{ inputs.api-directory }}/${{ inputs.schema-file }} *.gen.ts
+          commit_user_name: "pimcore-deployments"
+          commit_user_email: "71881008+pimcore-deployments@users.noreply.github.com"
+          commit_author: "pimcore-deployments <71881008+pimcore-deployments@users.noreply.github.com>"
+          # Rebase onto the remote tip before pushing so a concurrent push to the
+          # same branch doesn't fail this with a non-fast-forward rejection.
+          before_push_hook: git pull --rebase --autostash origin ${{ matrix.target.branch }}
+          commit_message: Apply latest automatic api schema updates
+
+      - name: Open a pull request instead
+        if: ${{ startsWith(steps.outcome.outputs.outcome, 'pr-') }}
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          BRANCH: ${{ matrix.target.branch }}
+          OUTCOME: ${{ steps.outcome.outputs.outcome }}
+        run: |
+          set -euo pipefail
+          head="automation/api-schema-${BRANCH}"
+          body="${RUNNER_TEMP}/pr-body.md"
+
+          {
+            if [[ "$OUTCOME" == "pr-typecheck" ]]; then
+              echo "The schema could not be committed directly: **\`check-types\` fails**"
+              echo "against the regenerated client. Most likely the backend removed or"
+              echo "renamed something this bundle still uses, which needs a code change here."
+              echo
+              echo "<details><summary>Type check output (last 60 lines)</summary>"
+              echo
+              echo '```'
+              tail -n 60 "${RUNNER_TEMP}/outcome/typecheck.log"
+              echo '```'
+              echo "</details>"
+            else
+              echo "The schema type-checks cleanly, but the regenerated client **lost"
+              echo "endpoints**. That is the one direction which breaks consumers, so it"
+              echo "is never committed unreviewed — a bundle missing from the nightly"
+              echo "looks exactly like a deliberate backend removal."
+            fi
+            echo
+            cat "${RUNNER_TEMP}/outcome/summary.md"
+          } > "$body"
+
+          git config user.name  "pimcore-deployments"
+          git config user.email "71881008+pimcore-deployments@users.noreply.github.com"
+          git checkout -B "$head"
+          git add -- "${{ inputs.api-directory }}/${{ inputs.schema-file }}" '*.gen.ts'
+          git commit -q -m "[API] Update the OpenAPI schema for ${BRANCH}"
+          git push --force-with-lease origin "$head"
+
+          if gh pr view "$head" --json number >/dev/null 2>&1; then
+            gh pr edit "$head" --body-file "$body"
+          else
+            gh pr create --base "$BRANCH" --head "$head" \
+              --title "[API] Update the OpenAPI schema for ${BRANCH}" \
+              --body-file "$body"
+          fi
+
+      - name: Fail when the backend contract is broken
+        if: ${{ steps.outcome.outputs.outcome == 'pr-typecheck' }}
+        run: |
+          echo "::error::check-types fails against the new schema on ${{ matrix.target.branch }}. A pull request has been opened."
+          exit 1
