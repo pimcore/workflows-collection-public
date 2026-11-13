@@ -124,14 +124,32 @@ jobs:
 
           # Keep only branches this repository actually has. A bundle on an
           # older line simply has nothing to sync, which is not an error.
+          #
+          # Only a genuine 404 means "not here". Any other failure — rate limit,
+          # permission problem, outage — must stop the run: treating it as a
+          # missing branch would silently sync nothing and still report success,
+          # which is the one failure mode nobody would notice.
           selected=()
           while read -r branch; do
             [[ -n "$branch" ]] || continue
-            if gh api "repos/${REPOSITORY}/branches/${branch}" --silent 2>/dev/null; then
-              selected+=("$branch")
-            else
-              echo "Branch '${branch}' does not exist in ${REPOSITORY}; skipping."
-            fi
+            # `|| true`: gh exits non-zero on 404, which under `set -e` would
+            # abort before the status can be inspected. The status line is what
+            # we judge on, not the exit code.
+            response="$(gh api "repos/${REPOSITORY}/branches/${branch}" \
+              --silent --include 2>/dev/null || true)"
+            status="$(sed -n '1s@^HTTP/[0-9.]* \([0-9]*\).*@\1@p' <<<"$response")"
+            case "$status" in
+              2??)
+                selected+=("$branch")
+                ;;
+              404)
+                echo "Branch '${branch}' does not exist in ${REPOSITORY}; skipping."
+                ;;
+              *)
+                echo "::error::Could not determine whether '${branch}' exists in ${REPOSITORY} (HTTP ${status:-no response}). Refusing to continue, because skipping the branch would look like a successful sync."
+                exit 1
+                ;;
+            esac
           done <<<"$candidates"
 
           if [[ ${#selected[@]} -eq 0 ]]; then
@@ -366,7 +384,15 @@ jobs:
   # above and either commits it or opens a pull request.
   land:
     needs: [targets, sync]
-    if: ${{ !cancelled() && needs.sync.result == 'success' && needs.targets.outputs.matrix != '[]' }}
+    # Deliberately NOT gated on `needs.sync.result == 'success'`. `sync` is a
+    # matrix job, so that result is the aggregate: one line's nightly being down
+    # would skip the whole `land` matrix and strand a perfectly good sync on the
+    # other line — the exact opposite of what `fail-fast: false` promises. This
+    # is not hypothetical; feature.nightly returned HTTP 500 for days while this
+    # was being written. Each `land` leg instead stands or falls on its own: a
+    # leg whose `sync` failed has no artifact, and its "Download the outcome"
+    # step fails it alone.
+    if: ${{ !cancelled() && needs.targets.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -421,6 +447,14 @@ jobs:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
           BRANCH: ${{ matrix.target.branch }}
           OUTCOME: ${{ steps.outcome.outputs.outcome }}
+          # Caller-controlled inputs reach the shell as environment variables,
+          # never as `${{ }}` interpolation. Interpolation is substituted into
+          # the script before bash parses it, so a value containing shell syntax
+          # would execute here — in the one job that holds SYNC_TOKEN. The
+          # callers are trusted pimcore repositories, so this is defence in
+          # depth rather than a live hole, but it keeps the stated boundary
+          # ("land runs no repo-provided code") actually true.
+          SCHEMA_TARGET: ${{ inputs.api-directory }}/${{ inputs.schema-file }}
         run: |
           set -euo pipefail
           head="automation/api-schema-${BRANCH}"
@@ -451,9 +485,31 @@ jobs:
           git config user.name  "pimcore-deployments"
           git config user.email "71881008+pimcore-deployments@users.noreply.github.com"
           git checkout -B "$head"
-          git add -- "${{ inputs.api-directory }}/${{ inputs.schema-file }}" '*.gen.ts'
+          git add -- "$SCHEMA_TARGET" '*.gen.ts'
           git commit -q -m "[API] Update the OpenAPI schema for ${BRANCH}"
-          git push --force-with-lease origin "$head"
+
+          # The checkout fetched only ${BRANCH}, so on a rerun — when the
+          # automation branch already exists on the remote — there is no
+          # origin/${head} for --force-with-lease to compare against, and git
+          # rejects the push outright with "stale info", leaving the PR stuck at
+          # its first version. Fetch it first to establish the lease.
+          #
+          # The explicit refspec is required, not cosmetic: actions/checkout
+          # configures a narrow fetch refspec, so a plain `git fetch origin
+          # <branch>` updates FETCH_HEAD but NOT refs/remotes/origin/<branch> —
+          # which is the ref the lease is read from. `|| true` covers the first
+          # run, where the branch legitimately does not exist yet.
+          git fetch --quiet origin "+refs/heads/${head}:refs/remotes/origin/${head}" || true
+          if git rev-parse --verify --quiet "refs/remotes/origin/${head}" >/dev/null; then
+            # Spell the lease out rather than relying on the bare form, so it is
+            # the fetched value that protects the push and not whatever
+            # remote-tracking state happens to exist.
+            git push --force-with-lease="${head}:$(git rev-parse "refs/remotes/origin/${head}")" origin "$head"
+          else
+            # Branch absent remotely: nothing to lease against. A plain push
+            # still fails rather than clobbering, should one appear meanwhile.
+            git push origin "$head"
+          fi
 
           if gh pr view "$head" --json number >/dev/null 2>&1; then
             gh pr edit "$head" --body-file "$body"
@@ -465,6 +521,8 @@ jobs:
 
       - name: Fail when the backend contract is broken
         if: ${{ steps.outcome.outputs.outcome == 'pr-typecheck' }}
+        env:
+          BRANCH: ${{ matrix.target.branch }}
         run: |
-          echo "::error::check-types fails against the new schema on ${{ matrix.target.branch }}. A pull request has been opened."
+          echo "::error::check-types fails against the new schema on ${BRANCH}. A pull request has been opened."
           exit 1
