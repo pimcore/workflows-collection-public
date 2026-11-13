@@ -392,7 +392,17 @@ jobs:
     # was being written. Each `land` leg instead stands or falls on its own: a
     # leg whose `sync` failed has no artifact, and its "Download the outcome"
     # step fails it alone.
-    if: ${{ !cancelled() && needs.targets.outputs.matrix != '[]' }}
+    #
+    # `targets` IS gated on, and must stay that way. `!cancelled()` replaces the
+    # implicit `success()` gate for every entry in `needs`, so without this the
+    # job would also run when `targets` failed — and a failed job publishes no
+    # outputs, making `matrix` the empty string rather than `[]`. The guard
+    # above would pass ('' != '[]') and the run would then die expanding
+    # `fromJson('')`, instead of skipping cleanly.
+    if: >-
+      ${{ !cancelled()
+      && needs.targets.result == 'success'
+      && needs.targets.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
