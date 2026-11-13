@@ -267,22 +267,49 @@ jobs:
           # along into the branch.
           git add -- "$SCHEMA_TARGET" '*.gen.ts'
 
-          # Gate on the GENERATED CLIENT, not on the spec. Every bundle commits
-          # the same aggregated document, so gating on the spec would make any
-          # backend change anywhere produce a ~1.4 MB commit in every repository
-          # — including the ones it does not touch. The client only moves when
-          # that bundle's own contract moved.
-          if git diff --cached --quiet -- '*.gen.ts'; then
+          # Two separate questions, because they have different answers.
+          #
+          # `changed` — is there anything to land at all? This deliberately
+          # includes a spec that moved without changing a single generated
+          # slice, which is the common case: most of the document describes
+          # endpoints this bundle does not generate from. Committing it anyway
+          # is the point. The committed spec is the input `build-api-client`
+          # reads, so leaving it stale means somebody adding a pathMatcher for a
+          # newly released endpoint generates nothing and has to refresh the
+          # schema by hand — the exact manual step this workflow exists to
+          # remove.
+          #
+          # The cost, accepted knowingly: every bundle commits the same
+          # aggregated document, so a backend change anywhere produces a commit
+          # in each repository, and the spec moves independently on each release
+          # line, so forward merges conflict on it more often. The standing rule
+          # for that conflict is to take either side and let the next sync
+          # re-derive the file.
+          #
+          # `client_changed` — did the generated client move? Only then is there
+          # anything for the type check or the removed-endpoint guard to judge.
+          # A spec-only update cannot break compilation, so a `check-types`
+          # failure there would be pre-existing breakage on the branch, and
+          # reporting it as "the schema could not be committed" would blame the
+          # wrong change.
+          if git diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "The regenerated client is identical; the schema update is a no-op here."
+            echo "client_changed=false" >> "$GITHUB_OUTPUT"
+            echo "Schema and generated client are both unchanged; nothing to land."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            git diff --cached --stat -- '*.gen.ts'
+            if git diff --cached --quiet -- '*.gen.ts'; then
+              echo "client_changed=false" >> "$GITHUB_OUTPUT"
+              echo "The schema moved; the generated client is identical."
+            else
+              echo "client_changed=true" >> "$GITHUB_OUTPUT"
+            fi
+            git diff --cached --stat
           fi
 
       - name: Check for removed endpoints
         id: removals
-        if: ${{ steps.gate.outputs.changed == 'true' }}
+        if: ${{ steps.gate.outputs.client_changed == 'true' }}
         run: |
           set -euo pipefail
           grep -rhoE 'use[A-Z][A-Za-z0-9_]*(Query|Mutation)\b' . \
@@ -301,12 +328,16 @@ jobs:
 
       - name: Type-check against the new client
         id: typecheck
-        if: ${{ steps.gate.outputs.changed == 'true' }}
+        if: ${{ steps.gate.outputs.client_changed == 'true' }}
         run: |
           set -uo pipefail
           # The gate for committing straight to the branch. A backend change
           # that drops or renames something this bundle still calls fails here,
           # and we open a pull request rather than breaking the branch.
+          #
+          # Skipped when only the spec moved: nothing the type check could
+          # judge has changed, so a failure would be about the branch rather
+          # than about this update. "Record the outcome" accounts for that.
           if (cd "${{ inputs.working-directory }}" && npm run "${{ inputs.typecheck-script }}") \
                2>&1 | tee "${RUNNER_TEMP}/typecheck.log"; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
@@ -320,6 +351,7 @@ jobs:
         env:
           BRANCH: ${{ matrix.target.branch }}
           HOST: ${{ matrix.target.host }}
+          CLIENT_CHANGED: ${{ steps.gate.outputs.client_changed }}
         run: |
           set -euo pipefail
           jq -r '.paths | keys[]' "${RUNNER_TEMP}/old-spec.json" | sort > "${RUNNER_TEMP}/old-paths.txt"
@@ -330,6 +362,12 @@ jobs:
             echo
             echo "Paths in the spec: $(wc -l < "${RUNNER_TEMP}/old-paths.txt") -> $(wc -l < "${RUNNER_TEMP}/new-paths.txt")"
             echo
+            if [[ "$CLIENT_CHANGED" != "true" ]]; then
+              echo "The generated client is unchanged: the endpoints that moved are not"
+              echo "covered by any slice in \`openapi-config.ts\`. The schema is committed"
+              echo "anyway, so that regenerating locally starts from the current contract."
+              echo
+            fi
             if [[ -s "${RUNNER_TEMP}/hooks-removed.txt" ]]; then
               echo "### Endpoints removed from the generated client"
               echo
@@ -338,11 +376,14 @@ jobs:
               echo '```'; cat "${RUNNER_TEMP}/hooks-removed.txt"; echo '```'
               echo
             fi
-            echo "<details><summary>Generated client diffstat</summary>"
+            echo "<details><summary>Diffstat</summary>"
             echo
             # --cached: the gate staged these. A plain `git diff` would now
             # report nothing and print an empty diffstat.
-            echo '```'; git diff --cached --stat -- '*.gen.ts'; echo '```'
+            #
+            # Unscoped, so a spec-only update still shows the one file it
+            # touched instead of an empty block.
+            echo '```'; git diff --cached --stat; echo '```'
             echo "</details>"
           } > "${RUNNER_TEMP}/summary.md"
 
@@ -363,14 +404,23 @@ jobs:
       - name: Record the outcome
         env:
           CHANGED: ${{ steps.gate.outputs.changed }}
+          CLIENT_CHANGED: ${{ steps.gate.outputs.client_changed }}
           REMOVED: ${{ steps.removals.outputs.removed }}
           TYPECHECK_OK: ${{ steps.typecheck.outputs.ok }}
           BRANCH: ${{ matrix.target.branch }}
           HOST: ${{ matrix.target.host }}
         run: |
           set -euo pipefail
+          # Order matters. CLIENT_CHANGED must be tested BEFORE TYPECHECK_OK:
+          # when only the spec moved, the type-check and removal steps were
+          # skipped, so their outputs are the empty string. Testing
+          # `TYPECHECK_OK != "true"` first would read that empty value as a
+          # failure and open a "check-types fails" pull request for an update
+          # that cannot affect compilation at all.
           if [[ "$CHANGED" != "true" ]]; then
             outcome="unchanged"
+          elif [[ "$CLIENT_CHANGED" != "true" ]]; then
+            outcome="commit"
           elif [[ "$TYPECHECK_OK" != "true" ]]; then
             outcome="pr-typecheck"
           elif [[ "$REMOVED" == "true" ]]; then
