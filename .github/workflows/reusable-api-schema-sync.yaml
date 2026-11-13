@@ -74,10 +74,11 @@ on:
           invisible — the PR looks clean because nothing regenerated.
         required: true
 
-# SECURITY: the `sync` job executes repo-provided code (`npm ci` runs install
-# hooks, `npm run …` runs repo scripts) and therefore holds `contents: read`
-# ONLY. SYNC_TOKEN is an org-wide PAT with write access across pimcore repos;
-# handing it to a job that runs branch-controlled code would be an escalation.
+# SECURITY: the `sync` job executes repo-provided code (`npm run …` runs repo
+# scripts; `npm ci` uses --ignore-scripts, so dependency install hooks do not
+# run) and therefore holds `contents: read` ONLY. SYNC_TOKEN is an org-wide PAT
+# with write access across pimcore repos; handing it to a job that runs
+# branch-controlled code would be an escalation.
 # The token lives exclusively in `land`, which runs no project code — it applies
 # a patch produced upstream and commits or opens a PR.
 permissions:
@@ -217,7 +218,12 @@ jobs:
 
       - name: Install dependencies
         working-directory: ${{ inputs.working-directory }}
-        run: npm ci
+        # --ignore-scripts: codegen needs the packages on disk, not their
+        # lifecycle hooks. Dropping the hooks removes a class of
+        # dependency-supplied code execution for free (Sonar S6505);
+        # build-api-client and check-types were verified against a
+        # scripts-less install.
+        run: npm ci --ignore-scripts
 
       - name: Regenerate the API client
         working-directory: ${{ inputs.working-directory }}
