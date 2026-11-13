@@ -249,19 +249,35 @@ jobs:
 
       - name: Decide whether there is anything to land
         id: gate
+        env:
+          SCHEMA_TARGET: ${{ inputs.api-directory }}/${{ inputs.schema-file }}
         run: |
           set -euo pipefail
+          # Stage BEFORE judging. `git diff` alone only sees tracked files, so a
+          # newly generated slice — a bundle's first sync, or a new entry in
+          # openapi-config.ts whose file was never committed — would be
+          # untracked, leave the diff empty, and be written off as "no change".
+          # The generated client would then be silently discarded. `git add`
+          # picks up additions, modifications and deletions alike, so staging
+          # first and reading `--cached` everywhere afterwards makes the gate,
+          # the summary and the patch agree on one view of the change.
+          #
+          # Scoped deliberately: only the schema and the generated slices. Even
+          # if npm or the codegen leaves anything else behind, it cannot ride
+          # along into the branch.
+          git add -- "$SCHEMA_TARGET" '*.gen.ts'
+
           # Gate on the GENERATED CLIENT, not on the spec. Every bundle commits
           # the same aggregated document, so gating on the spec would make any
           # backend change anywhere produce a ~1.4 MB commit in every repository
           # — including the ones it does not touch. The client only moves when
           # that bundle's own contract moved.
-          if git diff --quiet -- '*.gen.ts'; then
+          if git diff --cached --quiet -- '*.gen.ts'; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "The regenerated client is identical; the schema update is a no-op here."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            git diff --stat -- '*.gen.ts'
+            git diff --cached --stat -- '*.gen.ts'
           fi
 
       - name: Check for removed endpoints
@@ -324,7 +340,9 @@ jobs:
             fi
             echo "<details><summary>Generated client diffstat</summary>"
             echo
-            echo '```'; git diff --stat -- '*.gen.ts'; echo '```'
+            # --cached: the gate staged these. A plain `git diff` would now
+            # report nothing and print an empty diffstat.
+            echo '```'; git diff --cached --stat -- '*.gen.ts'; echo '```'
             echo "</details>"
           } > "${RUNNER_TEMP}/summary.md"
 
@@ -332,12 +350,14 @@ jobs:
 
       - name: Capture the change as a patch
         if: ${{ steps.gate.outputs.changed == 'true' }}
+        env:
+          SCHEMA_TARGET: ${{ inputs.api-directory }}/${{ inputs.schema-file }}
         run: |
           set -euo pipefail
-          # Scoped deliberately: only the schema and the generated slices. Even
-          # if npm or the codegen leaves anything else behind, it cannot ride
-          # along into the branch.
-          git add -- "${{ inputs.api-directory }}/${{ inputs.schema-file }}" '*.gen.ts'
+          # The gate already staged these; re-staging is idempotent and keeps
+          # this step correct on its own terms. Same deliberate scope: only the
+          # schema and the generated slices reach the patch.
+          git add -- "$SCHEMA_TARGET" '*.gen.ts'
           git diff --cached --binary > "${RUNNER_TEMP}/schema-sync.patch"
 
       - name: Record the outcome
@@ -521,8 +541,17 @@ jobs:
             git push origin "$head"
           fi
 
-          if gh pr view "$head" --json number >/dev/null 2>&1; then
-            gh pr edit "$head" --body-file "$body"
+          # Ask for OPEN pull requests specifically. `gh pr view <branch>` also
+          # resolves closed and merged ones (verified), so once somebody closes
+          # an automation PR — the natural way to reject an update — the next
+          # run would edit that dead PR instead of opening a live one, and the
+          # regenerated schema would sit on the automation branch with no review
+          # path. Reopening the closed PR would be worse: it would resurrect a
+          # decision a human already made.
+          existing="$(gh pr list --head "$head" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            gh pr edit "$existing" --body-file "$body"
+            echo "Updated existing pull request #${existing}."
           else
             gh pr create --base "$BRANCH" --head "$head" \
               --title "[API] Update the OpenAPI schema for ${BRANCH}" \
