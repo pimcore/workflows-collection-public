@@ -82,6 +82,15 @@ jobs:
                   path: ${{ steps.composer-cache.outputs.dir }}
                   key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
 
+            - name: "Configure Composer audit block insecure to false"
+              # Composer >= 2.10 refuses to resolve package versions with published advisories
+              # (`policy.advisories.block` defaults to true). Supported LTS lines (e.g. Pimcore
+              # 11.x) carry open advisories across their whole version range, so the solver
+              # finds nothing installable and the job fails before it audits anything. Keep the
+              # solver decoupled from advisory state here — the audit step below is what reports
+              # the advisories. Same setting as the codeception and OSV workflows.
+              run: composer config audit.block-insecure false
+
             - name: "Install dependencies with Composer"
               id: install
               uses: "ramsey/composer-install@v3"
