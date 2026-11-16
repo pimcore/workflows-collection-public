@@ -15,6 +15,8 @@ There are a few necessary steps before we can accept a pull request:
 * [Send a pull request](https://help.github.com/articles/using-pull-requests/) from your fork’s branch to our repo branch.
 * [Sign the CLA](https://cla-assistant.io/pimcore/pimcore) - see also below.
 
+> **Note on CI for pull requests from forks:** GitHub does not hand repository secrets to workflows triggered from a fork, and the test suite needs them to boot Pimcore. Test jobs on a fork PR can therefore fail before running any test. A maintainer will then push your branch unchanged to the repository, so the same commit runs with the secrets and your authorship stays intact.
+
 
 ## Bug Reports
 **Please provide a fix for the bug as a pull request (PR) whenever possible!**  
