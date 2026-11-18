@@ -53,7 +53,14 @@ jobs:
 
       - name: Install OSV-Scanner
         if: ${{ inputs.composer-check-only == false }}
-        run : sudo snap install osv-scanner
+        env:
+          OSV_SCANNER_VERSION: v2.3.8
+          OSV_SCANNER_SHA256: bc98e15319ed0d515e3f9235287ba53cdc5535d576d24fd573978ecfe9ab92dc
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/osv-scanner" "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  $RUNNER_TEMP/osv-scanner" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/osv-scanner" /usr/local/bin/osv-scanner
+          osv-scanner --version
 
       - name: Install SSH Key # this is necessary for Composer to be able to clone source from pimcore/ee-pimcore
         uses: shimataro/ssh-key-action@v2.8.0
