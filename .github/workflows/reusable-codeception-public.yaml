@@ -92,6 +92,8 @@ jobs:
     codeception-tests:
         name: "Codeception tests"
         runs-on: "ubuntu-22.04"
+        permissions:
+            contents: read
         continue-on-error: ${{ inputs.experimental }}
         services:
             minio:
@@ -129,6 +131,7 @@ jobs:
                 repository: ${{ inputs.repository }}
                 ref: ${{ inputs.BRANCH_NAME }}
                 fetch-depth: 0
+                persist-credentials: false
 
             - uses: "actions/setup-node@v5"
               with:

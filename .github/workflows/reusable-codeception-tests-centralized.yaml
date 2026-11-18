@@ -96,6 +96,8 @@ jobs:
   codeception-tests:
     name: "Codeception tests"
     runs-on: "ubuntu-22.04"
+    permissions:
+      contents: read
     continue-on-error: ${{ inputs.EXPERIMENTAL == 'true' }}
     env:
       SYMFONY_DEPRECATIONS_HELPER: "weak"
@@ -166,6 +168,7 @@ jobs:
         uses: "actions/checkout@v5.0.1"
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: "Get target branch information"
         id: branch-info
