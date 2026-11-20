@@ -73,7 +73,7 @@ jobs:
           fi
 
       - name: Checkout the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5.0.1
 
       - name: Create SBOM directory
         run: mkdir -p sbom
@@ -86,9 +86,11 @@ jobs:
 
       - name: Set up Node
         if: ${{ inputs.npm-enabled }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ inputs.node-version }}
+          # v5 caches automatically when package.json has a packageManager field; keep the v4 behaviour.
+          package-manager-cache: false
 
       - name: Get Composer cache directory
         if: ${{ inputs.php-enabled }}
@@ -97,7 +99,7 @@ jobs:
 
       - name: Cache Composer dependencies
         if: ${{ inputs.php-enabled }}
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
           key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
@@ -105,7 +107,7 @@ jobs:
 
       - name: Cache npm downloads
         if: ${{ inputs.npm-enabled }}
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.npm
           key: ${{ runner.os }}-npm-${{ hashFiles('composer.lock', 'composer.json', 'package-lock.json') }}
@@ -272,13 +274,13 @@ jobs:
 
       - name: Commit SBOM
         if: ${{ inputs.commit-sbom && github.ref_type != 'tag' }}
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: "Update SBOM for ${{ steps.version.outputs.version }}"
           file_pattern: "sbom/sbom.json"
 
       - name: Attach SBOM to release
         if: ${{ inputs.attach-to-release && startsWith(github.ref, 'refs/tags/') }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: sbom/sbom.json

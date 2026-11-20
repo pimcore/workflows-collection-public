@@ -200,7 +200,7 @@ jobs:
 
       - name: Upload lint-fix patch
         if: ${{ inputs.commit-lint-output && steps.capture.outputs.has_changes == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: lint-fixes-patch
           path: ${{ runner.temp }}/lint-fixes.patch
@@ -233,7 +233,7 @@ jobs:
           token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Download lint-fix patch
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: lint-fixes-patch
           path: ${{ runner.temp }}
@@ -325,7 +325,7 @@ jobs:
 
       - name: Upload build archive
         if: ${{ inputs.commit-build-output }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: frontend-build-archive
           path: ${{ inputs.build-output-path }}
@@ -386,7 +386,7 @@ jobs:
         run: git rm -r --ignore-unmatch -- "${BUILD_OUTPUT_PATH}"
 
       - name: Download build archive
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: frontend-build-archive
           path: ${{ inputs.build-output-path }}
