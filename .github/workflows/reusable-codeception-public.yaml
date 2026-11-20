@@ -169,7 +169,7 @@ jobs:
               run: composer config audit.block-insecure false
               
             - name: "Install dependencies with Composer"
-              uses: "ramsey/composer-install@v3"
+              uses: "ramsey/composer-install@v4"
               with:
                   dependency-versions: "${{ inputs.dependencies }}"
                   composer-options: "${{ inputs.composer-options }}"

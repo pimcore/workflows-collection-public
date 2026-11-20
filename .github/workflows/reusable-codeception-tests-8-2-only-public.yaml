@@ -82,7 +82,7 @@ jobs:
                 composer require --no-update pimcore/pimcore:"${PIMCORE_VERSION}"
           fi
       - name: "Install dependencies with Composer"
-        uses: "ramsey/composer-install@v3"
+        uses: "ramsey/composer-install@v4"
         with:
           dependency-versions: "${{ matrix.dependencies }}"
 

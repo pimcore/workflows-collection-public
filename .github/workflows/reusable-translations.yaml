@@ -107,7 +107,7 @@ jobs:
 
       - name: Setup Python
         if: steps.gate.outputs.run == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -986,7 +986,7 @@ jobs:
       # not be posted for output that the replay refused or the gates rejected.
       - name: Comment on PR
         if: steps.gate.outputs.run == 'true' && steps.changes.outputs.any == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           BASELINE_ERRORS: ${{ steps.scan.outputs.baseline_errors }}
           FINAL_ERRORS: ${{ steps.revalidate.outputs.final_errors }}
