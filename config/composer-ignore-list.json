@@ -1,8 +1,8 @@
 {
   "public": 
-  [ "symfony/*","doctrine/*","phpunit/phpunit","codeception/*,pimcore/static-resolver-bundle"],
+  [ "symfony/*","doctrine/*","phpunit/phpunit","codeception/*,pimcore/static-resolver-bundle","mcp/sdk"],
   "private": 
-  [ "symfony/*","doctrine/*","phpunit/phpunit","codeception/*,pimcore/static-resolver-bundle"],
+  [ "symfony/*","doctrine/*","phpunit/phpunit","codeception/*,pimcore/static-resolver-bundle","mcp/sdk"],
   "lts": 
   [ ],
   "none":
