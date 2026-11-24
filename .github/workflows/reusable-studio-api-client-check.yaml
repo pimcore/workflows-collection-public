@@ -1,0 +1,146 @@
+name: "Studio API Client Check (reusable)"
+
+# Verifies the per-slice API client setup (see assets/build/api/README.md in
+# studio-ui-bundle): each schema snapshot (build/api/schema/<slice>.json) and
+# the client generated from it (<slice>-api-slice.gen.ts) must be consistent.
+#
+# Unlike the api-client job of the frontend build this never regenerates all
+# slices and never commits anything:
+#
+#   - The slices a pull request touches are checked STRICTLY — the committed
+#     *.gen.ts must equal codegen(snapshot). On drift the job fails and uploads
+#     the regenerated files as the `api-client-fix-patch` artifact.
+#   - Drift in slices the PR does not touch is a WARNING only: in a
+#     multi-repository setup it is usually caused by a backend change that has
+#     not been synced yet, which is not this PR's fault. The nightly drift run
+#     catches up on those.
+#   - On workflow_dispatch (and any non-PR event) every slice is checked
+#     strictly.
+#
+# The job needs no write token and runs identically on fork pull requests.
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory containing the frontend project"
+        required: false
+        type: string
+        default: "assets/studio"
+      node-version:
+        description: "Node.js version to use"
+        required: false
+        type: string
+        default: "lts/*"
+      api-sync-script:
+        description: "NPM script that runs the per-slice sync tool"
+        required: false
+        type: string
+        default: "api:sync"
+
+permissions:
+  contents: read
+
+env:
+  # Fork PRs: the fork can be private (partner orgs), and this repo's
+  # GITHUB_TOKEN cannot read it — fetch the PR head as mirrored into the BASE
+  # repo (refs/pull/<n>/head) instead; that ref exists for every PR regardless
+  # of fork visibility.
+  CHECKOUT_REF: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && format('refs/pull/{0}/head', github.event.pull_request.number) || github.head_ref || github.ref_name }}
+  BASE_REF: ${{ github.base_ref }}
+
+jobs:
+  # Read-only: executes repo-provided code (the sync tool), so no write token
+  # is ever present in this job.
+  api-client-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5.0.1
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
+          # Full history so the merge base with the PR's base branch exists for
+          # the changed-files diff below.
+          fetch-depth: 0
+          # Runs repo-provided code; no authenticated git needed after checkout.
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        # Codegen needs the packages on disk, not their lifecycle hooks
+        # (Sonar S6505).
+        run: npm ci --ignore-scripts
+
+      - name: Determine slices touched by this PR
+        id: slices
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch --no-tags --quiet origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+            git diff --name-only "origin/${BASE_REF}...HEAD" > "${RUNNER_TEMP}/changed-files.txt"
+            affected="$(npm run -s "${{ inputs.api-sync-script }}" -- --affected-by "${RUNNER_TEMP}/changed-files.txt")"
+          else
+            # Non-PR runs (workflow_dispatch, push): check everything strictly.
+            affected="*"
+          fi
+          # Flatten the one-name-per-line output into one space-separated line.
+          affected="$(echo "${affected}" | xargs || true)"
+          echo "strict=${affected}" >> "$GITHUB_OUTPUT"
+          echo "Strict slices: ${affected:-<none>}"
+
+      - name: Strict check (touched slices)
+        id: strict
+        if: ${{ steps.slices.outputs.strict != '' }}
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          STRICT_SLICES: ${{ steps.slices.outputs.strict }}
+        run: |
+          set -euo pipefail
+          # '*' means every slice; the tool defaults to all when none are named.
+          if [[ "${STRICT_SLICES}" == "*" ]]; then
+            slices=()
+          else
+            read -r -a slices <<< "${STRICT_SLICES}"
+          fi
+          if npm run -s "${{ inputs.api-sync-script }}" -- --check --diff "${slices[@]}"; then
+            exit 0
+          fi
+          # Capture the fix (the clients regenerated from their snapshots) as a
+          # patch artifact, then fail.
+          npm run -s "${{ inputs.api-sync-script }}" -- --check --fix "${slices[@]}" || true
+          git add -A
+          git diff --cached --binary > "${RUNNER_TEMP}/api-client-fix.patch"
+          echo "failed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload fix patch
+        if: ${{ steps.strict.outputs.failed == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-client-fix-patch
+          path: ${{ runner.temp }}/api-client-fix.patch
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Lenient check (drift not caused by this PR)
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          if ! npm run -s "${{ inputs.api-sync-script }}" -- --check --summary-json "${RUNNER_TEMP}/api-check.json" > /dev/null 2>&1; then
+            drifted="$(node -e 'const s=require(process.env.RUNNER_TEMP+"/api-check.json");console.log(s.results.filter(r=>r.status==="drift").map(r=>r.slice).join(", "))')"
+            echo "::warning title=API client drift (not caused by this PR)::Slices out of sync with their snapshots: ${drifted}. Run 'npm run api:sync -- <slice>' on the base branch or wait for the nightly sync."
+          fi
+          exit 0
+
+      - name: Fail on strict drift
+        if: ${{ steps.strict.outputs.failed == 'true' }}
+        run: |
+          echo "::error title=API client drift::A slice touched by this PR is inconsistent: the committed *.gen.ts does not match codegen(snapshot). Regenerate it with 'npm run api:sync -- <slice>' (or apply the api-client-fix-patch artifact of this run) and commit snapshot and client together."
+          exit 1
