@@ -121,7 +121,7 @@ jobs:
 
             - name: "Install dependencies with Composer"
               id: install
-              uses: "ramsey/composer-install@v3"
+              uses: "ramsey/composer-install@v4"
               with:
                   dependency-versions: "highest"
                   composer-options: "--no-scripts"
