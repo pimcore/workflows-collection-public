@@ -1,0 +1,406 @@
+name: "Fork PR Security Gate"
+
+on:
+  workflow_call:
+    inputs:
+      safe_to_test_label:
+        description: "Label maintainers add to bypass the gate after manually reviewing a high-risk PR"
+        required: false
+        type: string
+        default: "safe-to-test"
+      model:
+        description: "GitHub Models model id used for the AI scan. A small model is the default"
+        required: false
+        type: string
+        default: "openai/gpt-4o-mini"
+      max_diff_kb:
+        description: "Maximum size in KB of the (code-only, context-stripped) scan diff. Kept within typical model input limits; larger PRs fail closed to the label flow."
+        required: false
+        type: number
+        default: 48
+      high_risk_patterns:
+        description: "Newline-separated grep -E patterns; changed paths matching any pattern fail the gate deterministically"
+        required: false
+        type: string
+        default: |
+          ^\.github/
+          (^|/)composer\.(json|lock)$
+          phpstan.*\.(neon|dist)
+          codeception.*\.(yml|yaml|dist)
+          (^|/)codeception/.*\.(yml|yaml|dist)
+          \.sh$
+          (^|/)package(-lock)?\.json$
+          (^|/)\.env
+    outputs:
+      verdict:
+        description: "trusted | label-override | pass (job failure means the gate rejected the PR)"
+        value: ${{ jobs.gate.outputs.verdict }}
+
+permissions:
+  contents: read
+
+# Cancel an in-flight gate run when the PR gets new commits, so a burst of
+# pushes costs at most one AI scan instead of one per push. Keyed per PR
+# (falls back to ref for non-PR events).
+concurrency:
+  group: fork-pr-security-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # explicit bash enables pipefail in addition to errexit
+    shell: bash
+
+jobs:
+  gate:
+    name: "Fork PR security gate"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # revoke stale safe-to-test labels on new pushes
+      models: read         # GitHub Models inference with GITHUB_TOKEN
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      SAFE_LABEL: ${{ inputs.safe_to_test_label }}
+      MAX_DIFF_KB: ${{ inputs.max_diff_kb }}
+      HIGH_RISK_PATTERNS: ${{ inputs.high_risk_patterns }}
+      WORK_DIR: /tmp/gate-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      # NOTE: no actions/checkout anywhere in this job - the PR is analyzed
+      # exclusively as API data and must never be executed here.
+
+      - name: "Set up isolated workspace"
+        run: mkdir -p "$WORK_DIR"
+
+      - name: "Classify PR trust"
+        id: classify
+        run: |
+          # Classify from the PR payload, NOT github.event_name. Inside a
+          # reusable workflow github.event_name inherits the caller's trigger
+          # (e.g. pull_request_target), so reasoning about it is error-prone.
+          # Keying off the head-repo of the PR payload is unambiguous and fails
+          # safe: any fork PR payload engages the gate, regardless of how the
+          # event name resolves.
+          if [ -z "$HEAD_REPO" ]; then
+            echo "No pull request payload - trusted (maintainer-triggered) context."
+            echo "gate_required=false" >> "$GITHUB_OUTPUT"
+          elif [ "$HEAD_REPO" = "$REPO" ]; then
+            echo "Same-repository PR - trusted context."
+            echo "gate_required=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Fork PR from $HEAD_REPO - gate required."
+            echo "gate_required=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "Revoke stale safe-to-test label on new commits"
+        if: ${{ steps.classify.outputs.gate_required == 'true' && github.event.action == 'synchronize' }}
+        run: |
+          # New commits invalidate any earlier maintainer approval: the label
+          # must only ever cover code a maintainer has actually looked at.
+          if gh api "repos/$REPO/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -Fxq "$SAFE_LABEL"; then
+            echo "New commits pushed - revoking stale '$SAFE_LABEL' label."
+            ENCODED_LABEL=$(jq -rn --arg l "$SAFE_LABEL" '$l|@uri')
+            # Fail closed if the stale approval cannot be removed (e.g. the
+            # caller did not grant pull-requests: write). A label we cannot
+            # revoke is a label that could let unreviewed commits through.
+            if ! gh api --method DELETE "repos/$REPO/issues/$PR_NUMBER/labels/$ENCODED_LABEL"; then
+              echo "Could not revoke the stale '$SAFE_LABEL' label - failing closed."
+              {
+                echo "## :no_entry: Security gate failed - could not revoke stale \`$SAFE_LABEL\` label"
+                echo ""
+                echo "New commits were pushed but the prior approval label could not be removed (the calling workflow must grant the gate job \`pull-requests: write\`). A maintainer must remove the label and re-review."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            echo ":warning: New commits were pushed, the \`$SAFE_LABEL\` label was revoked. Re-review and re-apply it if the PR should bypass the gate." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No '$SAFE_LABEL' label present, nothing to revoke."
+          fi
+
+      - name: "Check maintainer override label"
+        id: label
+        if: ${{ steps.classify.outputs.gate_required == 'true' }}
+        run: |
+          if gh api "repos/$REPO/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -Fxq "$SAFE_LABEL"; then
+            echo "Maintainer override: '$SAFE_LABEL' label present - skipping scan."
+            echo "label_present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "label_present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "Fetch changed files (API only)"
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        run: |
+          # --paginate emits one JSON array per page; applying --jq '.[]'
+          # streams the elements of every page, then jq -s merges them into a
+          # single valid array regardless of how many pages there were.
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" --jq '.[]' \
+            | jq -s '.' > $WORK_DIR/files.json
+          jq -r '.[].filename' $WORK_DIR/files.json > $WORK_DIR/filenames.txt
+          # Filenames are attacker-controlled: keep them out of stdout
+          # (workflow-command/log injection) and list them in the step summary
+          # instead, with backticks stripped so they cannot escape the fence.
+          echo "Changed files: $(wc -l < $WORK_DIR/filenames.txt)"
+          {
+            echo "<details><summary>Changed files</summary>"
+            echo ""
+            echo '```'
+            tr -d '`' < $WORK_DIR/filenames.txt
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Deterministic high-risk path check"
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        run: |
+          # Strip empty lines from the pattern list
+          printf '%s\n' "$HIGH_RISK_PATTERNS" | grep -v '^[[:space:]]*$' > $WORK_DIR/patterns.txt
+
+          # Capture grep's exit code explicitly: 0 = match, 1 = no match,
+          # anything else (e.g. invalid pattern) must fail closed instead of
+          # being silently treated as "no matches".
+          set +e
+          MATCHES=$(grep -E -f $WORK_DIR/patterns.txt $WORK_DIR/filenames.txt)
+          GREP_STATUS=$?
+          set -e
+
+          if [ "$GREP_STATUS" -ge 2 ]; then
+            echo "Pattern matching failed (grep exit code $GREP_STATUS, invalid pattern?) - failing closed."
+            {
+              echo "## :no_entry: Security gate failed - high-risk pattern list could not be evaluated"
+              echo ""
+              echo "Check the \`high_risk_patterns\` input for invalid regular expressions."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if [ "$GREP_STATUS" -eq 0 ]; then
+            {
+              echo "## :no_entry: Security gate failed - high-risk paths changed"
+              echo ""
+              echo "This fork PR modifies files that are never auto-approved:"
+              echo ""
+              echo '```'
+              printf '%s\n' "$MATCHES" | tr -d '`'
+              echo '```'
+              echo ""
+              echo "A maintainer must review these changes manually and apply the \`$SAFE_LABEL\` label to run the secret-bearing tests."
+            } >> "$GITHUB_STEP_SUMMARY"
+            # Matched paths are attacker-controlled: keep them out of stdout
+            # (workflow-command/log injection); see the step summary.
+            echo "High-risk paths changed - failing closed (see step summary)."
+            exit 1
+          fi
+          echo "No high-risk paths changed."
+
+      - name: "Assemble scan diff from API data"
+        id: assemble
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' }}
+        env:
+          # Files whose contents can execute in CI. Anything else (docs,
+          # translations, images, fixtures) that survived the high-risk path
+          # rules carries negligible execution risk and is not worth a metered
+          # AI call.
+          CODE_FILE_REGEX: '\.(php|phtml|phar|inc|sh|bash|zsh|js|cjs|mjs|ts|twig|ya?ml|neon|xml|dist|sql|py|rb|pl|ps1|bat)$|(^|/)(Dockerfile|Makefile|composer\.json)$'
+        run: |
+          # Lever: only code-bearing files need the AI scan. If a PR changes no
+          # executable files, pass without spending a request/token budget.
+          grep -E "$CODE_FILE_REGEX" $WORK_DIR/filenames.txt > $WORK_DIR/code-files.txt || true
+          if [ ! -s $WORK_DIR/code-files.txt ]; then
+            echo "No code-bearing files changed - skipping AI scan (no execution risk)."
+            echo "## :white_check_mark: Security gate passed - no executable files changed (AI scan skipped)" >> "$GITHUB_STEP_SUMMARY"
+            echo "scan_needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Fail closed when a CODE file has no readable patch (binary or too
+          # large for the API) - content we cannot read is content we cannot
+          # clear. Non-code unreadable files are irrelevant and ignored.
+          UNSCANNABLE=$(jq -r --arg re "$CODE_FILE_REGEX" '.[] | select(.filename | test($re)) | select(.patch == null) | .filename' $WORK_DIR/files.json)
+          if [ -n "$UNSCANNABLE" ]; then
+            {
+              echo "## :no_entry: Security gate failed - unscannable code changes"
+              echo ""
+              echo "These code files have no readable diff (binary or oversized):"
+              echo ""
+              echo '```'
+              printf '%s\n' "$UNSCANNABLE" | tr -d '`'
+              echo '```'
+              echo ""
+              echo "A maintainer must review the PR manually and apply the \`$SAFE_LABEL\` label."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "Unscannable code files present - failing closed."
+            exit 1
+          fi
+
+          # Assemble a code-only diff with a unified-diff-style header per file.
+          jq -r --arg re "$CODE_FILE_REGEX" '
+            .[] | select(.filename | test($re))
+            | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch // "")\n"
+          ' $WORK_DIR/files.json > $WORK_DIR/diff.full.txt
+
+          # Lever: send only file headers, hunk locations (@@) and ADDED lines
+          # to the model - the code that will actually execute. Dropping context
+          # and removed lines cuts tokens substantially with little signal loss.
+          grep -E '^(diff --git |@@|\+)' $WORK_DIR/diff.full.txt > $WORK_DIR/diff.txt || true
+
+          SIZE_BYTES=$(stat -c%s $WORK_DIR/diff.txt)
+          MAX_DIFF_BYTES=$(( MAX_DIFF_KB * 1024 ))
+          echo "Scan diff size: ${SIZE_BYTES} bytes (limit: ${MAX_DIFF_BYTES} bytes / ${MAX_DIFF_KB} KB)"
+          if [ "$SIZE_BYTES" -gt "$MAX_DIFF_BYTES" ]; then
+            {
+              echo "## :no_entry: Security gate failed - diff too large to scan (${SIZE_BYTES} bytes > ${MAX_DIFF_KB} KB)"
+              echo ""
+              echo "A maintainer must review the PR manually and apply the \`$SAFE_LABEL\` label."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "Diff exceeds scan limit - failing closed."
+            exit 1
+          fi
+          echo "scan_needed=true" >> "$GITHUB_OUTPUT"
+
+      - name: "Prepare AI scan prompts"
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' && steps.assemble.outputs.scan_needed == 'true' }}
+        env:
+          # job.workflow_repository / job.workflow_sha identify the repository
+          # and exact commit of THIS reusable workflow file (not the caller),
+          # so workflow and prompt can never drift apart.
+          PROMPTS_REPO: ${{ job.workflow_repository }}
+          PROMPTS_REF: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$PROMPTS_REPO" ] || [ -z "$PROMPTS_REF" ]; then
+            echo "Could not determine the reusable workflow repository/commit - failing closed."
+            {
+              echo "## :no_entry: Security gate failed - scan prompt location could not be resolved"
+              echo ""
+              echo "The gate fails closed. Re-run the job, or have a maintainer review the PR and apply the \`$SAFE_LABEL\` label."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # Fetched via the API on purpose: this job must stay checkout-free.
+          gh api "repos/$PROMPTS_REPO/contents/prompts/fork-pr-security-gate.system.md?ref=$PROMPTS_REF" \
+            -H "Accept: application/vnd.github.raw" > $WORK_DIR/system-prompt.txt
+
+          if [ ! -s $WORK_DIR/system-prompt.txt ]; then
+            echo "System prompt could not be loaded - failing closed."
+            {
+              echo "## :no_entry: Security gate failed - scan prompt unavailable"
+              echo ""
+              echo "The gate fails closed. Re-run the job, or have a maintainer review the PR and apply the \`$SAFE_LABEL\` label."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          {
+            echo "<diff>"
+            # Prevent delimiter injection in attacker-controlled diff content
+            sed -e 's#</diff>#</diff-redacted>#g' -e 's#<diff>#<diff-redacted>#g' $WORK_DIR/diff.txt
+            echo "</diff>"
+          } > $WORK_DIR/user-prompt.txt
+
+      - name: "AI scan (GitHub Models)"
+        id: ai
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' && steps.assemble.outputs.scan_needed == 'true' }}
+        # Do not abort the job on failure: the next step inspects the outcome
+        # and emits a controlled fail-closed result instead.
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: actions/ai-inference@a7805884c80886efc241e94a5351df715968a0ad # v2.1.1
+        with:
+          model: ${{ inputs.model }}
+          system-prompt-file: ${{ env.WORK_DIR }}/system-prompt.txt
+          prompt-file: ${{ env.WORK_DIR }}/user-prompt.txt
+          max-completion-tokens: 1000
+
+      - name: "Evaluate AI verdict"
+        if: ${{ steps.classify.outputs.gate_required == 'true' && steps.label.outputs.label_present != 'true' && steps.assemble.outputs.scan_needed == 'true' }}
+        env:
+          AI_OUTCOME: ${{ steps.ai.outcome }}
+          # The model response is derived from attacker-controlled diff content:
+          # always handle it as a file/env value, never inline it with ${{ }}.
+          RESPONSE_FILE: ${{ steps.ai.outputs.response-file }}
+        run: |
+          # Fail closed explicitly if the scan step did not succeed, rather
+          # than relying on failure() propagation.
+          if [ "$AI_OUTCOME" != "success" ]; then
+            echo "AI scan did not succeed (outcome: $AI_OUTCOME) - failing closed."
+            {
+              echo "## :no_entry: Security gate failed - AI scan unavailable"
+              echo ""
+              echo "The gate fails closed. Re-run the job, or have a maintainer review the PR and apply the \`$SAFE_LABEL\` label."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          CONTENT=$(cat "$RESPONSE_FILE" 2>/dev/null || true)
+          # Defensively strip markdown fences before parsing
+          VERDICT=$(printf '%s' "$CONTENT" | sed 's/```json//g; s/```//g' | jq -r '.verdict // empty' 2>/dev/null || true)
+
+          if [ "$VERDICT" = "pass" ]; then
+            echo "AI scan verdict: pass"
+            echo "## :white_check_mark: Security gate passed - AI scan found no CI-abuse patterns" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$VERDICT" = "fail" ]; then
+            REASONS=$(printf '%s' "$CONTENT" | sed 's/```json//g; s/```//g' | jq -r '.reasons[]? // empty' 2>/dev/null || true)
+            {
+              echo "## :no_entry: Security gate failed - AI scan flagged this PR"
+              echo ""
+              echo "Reasons reported by the scan (untrusted model output, shown verbatim):"
+              echo ""
+              # Render inside a code fence with backticks stripped so this
+              # attacker-influenced text cannot inject markdown (links, images,
+              # formatting) into the summary.
+              echo '```'
+              printf '%s\n' "$REASONS" | tr -d '`'
+              echo '```'
+              echo ""
+              echo "A maintainer must review the PR manually and apply the \`$SAFE_LABEL\` label if it is a false positive."
+            } >> "$GITHUB_STEP_SUMMARY"
+            # The reasons are attacker-influenced model output: keep them out
+            # of stdout (workflow-command/log injection); see the step summary.
+            echo "AI scan verdict: fail (see step summary for details)"
+            exit 1
+          else
+            # Raw content is attacker-influenced: never echo it to the logs.
+            echo "AI scan returned an unparseable verdict (response length: ${#CONTENT} chars) - failing closed."
+            {
+              echo "## :no_entry: Security gate failed - AI scan returned an unparseable verdict"
+              echo ""
+              echo "The gate fails closed. Re-run the job, or have a maintainer review the PR and apply the \`$SAFE_LABEL\` label."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: "Verdict"
+        id: verdict
+        env:
+          GATE_REQUIRED: ${{ steps.classify.outputs.gate_required }}
+          LABEL_PRESENT: ${{ steps.label.outputs.label_present }}
+          SCAN_NEEDED: ${{ steps.assemble.outputs.scan_needed }}
+        run: |
+          if [ "$GATE_REQUIRED" != "true" ]; then
+            echo "verdict=trusted" >> "$GITHUB_OUTPUT"
+            echo "Verdict: trusted (no gate required)"
+          elif [ "$LABEL_PRESENT" = "true" ]; then
+            echo "verdict=label-override" >> "$GITHUB_OUTPUT"
+            echo "Verdict: label-override (maintainer-approved via '$SAFE_LABEL')"
+            echo "## :white_check_mark: Security gate passed - maintainer override via \`$SAFE_LABEL\` label" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$SCAN_NEEDED" != "true" ]; then
+            echo "verdict=pass" >> "$GITHUB_OUTPUT"
+            echo "Verdict: pass (hard rules clean; no executable files changed, AI scan skipped)"
+          else
+            echo "verdict=pass" >> "$GITHUB_OUTPUT"
+            echo "Verdict: pass (hard rules + AI scan clean)"
+          fi
+
+      - name: "Comment gate result on PR"
+        if: ${{ failure() && steps.classify.outputs.gate_required == 'true' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body ":no_entry: **Security gate failed** — see the [job summary]($RUN_URL) for details. A maintainer must review and apply the \`$SAFE_LABEL\` label to proceed."
