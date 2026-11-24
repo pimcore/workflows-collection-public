@@ -156,9 +156,9 @@ jobs:
                     exit 1
                 fi
                 # A repo with minimum-stability: dev sees 2.0.x-dev, 4.0.0-alpha1 and the like as
-                # the "latest" version. They are not releases, so they are no finding. Columns
+                # the "latest" version (also dotted, e.g. 1.0.0-rc.1). They are not releases, so they are no finding. Columns
                 # are: name, current, marker, latest.
-                OUTDATED=$(echo "$OUTDATED" | awk 'tolower($4) !~ /(^dev-|-(dev|alpha|beta|rc)[0-9]*$)/')
+                OUTDATED=$(echo "$OUTDATED" | awk 'tolower($4) !~ /(^dev-|-(dev|alpha|beta|rc)[.0-9]*$)/')
                 if [[ -n "$OUTDATED" ]] && echo "$OUTDATED" | grep -E ' [!~] '; then
                     echo "result=findings" >> $GITHUB_OUTPUT
                     echo "Outdated dependencies found!" >> $GITHUB_STEP_SUMMARY
