@@ -79,6 +79,14 @@ on:
         required: false
         type: string
         default: "api:sync"
+      collection-ref:
+        description: >-
+          Ref of pimcore/workflows-collection-public to take the export script
+          from. Keep it identical to the ref this reusable workflow is pinned
+          to, or script and workflow versions skew.
+        required: false
+        type: string
+        default: "main"
       test-script:
         description: "NPM script run against each synced slice (empty skips tests)"
         required: false
@@ -116,9 +124,9 @@ jobs:
         uses: actions/checkout@v5.0.1
         with:
           repository: pimcore/workflows-collection-public
-          # The same commit this reusable workflow runs from, so the export
-          # script can never skew against the workflow version the caller pins.
-          ref: ${{ github.job_workflow_sha }}
+          # github.job_workflow_sha is empty for branch-pinned reusable
+          # workflows (verified in the end-to-end run), so the ref is explicit.
+          ref: ${{ inputs.collection-ref }}
           path: wcp
           persist-credentials: false
 
