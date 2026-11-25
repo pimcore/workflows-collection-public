@@ -112,15 +112,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout backend (${{ inputs.backend-repository }}@${{ inputs.backend-branch }})
-        uses: actions/checkout@v5.0.1
-        with:
-          repository: ${{ inputs.backend-repository }}
-          ref: ${{ inputs.backend-branch }}
-          path: backend
-          persist-credentials: false
-
-      - name: Checkout workflows-collection-public (export script)
+      - name: Checkout workflows-collection-public (export action)
         uses: actions/checkout@v5.0.1
         with:
           repository: pimcore/workflows-collection-public
@@ -130,37 +122,17 @@ jobs:
           path: wcp
           persist-credentials: false
 
-      - name: Set up PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: ${{ inputs.php-version }}
-          coverage: none
-
-      - name: Install backend dependencies
-        working-directory: backend
-        env:
-          COMPOSER_ROOT_VERSION: ${{ inputs.backend-branch }}-dev
-        run: |
-          set -euo pipefail
-          # The advisory pin must not block a schema sync (it conflicts on PHP
-          # patch levels and release windows); drop it for this read-only export.
-          composer remove roave/security-advisories --dev --no-update --no-interaction 2>/dev/null || true
-          composer install --no-interaction --no-progress --no-scripts --no-dev
-
       - name: Export the backend spec
-        working-directory: backend
-        env:
-          SCAN_PATHS: ${{ inputs.backend-scan-path }}
-          TRANSLATION_PATHS: ${{ inputs.backend-translations }}
-          SCOPES: ${{ inputs.scope }}
-          LOCALE: ${{ inputs.locale }}
-        run: |
-          set -euo pipefail
-          args=(--autoload=vendor/autoload.php --locale="${LOCALE}")
-          for p in ${SCAN_PATHS}; do args+=(--scan-path="$p"); done
-          for p in ${TRANSLATION_PATHS}; do args+=(--translations="$p"); done
-          for s in ${SCOPES}; do args+=(--scope="$s"); done
-          php ../wcp/scripts/export-openapi.php "${args[@]}" --output="${RUNNER_TEMP}/backend-core.json"
+        uses: ./wcp/.github/actions/studio-openapi-export
+        with:
+          backend-repository: ${{ inputs.backend-repository }}
+          backend-branch: ${{ inputs.backend-branch }}
+          backend-scan-path: ${{ inputs.backend-scan-path }}
+          backend-translations: ${{ inputs.backend-translations }}
+          scope: ${{ inputs.scope }}
+          locale: ${{ inputs.locale }}
+          php-version: ${{ inputs.php-version }}
+          output: ${{ runner.temp }}/backend-core.json
 
       - name: Upload backend spec
         uses: actions/upload-artifact@v4

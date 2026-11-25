@@ -1,0 +1,261 @@
+name: "Studio API Slice Sync (reusable)"
+
+# On-demand companion to the nightly drift run (service-operations#1713): syncs
+# API slices on ANY branch and pushes the result straight to that branch, so
+# nobody has to run the export and sync commands by hand. The branch is an
+# input, not the workflow ref — the caller lives on the default branch and can
+# update feature branches that do not carry the workflow at all.
+#
+# Typical uses:
+#   - "my backend endpoint just merged, give my feature branch the client":
+#     dispatch with the feature branch and the slice name(s).
+#   - "I added a new entry to slices.ts": push the entry, dispatch with the
+#     slice name — the snapshot and the generated client arrive as a commit.
+#   - no slices given: every slice that drifted against the backend is synced.
+#
+# SECURITY: the jobs that execute repository code (composer, npm, the sync
+# tool) run with contents: read and no secrets. SYNC_TOKEN exists only in the
+# commit job, which runs no repository code — it applies the captured patch and
+# pushes it (same pattern as the frontend build's commit jobs).
+
+on:
+  workflow_call:
+    inputs:
+      ui-ref:
+        description: "Branch of the calling repository to sync — it receives the commit"
+        required: true
+        type: string
+      backend-branch:
+        description: "Branch of the backend repository to export the spec from"
+        required: true
+        type: string
+      slices:
+        description: "Space-separated slice names to sync; empty syncs every drifted slice"
+        required: false
+        type: string
+        default: ""
+      backend-repository:
+        description: "Repository the spec is exported from"
+        required: false
+        type: string
+        default: "pimcore/studio-backend-bundle"
+      backend-scan-path:
+        description: "Path(s) inside the backend repository to scan, space-separated"
+        required: false
+        type: string
+        default: "src"
+      backend-translations:
+        description: "Translation path(s) inside the backend repository, space-separated"
+        required: false
+        type: string
+        default: "translations"
+      scope:
+        description: "Optional path scope(s) for the export, space-separated"
+        required: false
+        type: string
+        default: ""
+      locale:
+        description: "Locale the exported summaries/descriptions are translated into"
+        required: false
+        type: string
+        default: "en"
+      php-version:
+        description: "PHP version for the backend export"
+        required: false
+        type: string
+        default: "8.4"
+      working-directory:
+        description: "Directory containing the frontend project"
+        required: false
+        type: string
+        default: "assets/studio"
+      node-version:
+        description: "Node.js version to use"
+        required: false
+        type: string
+        default: "lts/*"
+      api-sync-script:
+        description: "NPM script that runs the per-slice sync tool"
+        required: false
+        type: string
+        default: "api:sync"
+      collection-ref:
+        description: >-
+          Ref of pimcore/workflows-collection-public to take the export action
+          from. Keep it identical to the ref this reusable workflow is pinned to.
+        required: false
+        type: string
+        default: "main"
+
+    secrets:
+      SYNC_TOKEN:
+        description: >-
+          PAT of the pimcore-deployments service account, used ONLY by the
+          commit job to push the sync commit. Falls back to GITHUB_TOKEN when
+          unset.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Read-only: no secrets present.
+  export-backend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout workflows-collection-public (export action)
+        uses: actions/checkout@v5.0.1
+        with:
+          repository: pimcore/workflows-collection-public
+          ref: ${{ inputs.collection-ref }}
+          path: wcp
+          persist-credentials: false
+
+      - name: Export the backend spec
+        uses: ./wcp/.github/actions/studio-openapi-export
+        with:
+          backend-repository: ${{ inputs.backend-repository }}
+          backend-branch: ${{ inputs.backend-branch }}
+          backend-scan-path: ${{ inputs.backend-scan-path }}
+          backend-translations: ${{ inputs.backend-translations }}
+          scope: ${{ inputs.scope }}
+          locale: ${{ inputs.locale }}
+          php-version: ${{ inputs.php-version }}
+          output: ${{ runner.temp }}/backend-core.json
+
+      - name: Upload backend spec
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-core
+          path: ${{ runner.temp }}/backend-core.json
+          retention-days: 3
+          if-no-files-found: error
+          overwrite: true
+
+  # Read-only: executes repo-provided code (npm + the sync tool), so no write
+  # token is present. Captures the sync as a patch artifact.
+  sync:
+    needs: export-backend
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.capture.outputs.has_changes }}
+      synced: ${{ steps.run-sync.outputs.synced }}
+
+    steps:
+      - name: Checkout ${{ inputs.ui-ref }}
+        uses: actions/checkout@v5.0.1
+        with:
+          ref: ${{ inputs.ui-ref }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci --ignore-scripts
+
+      - name: Download backend spec
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-core
+          path: ${{ runner.temp }}
+
+      - name: Sync slices
+        id: run-sync
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          SLICES: ${{ inputs.slices }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SLICES}" ]]; then
+            # No slices named: sync whatever drifted against the backend.
+            npm run -s "${{ inputs.api-sync-script }}" -- --check \
+              --schema "${RUNNER_TEMP}/backend-core.json" \
+              --summary-json "${RUNNER_TEMP}/drift.json" || true
+            SLICES="$(node -e 'const s=require(process.env.RUNNER_TEMP+"/drift.json");console.log(s.results.filter(r=>r.status==="drift").map(r=>r.slice).join(" "))')"
+            if [[ -z "${SLICES}" ]]; then
+              echo "::notice::Every slice already matches the backend — nothing to sync."
+              echo "synced=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          read -r -a slices <<< "${SLICES}"
+          # An unknown slice name makes the tool exit 2 and fails this job —
+          # exactly what a typo in the dispatch input should do.
+          npm run -s "${{ inputs.api-sync-script }}" -- "${slices[@]}" \
+            --schema "${RUNNER_TEMP}/backend-core.json"
+          echo "synced=${SLICES}" >> "$GITHUB_OUTPUT"
+
+      - name: Type-check (reported, never blocking)
+        if: ${{ steps.run-sync.outputs.synced != '' }}
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          if ! npm run -s check-types; then
+            echo "::warning title=check-types fails after the slice sync::The synced client no longer matches the UI call sites. The commit is still pushed so the branch owner can fix the call sites — see the log above."
+          fi
+
+      - name: Capture the sync as a patch
+        id: capture
+        run: |
+          set -euo pipefail
+          git add -A
+          git diff --cached --binary > "${RUNNER_TEMP}/api-slice-sync.patch"
+          if [[ -s "${RUNNER_TEMP}/api-slice-sync.patch" ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::The named slices already match the backend — nothing to commit."
+          fi
+
+      - name: Upload sync patch
+        if: ${{ steps.capture.outputs.has_changes == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-slice-sync-patch
+          path: ${{ runner.temp }}/api-slice-sync.patch
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+  # Write-capable, but runs NO repository code: applies the patch and pushes it
+  # to the requested branch.
+  commit:
+    needs: sync
+    if: ${{ needs.sync.outputs.has_changes == 'true' }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout ${{ inputs.ui-ref }}
+        uses: actions/checkout@v5.0.1
+        with:
+          ref: ${{ inputs.ui-ref }}
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Download sync patch
+        uses: actions/download-artifact@v4
+        with:
+          name: api-slice-sync-patch
+          path: ${{ runner.temp }}
+
+      - name: Apply the sync
+        run: git apply "${RUNNER_TEMP}/api-slice-sync.patch"
+
+      - name: Commit the sync
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          branch: ${{ inputs.ui-ref }}
+          commit_user_name: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments' || 'github-actions[bot]' }}
+          commit_user_email: ${{ secrets.SYNC_TOKEN && '71881008+pimcore-deployments@users.noreply.github.com' || '41898282+github-actions[bot]@users.noreply.github.com' }}
+          commit_author: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments <71881008+pimcore-deployments@users.noreply.github.com>' || format('{0} <{1}+{0}@users.noreply.github.com>', github.actor, github.actor_id) }}
+          # Rebase onto the remote tip before pushing so a concurrent push to
+          # the same branch doesn't fail with a non-fast-forward rejection.
+          before_push_hook: git pull --rebase --autostash origin ${{ inputs.ui-ref }}
+          commit_message: "[API] Sync API slices with the backend (${{ needs.sync.outputs.synced }})"

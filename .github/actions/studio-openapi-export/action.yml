@@ -1,0 +1,85 @@
+name: "Studio OpenAPI export"
+description: >-
+  Exports the Studio OpenAPI spec from a plain checkout of the backend bundle —
+  no Pimcore kernel, no database — via scripts/export-openapi.php. Use through
+  a checkout of pimcore/workflows-collection-public (local action path), so the
+  script version always matches the workflow version.
+
+inputs:
+  backend-repository:
+    description: "Repository the spec is exported from"
+    required: false
+    default: "pimcore/studio-backend-bundle"
+  backend-branch:
+    description: "Branch of the backend repository to export the spec from"
+    required: true
+  backend-scan-path:
+    description: "Path(s) inside the backend repository to scan, space-separated"
+    required: false
+    default: "src"
+  backend-translations:
+    description: "Translation path(s) inside the backend repository, space-separated"
+    required: false
+    default: "translations"
+  scope:
+    description: "Optional path scope(s) for the export, space-separated"
+    required: false
+    default: ""
+  locale:
+    description: "Locale the exported summaries/descriptions are translated into"
+    required: false
+    default: "en"
+  php-version:
+    description: "PHP version for the export"
+    required: false
+    default: "8.4"
+  output:
+    description: "File the exported spec is written to"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout backend (${{ inputs.backend-repository }}@${{ inputs.backend-branch }})
+      uses: actions/checkout@v5.0.1
+      with:
+        repository: ${{ inputs.backend-repository }}
+        ref: ${{ inputs.backend-branch }}
+        path: backend
+        persist-credentials: false
+
+    - name: Set up PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ inputs.php-version }}
+        coverage: none
+
+    - name: Install backend dependencies
+      shell: bash
+      working-directory: backend
+      env:
+        COMPOSER_ROOT_VERSION: ${{ inputs.backend-branch }}-dev
+      run: |
+        set -euo pipefail
+        # The advisory pin must not block a schema sync (it conflicts on PHP
+        # patch levels and release windows); drop it for this read-only export.
+        composer remove roave/security-advisories --dev --no-update --no-interaction 2>/dev/null || true
+        composer install --no-interaction --no-progress --no-scripts --no-dev
+
+    - name: Export the backend spec
+      shell: bash
+      working-directory: backend
+      env:
+        SCAN_PATHS: ${{ inputs.backend-scan-path }}
+        TRANSLATION_PATHS: ${{ inputs.backend-translations }}
+        SCOPES: ${{ inputs.scope }}
+        LOCALE: ${{ inputs.locale }}
+        OUTPUT: ${{ inputs.output }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        args=(--autoload=vendor/autoload.php --locale="${LOCALE}")
+        for p in ${SCAN_PATHS}; do args+=(--scan-path="$p"); done
+        for p in ${TRANSLATION_PATHS}; do args+=(--translations="$p"); done
+        for s in ${SCOPES}; do args+=(--scope="$s"); done
+        php "${ACTION_PATH}/../../../scripts/export-openapi.php" "${args[@]}" --output="${OUTPUT}"
