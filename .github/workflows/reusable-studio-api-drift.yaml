@@ -116,6 +116,9 @@ jobs:
         uses: actions/checkout@v5.0.1
         with:
           repository: pimcore/workflows-collection-public
+          # The same commit this reusable workflow runs from, so the export
+          # script can never skew against the workflow version the caller pins.
+          ref: ${{ github.job_workflow_sha }}
           path: wcp
           persist-credentials: false
 
