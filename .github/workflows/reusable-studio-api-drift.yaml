@@ -415,7 +415,10 @@ jobs:
               issue_title="[API] Breaking change in the ${slice} slice (${UI_BRANCH})"
               existing_issue="$(gh issue list --search "in:title \"${issue_title}\"" --state open --json number --jq '.[0].number // empty')"
               if [[ -z "${existing_issue}" ]]; then
-                gh issue create --title "${issue_title}" --label api-breaking --body "The nightly API sync found a breaking change — see the draft PR on branch ${branch} and ${RUN_URL}."
+                issue_url="$(gh issue create --title "${issue_title}" --body "The nightly API sync found a breaking change — see the draft PR on branch ${branch} and ${RUN_URL}.")"
+                # --label on `gh issue create` silently dropped the label in the
+                # end-to-end run; attach it explicitly (and never fail the sync on it).
+                gh issue edit "${issue_url}" --add-label api-breaking || true
               fi
             else
               gh pr create --base "${UI_BRANCH}" --head "${branch}" --title "${title}" --body-file "${body_file}"
