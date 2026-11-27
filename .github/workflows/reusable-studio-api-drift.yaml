@@ -1,0 +1,491 @@
+name: "Studio API Drift (reusable)"
+
+# Nightly companion to the per-slice API client setup (service-operations#1713,
+# P3). Per release line it exports the backend OpenAPI spec straight from the
+# backend branch's code — no Pimcore instance, no database, via
+# scripts/export-openapi.php in this repository — compares every schema
+# snapshot in the calling frontend repository against it, and opens one small
+# pull request per drifted slice on api-sync/<ui-branch>/<slice>.
+#
+#   - A clean sync (check-types green, no endpoint removed) becomes a normal PR.
+#   - A breaking sync (check-types red, or the slice loses endpoints) becomes a
+#     DRAFT PR labelled api-breaking plus a tracking issue — removal is the one
+#     direction that breaks consumers, and a bundle missing from the export is
+#     indistinguishable from a deliberate removal, so it is never merged
+#     unreviewed.
+#
+# SECURITY: jobs that execute repo-provided code (composer/npm/scripts) run
+# with contents: read and no secrets. The SYNC_TOKEN (pimcore-deployments PAT)
+# lives exclusively in the publish job, which runs no repository code — it only
+# applies captured patches, pushes the api-sync/* branches and opens the PRs.
+# A PR created with GITHUB_TOKEN would not trigger CI, hence the PAT.
+
+on:
+  workflow_call:
+    inputs:
+      ui-branch:
+        description: "Release-line branch of the calling repository to sync (e.g. 2026.3)"
+        required: true
+        type: string
+      backend-branch:
+        description: "Matching branch of the backend repository to export the spec from"
+        required: true
+        type: string
+      backend-repository:
+        description: "Repository the spec is exported from"
+        required: false
+        type: string
+        default: "pimcore/studio-backend-bundle"
+      backend-scan-path:
+        description: "Path(s) inside the backend repository to scan, space-separated"
+        required: false
+        type: string
+        default: "src"
+      backend-translations:
+        description: "Translation path(s) inside the backend repository, space-separated"
+        required: false
+        type: string
+        default: "translations"
+      scope:
+        description: >-
+          Optional path scope(s) for the export, space-separated — e.g.
+          "/pimcore-studio/api/bundle/data-hub" for a bundle that only consumes
+          its own namespace. Empty exports everything the scan finds.
+        required: false
+        type: string
+        default: ""
+      locale:
+        description: "Locale the exported summaries/descriptions are translated into"
+        required: false
+        type: string
+        default: "en"
+      php-version:
+        description: "PHP version for the backend export"
+        required: false
+        type: string
+        default: "8.4"
+      working-directory:
+        description: "Directory containing the frontend project"
+        required: false
+        type: string
+        default: "assets/studio"
+      node-version:
+        description: "Node.js version to use"
+        required: false
+        type: string
+        default: "lts/*"
+      api-sync-script:
+        description: "NPM script that runs the per-slice sync tool"
+        required: false
+        type: string
+        default: "api:sync"
+      collection-ref:
+        description: >-
+          Ref of pimcore/workflows-collection-public to take the export script
+          from. Keep it identical to the ref this reusable workflow is pinned
+          to, or script and workflow versions skew.
+        required: false
+        type: string
+        default: "main"
+      test-script:
+        description: "NPM script run against each synced slice (empty skips tests)"
+        required: false
+        type: string
+        default: "test"
+
+    secrets:
+      SYNC_TOKEN:
+        description: >-
+          PAT of the pimcore-deployments service account, used ONLY by the
+          publish job to push the api-sync/* branches and open the PRs, so CI
+          runs on them. Required for publishing; without it the run only
+          reports drift.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Read-only: checks out the backend branch and runs composer + the export
+  # script. No secrets present.
+  export-backend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout workflows-collection-public (export action)
+        uses: actions/checkout@v5.0.1
+        with:
+          repository: pimcore/workflows-collection-public
+          # github.job_workflow_sha is empty for branch-pinned reusable
+          # workflows (verified in the end-to-end run), so the ref is explicit.
+          ref: ${{ inputs.collection-ref }}
+          path: wcp
+          persist-credentials: false
+
+      - name: Export the backend spec
+        uses: ./wcp/.github/actions/studio-openapi-export
+        with:
+          backend-repository: ${{ inputs.backend-repository }}
+          backend-branch: ${{ inputs.backend-branch }}
+          backend-scan-path: ${{ inputs.backend-scan-path }}
+          backend-translations: ${{ inputs.backend-translations }}
+          scope: ${{ inputs.scope }}
+          locale: ${{ inputs.locale }}
+          php-version: ${{ inputs.php-version }}
+          output: ${{ runner.temp }}/backend-core.json
+
+      - name: Upload backend spec
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-core
+          path: ${{ runner.temp }}/backend-core.json
+          retention-days: 3
+          if-no-files-found: error
+          overwrite: true
+
+  # Read-only: compares every committed snapshot against the export.
+  detect-drift:
+    needs: export-backend
+    runs-on: ubuntu-latest
+    outputs:
+      slices: ${{ steps.drift.outputs.slices }}
+
+    steps:
+      - name: Checkout ${{ inputs.ui-branch }}
+        uses: actions/checkout@v5.0.1
+        with:
+          ref: ${{ inputs.ui-branch }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci --ignore-scripts
+
+      - name: Download backend spec
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-core
+          path: ${{ runner.temp }}
+
+      - name: Detect drifted slices
+        id: drift
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          npm run -s "${{ inputs.api-sync-script }}" -- --check \
+            --schema "${RUNNER_TEMP}/backend-core.json" \
+            --summary-json "${RUNNER_TEMP}/drift.json" || true
+          slices="$(node -e 'const s=require(process.env.RUNNER_TEMP+"/drift.json");console.log(JSON.stringify(s.results.filter(r=>r.status==="drift").map(r=>r.slice)))')"
+          echo "slices=${slices}" >> "$GITHUB_OUTPUT"
+          echo "Drifted slices: ${slices}"
+
+  # Read-only, one leg per drifted slice: regenerates the slice from the
+  # export, validates it, and captures the result as a patch artifact together
+  # with a status file the publish job reads. The leg itself stays green even
+  # for a breaking change — breaking is a *result*, reported via the PR/issue.
+  sync-slice:
+    needs: detect-drift
+    if: ${{ needs.detect-drift.outputs.slices != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: ${{ fromJSON(needs.detect-drift.outputs.slices) }}
+
+    steps:
+      - name: Checkout ${{ inputs.ui-branch }}
+        uses: actions/checkout@v5.0.1
+        with:
+          ref: ${{ inputs.ui-branch }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci --ignore-scripts
+
+      - name: Download backend spec
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-core
+          path: ${{ runner.temp }}
+
+      - name: Sync slice "${{ matrix.slice }}"
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          # Record the operations before the sync to detect removals.
+          node -e '
+            const fs = require("fs");
+            const file = "build/api/schema/${{ matrix.slice }}.json";
+            // A Path Item also carries non-operation keys (parameters, $ref,
+            // summary, ...) — only HTTP methods count as endpoints.
+            const METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
+            const ops = [];
+            if (fs.existsSync(file)) {
+              const spec = JSON.parse(fs.readFileSync(file, "utf8"));
+              for (const [p, item] of Object.entries(spec.paths ?? {}))
+                for (const verb of Object.keys(item)) if (METHODS.has(verb.toLowerCase())) ops.push(`${verb} ${p}`);
+            }
+            fs.writeFileSync(process.env.RUNNER_TEMP + "/ops-before.json", JSON.stringify(ops));
+          '
+          npm run -s "${{ inputs.api-sync-script }}" -- "${{ matrix.slice }}" \
+            --schema "${RUNNER_TEMP}/backend-core.json"
+
+      - name: Check for removed endpoints
+        id: removed
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const before = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/ops-before.json", "utf8"));
+            const spec = JSON.parse(fs.readFileSync("build/api/schema/${{ matrix.slice }}.json", "utf8"));
+            const METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
+            const after = new Set();
+            for (const [p, item] of Object.entries(spec.paths ?? {}))
+              for (const verb of Object.keys(item)) if (METHODS.has(verb.toLowerCase())) after.add(`${verb} ${p}`);
+            const removed = before.filter((op) => !after.has(op));
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `removed=${removed.join(", ")}\n`);
+            if (removed.length > 0) console.log("Removed endpoints:", removed.join(", "));
+          '
+
+      - name: Type-check
+        id: typecheck
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          if npm run -s check-types; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run tests
+        id: tests
+        if: ${{ inputs.test-script != '' }}
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          if npm run -s "${{ inputs.test-script }}"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Capture patch and status
+        env:
+          TYPECHECK_OK: ${{ steps.typecheck.outputs.ok }}
+          TESTS_OK: ${{ steps.tests.outputs.ok || 'true' }}
+          REMOVED: ${{ steps.removed.outputs.removed }}
+          WORKDIR: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/out"
+          git add -A
+          # Only generated artifacts may enter the patch: the slice snapshots
+          # and the generated clients. Anything else means the sync (or
+          # something running inside it) changed files outside its contract.
+          prefix="${WORKDIR#./}"; prefix="${prefix%/}/"; [[ "${prefix}" == "/" ]] && prefix=""
+          # The generated clients are matched against the paths DECLARED in the
+          # committed slices.ts — extracted textually, the file is never executed —
+          # not against a *.gen.ts suffix that a smuggled file could satisfy.
+          node -e '
+            const fs = require("fs"), path = require("path");
+            const src = fs.readFileSync(process.argv[1], "utf8");
+            const root = process.argv[2];
+            const out = [];
+            for (const m of src.matchAll(/outputFile:\s*([\x27"])([^\x27"]+)\1/g)) {
+              const p = path.posix.normalize(path.posix.join(root, "build/api", m[2]));
+              // A declared output must stay inside the working directory — otherwise
+              // a hostile slices.ts entry could allowlist any path in the repository.
+              if (p.split("/").includes("..") || (root !== "" && p !== root && !p.startsWith(root + "/"))) {
+                console.error("::error title=Invalid outputFile in slices.ts::" + m[2] + " resolves outside the working directory");
+                process.exit(1);
+              }
+              out.push(p);
+            }
+            fs.writeFileSync(process.argv[3], out.join("\n") + "\n");
+          ' "${prefix}build/api/slices.ts" "${prefix%/}" "${RUNNER_TEMP}/declared-outputs.txt"
+          while IFS= read -r f; do
+            case "${f}" in
+              *"/../"*|"../"*) echo "::error title=Unexpected change in the sync::${f} contains a path traversal"; exit 1 ;;
+              "${prefix}"build/api/schema/*.json) ;;
+              *)
+                if ! grep -qxF "${f}" "${RUNNER_TEMP}/declared-outputs.txt"; then
+                  echo "::error title=Unexpected change in the sync::${f} is neither a slice snapshot nor a client declared in slices.ts"; exit 1
+                fi
+                ;;
+            esac
+          done < <(git diff --cached --name-only)
+          git diff --cached --binary > "${RUNNER_TEMP}/out/sync.patch"
+          breaking=false
+          if [[ "${TYPECHECK_OK}" != "true" || -n "${REMOVED}" ]]; then breaking=true; fi
+          node -e '
+            const fs = require("fs");
+            fs.writeFileSync(process.env.RUNNER_TEMP + "/out/status.json", JSON.stringify({
+              slice: "${{ matrix.slice }}",
+              breaking: process.argv[1] === "true",
+              typecheckOk: process.env.TYPECHECK_OK === "true",
+              testsOk: process.env.TESTS_OK === "true",
+              removed: (process.env.REMOVED || "").split(", ").filter(Boolean),
+            }, null, 2));
+          ' "${breaking}"
+          cat "${RUNNER_TEMP}/out/status.json"
+
+      - name: Upload slice result
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-sync-${{ matrix.slice }}
+          path: ${{ runner.temp }}/out
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: true
+
+  # Write-capable, but runs NO repository code: applies each captured patch on
+  # a fresh checkout and opens/updates one PR per slice.
+  publish:
+    needs:
+      - detect-drift
+      - sync-slice
+    if: ${{ !cancelled() && needs.sync-slice.result == 'success' && needs.detect-drift.outputs.slices != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout ${{ inputs.ui-branch }}
+        uses: actions/checkout@v5.0.1
+        with:
+          ref: ${{ inputs.ui-branch }}
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Download slice results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: api-sync-*
+          path: ${{ runner.temp }}/results
+
+      - name: Open or update one PR per slice
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+          UI_BRANCH: ${{ inputs.ui-branch }}
+          WORKDIR: ${{ inputs.working-directory }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          git config user.name "pimcore-deployments"
+          git config user.email "71881008+pimcore-deployments@users.noreply.github.com"
+          gh label create api-breaking --description "Automated API sync detected a breaking change" --color B60205 2>/dev/null || true
+
+          # Label the PR and make sure a tracking issue exists — used for new
+          # breaking PRs and for open PRs that turn breaking on a later run.
+          ensure_breaking_extras() {
+            local pr="$1" slice="$2" branch="$3"
+            gh pr edit "${pr}" --add-label api-breaking || true
+            local issue_title="[API] Breaking change in the ${slice} slice (${UI_BRANCH})"
+            local existing_issue
+            existing_issue="$(gh issue list --search "in:title \"${issue_title}\"" --state open --json number --jq '.[0].number // empty')"
+            if [[ -z "${existing_issue}" ]]; then
+              local issue_url
+              issue_url="$(gh issue create --title "${issue_title}" --body "The nightly API sync found a breaking change — see the draft PR on branch ${branch} and ${RUN_URL}.")"
+              # --label on `gh issue create` silently dropped the label in the
+              # end-to-end run; attach it explicitly (and never fail the sync on it).
+              gh issue edit "${issue_url}" --add-label api-breaking || true
+            fi
+          }
+
+          for dir in "${RUNNER_TEMP}"/results/api-sync-*/; do
+            slice="$(node -e 'console.log(require(process.argv[1]).slice)' "${dir}status.json")"
+            breaking="$(node -e 'console.log(require(process.argv[1]).breaking)' "${dir}status.json")"
+            removed="$(node -e 'console.log(require(process.argv[1]).removed.join(", "))' "${dir}status.json")"
+            branch="api-sync/${UI_BRANCH}/${slice}"
+            echo "::group::${slice} (breaking: ${breaking})"
+
+            git checkout -B "${branch}" "origin/${UI_BRANCH}"
+            if [[ ! -s "${dir}sync.patch" ]]; then
+              echo "empty patch, skipping"; echo "::endgroup::"; continue
+            fi
+            git apply "${dir}sync.patch"
+            git add -A
+            # Re-validate in the job that holds the token and runs no
+            # repository code — the capture-side check alone could be
+            # subverted by code that kept running after it.
+            prefix="${WORKDIR#./}"; prefix="${prefix%/}/"; [[ "${prefix}" == "/" ]] && prefix=""
+            # The generated clients are matched against the paths DECLARED in the
+            # committed slices.ts — extracted textually, the file is never executed —
+            # not against a *.gen.ts suffix that a smuggled file could satisfy.
+            node -e '
+              const fs = require("fs"), path = require("path");
+              const src = fs.readFileSync(process.argv[1], "utf8");
+              const root = process.argv[2];
+              const out = [];
+              for (const m of src.matchAll(/outputFile:\s*([\x27"])([^\x27"]+)\1/g)) {
+                const p = path.posix.normalize(path.posix.join(root, "build/api", m[2]));
+                // A declared output must stay inside the working directory — otherwise
+                // a hostile slices.ts entry could allowlist any path in the repository.
+                if (p.split("/").includes("..") || (root !== "" && p !== root && !p.startsWith(root + "/"))) {
+                  console.error("::error title=Invalid outputFile in slices.ts::" + m[2] + " resolves outside the working directory");
+                  process.exit(1);
+                }
+                out.push(p);
+              }
+              fs.writeFileSync(process.argv[3], out.join("\n") + "\n");
+            ' "${prefix}build/api/slices.ts" "${prefix%/}" "${RUNNER_TEMP}/declared-outputs.txt"
+            while IFS= read -r f; do
+              case "${f}" in
+                *"/../"*|"../"*) echo "::error title=Unexpected change in the sync::${f} contains a path traversal"; exit 1 ;;
+                "${prefix}"build/api/schema/*.json) ;;
+                *)
+                  if ! grep -qxF "${f}" "${RUNNER_TEMP}/declared-outputs.txt"; then
+                    echo "::error title=Unexpected change in the sync::${f} is neither a slice snapshot nor a client declared in slices.ts"; exit 1
+                  fi
+                  ;;
+              esac
+            done < <(git diff --cached --name-only)
+            git commit -m "[API] Sync the ${slice} slice with the backend (${UI_BRANCH})"
+            git push -f origin "${branch}"
+
+            title="[API] Sync the ${slice} slice with the backend (${UI_BRANCH})"
+            body_file="${RUNNER_TEMP}/body-${slice}.md"
+            {
+              echo "Automated per-slice schema sync (pimcore/service-operations#1713)."
+              echo
+              echo "Source: backend export of this run — ${RUN_URL}"
+              if [[ "${breaking}" == "true" ]]; then
+                echo
+                echo -n "⚠️ **Breaking**:"
+                [[ -n "${removed}" ]] && echo -n " removed endpoints: ${removed}."
+                node -e 'const s=require(process.argv[1]); if(!s.typecheckOk) process.stdout.write(" check-types fails against the regenerated client.")' "${dir}status.json"
+                echo
+              fi
+            } > "${body_file}"
+
+            existing="$(gh pr list --head "${branch}" --base "${UI_BRANCH}" --state open --json number --jq '.[0].number // empty')"
+            if [[ -n "${existing}" ]]; then
+              gh pr edit "${existing}" --body-file "${body_file}"
+              if [[ "${breaking}" == "true" ]]; then
+                # A previously clean sync can turn breaking on a later run:
+                # restore the safety contract on the open PR too.
+                gh pr ready "${existing}" --undo || true
+                ensure_breaking_extras "${existing}" "${slice}" "${branch}"
+              fi
+            elif [[ "${breaking}" == "true" ]]; then
+              pr_url="$(gh pr create --draft --base "${UI_BRANCH}" --head "${branch}" --title "${title}" --body-file "${body_file}" --label api-breaking)"
+              ensure_breaking_extras "${pr_url}" "${slice}" "${branch}"
+            else
+              gh pr create --base "${UI_BRANCH}" --head "${branch}" --title "${title}" --body-file "${body_file}"
+            fi
+            echo "::endgroup::"
+          done
