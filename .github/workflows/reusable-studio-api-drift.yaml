@@ -302,9 +302,18 @@ jobs:
           node -e '
             const fs = require("fs"), path = require("path");
             const src = fs.readFileSync(process.argv[1], "utf8");
+            const root = process.argv[2];
             const out = [];
-            for (const m of src.matchAll(/outputFile:\s*([\x27"])([^\x27"]+)\1/g))
-              out.push(path.posix.normalize(path.posix.join(process.argv[2], "build/api", m[2])));
+            for (const m of src.matchAll(/outputFile:\s*([\x27"])([^\x27"]+)\1/g)) {
+              const p = path.posix.normalize(path.posix.join(root, "build/api", m[2]));
+              // A declared output must stay inside the working directory — otherwise
+              // a hostile slices.ts entry could allowlist any path in the repository.
+              if (p.split("/").includes("..") || (root !== "" && p !== root && !p.startsWith(root + "/"))) {
+                console.error("::error title=Invalid outputFile in slices.ts::" + m[2] + " resolves outside the working directory");
+                process.exit(1);
+              }
+              out.push(p);
+            }
             fs.writeFileSync(process.argv[3], out.join("\n") + "\n");
           ' "${prefix}build/api/slices.ts" "${prefix%/}" "${RUNNER_TEMP}/declared-outputs.txt"
           while IFS= read -r f; do
@@ -420,9 +429,18 @@ jobs:
             node -e '
               const fs = require("fs"), path = require("path");
               const src = fs.readFileSync(process.argv[1], "utf8");
+              const root = process.argv[2];
               const out = [];
-              for (const m of src.matchAll(/outputFile:\s*([\x27"])([^\x27"]+)\1/g))
-                out.push(path.posix.normalize(path.posix.join(process.argv[2], "build/api", m[2])));
+              for (const m of src.matchAll(/outputFile:\s*([\x27"])([^\x27"]+)\1/g)) {
+                const p = path.posix.normalize(path.posix.join(root, "build/api", m[2]));
+                // A declared output must stay inside the working directory — otherwise
+                // a hostile slices.ts entry could allowlist any path in the repository.
+                if (p.split("/").includes("..") || (root !== "" && p !== root && !p.startsWith(root + "/"))) {
+                  console.error("::error title=Invalid outputFile in slices.ts::" + m[2] + " resolves outside the working directory");
+                  process.exit(1);
+                }
+                out.push(p);
+              }
               fs.writeFileSync(process.argv[3], out.join("\n") + "\n");
             ' "${prefix}build/api/slices.ts" "${prefix%/}" "${RUNNER_TEMP}/declared-outputs.txt"
             while IFS= read -r f; do
