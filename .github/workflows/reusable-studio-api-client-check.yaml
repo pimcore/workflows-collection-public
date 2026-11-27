@@ -145,12 +145,12 @@ jobs:
           set -euo pipefail
           if ! npm run -s "${{ inputs.api-sync-script }}" -- --check --summary-json "${RUNNER_TEMP}/api-check.json" > /dev/null 2>&1; then
             drifted="$(node -e 'const s=require(process.env.RUNNER_TEMP+"/api-check.json");console.log(s.results.filter(r=>r.status==="drift").map(r=>r.slice).join(", "))')"
-            echo "::warning title=API client drift (not caused by this PR)::Slices out of sync with their snapshots: ${drifted}. Run 'npm run api:sync -- <slice>' on the base branch or wait for the nightly sync."
+            echo "::warning title=API client drift (not caused by this PR)::Slices out of sync with their snapshots: ${drifted}. Run 'npm run api:check -- --fix <slice>' on the base branch or wait for the nightly sync."
           fi
           exit 0
 
       - name: Fail on strict drift
         if: ${{ steps.strict.outputs.failed == 'true' }}
         run: |
-          echo "::error title=API client drift::A slice touched by this PR is inconsistent: the committed *.gen.ts does not match codegen(snapshot). Regenerate it with 'npm run api:sync -- <slice>' (or apply the api-client-fix-patch artifact of this run) and commit snapshot and client together."
+          echo "::error title=API client drift::A slice touched by this PR is inconsistent: the committed *.gen.ts does not match codegen(snapshot). Regenerate it with 'npm run api:check -- --fix <slice>' (or apply the api-client-fix-patch artifact of this run) and commit snapshot and client together."
           exit 1
