@@ -201,9 +201,22 @@ jobs:
 
       - name: Capture the sync as a patch
         id: capture
+        env:
+          WORKDIR: ${{ inputs.working-directory }}
         run: |
           set -euo pipefail
           git add -A
+          # Only generated artifacts may enter the patch: the slice snapshots
+          # and the generated clients. Anything else means the sync (or
+          # something running inside it) changed files outside its contract.
+          prefix="${WORKDIR#./}"; prefix="${prefix%/}/"; [[ "${prefix}" == "/" ]] && prefix=""
+          while IFS= read -r f; do
+            case "${f}" in
+              *"/../"*|"../"*) echo "::error title=Unexpected change in the sync::${f} contains a path traversal"; exit 1 ;;
+              "${prefix}"build/api/schema/*.json|"${prefix}"*.gen.ts) ;;
+              *) echo "::error title=Unexpected change in the sync::${f} is not a generated snapshot or client"; exit 1 ;;
+            esac
+          done < <(git diff --cached --name-only)
           git diff --cached --binary > "${RUNNER_TEMP}/api-slice-sync.patch"
           if [[ -s "${RUNNER_TEMP}/api-slice-sync.patch" ]]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
@@ -259,7 +272,23 @@ jobs:
           path: ${{ runner.temp }}
 
       - name: Apply the sync
-        run: git apply "${RUNNER_TEMP}/api-slice-sync.patch"
+        env:
+          WORKDIR: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          git apply "${RUNNER_TEMP}/api-slice-sync.patch"
+          git add -A
+          # Re-validate in the job that holds the token and runs no repository
+          # code — the capture-side check alone could be subverted by code
+          # that kept running after it.
+          prefix="${WORKDIR#./}"; prefix="${prefix%/}/"; [[ "${prefix}" == "/" ]] && prefix=""
+          while IFS= read -r f; do
+            case "${f}" in
+              *"/../"*|"../"*) echo "::error title=Unexpected change in the sync::${f} contains a path traversal"; exit 1 ;;
+              "${prefix}"build/api/schema/*.json|"${prefix}"*.gen.ts) ;;
+              *) echo "::error title=Unexpected change in the sync::${f} is not a generated snapshot or client"; exit 1 ;;
+            esac
+          done < <(git diff --cached --name-only)
 
       - name: Commit the sync
         uses: stefanzweifel/git-auto-commit-action@v7

@@ -287,10 +287,22 @@ jobs:
           TYPECHECK_OK: ${{ steps.typecheck.outputs.ok }}
           TESTS_OK: ${{ steps.tests.outputs.ok || 'true' }}
           REMOVED: ${{ steps.removed.outputs.removed }}
+          WORKDIR: ${{ inputs.working-directory }}
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/out"
           git add -A
+          # Only generated artifacts may enter the patch: the slice snapshots
+          # and the generated clients. Anything else means the sync (or
+          # something running inside it) changed files outside its contract.
+          prefix="${WORKDIR#./}"; prefix="${prefix%/}/"; [[ "${prefix}" == "/" ]] && prefix=""
+          while IFS= read -r f; do
+            case "${f}" in
+              *"/../"*|"../"*) echo "::error title=Unexpected change in the sync::${f} contains a path traversal"; exit 1 ;;
+              "${prefix}"build/api/schema/*.json|"${prefix}"*.gen.ts) ;;
+              *) echo "::error title=Unexpected change in the sync::${f} is not a generated snapshot or client"; exit 1 ;;
+            esac
+          done < <(git diff --cached --name-only)
           git diff --cached --binary > "${RUNNER_TEMP}/out/sync.patch"
           breaking=false
           if [[ "${TYPECHECK_OK}" != "true" || -n "${REMOVED}" ]]; then breaking=true; fi
@@ -345,6 +357,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
           UI_BRANCH: ${{ inputs.ui-branch }}
+          WORKDIR: ${{ inputs.working-directory }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -382,6 +395,17 @@ jobs:
             fi
             git apply "${dir}sync.patch"
             git add -A
+            # Re-validate in the job that holds the token and runs no
+            # repository code — the capture-side check alone could be
+            # subverted by code that kept running after it.
+            prefix="${WORKDIR#./}"; prefix="${prefix%/}/"; [[ "${prefix}" == "/" ]] && prefix=""
+            while IFS= read -r f; do
+              case "${f}" in
+                *"/../"*|"../"*) echo "::error title=Unexpected change in the sync::${f} contains a path traversal"; exit 1 ;;
+                "${prefix}"build/api/schema/*.json|"${prefix}"*.gen.ts) ;;
+                *) echo "::error title=Unexpected change in the sync::${f} is not a generated snapshot or client"; exit 1 ;;
+              esac
+            done < <(git diff --cached --name-only)
             git commit -m "[API] Sync the ${slice} slice with the backend (${UI_BRANCH})"
             git push -f origin "${branch}"
 
