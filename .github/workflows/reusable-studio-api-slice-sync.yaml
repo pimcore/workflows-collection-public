@@ -233,6 +233,19 @@ jobs:
       contents: write
 
     steps:
+      # The ref is caller-controlled and later expands inside a shell command
+      # (the rebase hook below) in this write-capable job — accept only plain
+      # branch-name characters.
+      - name: Validate the target ref
+        env:
+          UI_REF: ${{ inputs.ui-ref }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${UI_REF}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error title=Invalid ui-ref::'${UI_REF}' is not a plain branch name."
+            exit 1
+          fi
+
       - name: Checkout ${{ inputs.ui-ref }}
         uses: actions/checkout@v5.0.1
         with:
@@ -250,6 +263,8 @@ jobs:
 
       - name: Commit the sync
         uses: stefanzweifel/git-auto-commit-action@v7
+        env:
+          UI_REF: ${{ inputs.ui-ref }}
         with:
           branch: ${{ inputs.ui-ref }}
           commit_user_name: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments' || 'github-actions[bot]' }}
@@ -257,5 +272,7 @@ jobs:
           commit_author: ${{ secrets.SYNC_TOKEN && 'pimcore-deployments <71881008+pimcore-deployments@users.noreply.github.com>' || format('{0} <{1}+{0}@users.noreply.github.com>', github.actor, github.actor_id) }}
           # Rebase onto the remote tip before pushing so a concurrent push to
           # the same branch doesn't fail with a non-fast-forward rejection.
-          before_push_hook: git pull --rebase --autostash origin ${{ inputs.ui-ref }}
+          # The ref expands from the environment at hook runtime — never
+          # interpolated into the command text (shell injection).
+          before_push_hook: git pull --rebase --autostash origin "$UI_REF"
           commit_message: "[API] Sync API slices with the backend (${{ needs.sync.outputs.synced }})"

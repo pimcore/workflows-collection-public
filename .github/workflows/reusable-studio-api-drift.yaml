@@ -227,11 +227,14 @@ jobs:
           node -e '
             const fs = require("fs");
             const file = "build/api/schema/${{ matrix.slice }}.json";
+            // A Path Item also carries non-operation keys (parameters, $ref,
+            // summary, ...) — only HTTP methods count as endpoints.
+            const METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
             const ops = [];
             if (fs.existsSync(file)) {
               const spec = JSON.parse(fs.readFileSync(file, "utf8"));
               for (const [p, item] of Object.entries(spec.paths ?? {}))
-                for (const verb of Object.keys(item)) ops.push(`${verb} ${p}`);
+                for (const verb of Object.keys(item)) if (METHODS.has(verb.toLowerCase())) ops.push(`${verb} ${p}`);
             }
             fs.writeFileSync(process.env.RUNNER_TEMP + "/ops-before.json", JSON.stringify(ops));
           '
@@ -247,9 +250,10 @@ jobs:
             const fs = require("fs");
             const before = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/ops-before.json", "utf8"));
             const spec = JSON.parse(fs.readFileSync("build/api/schema/${{ matrix.slice }}.json", "utf8"));
+            const METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
             const after = new Set();
             for (const [p, item] of Object.entries(spec.paths ?? {}))
-              for (const verb of Object.keys(item)) after.add(`${verb} ${p}`);
+              for (const verb of Object.keys(item)) if (METHODS.has(verb.toLowerCase())) after.add(`${verb} ${p}`);
             const removed = before.filter((op) => !after.has(op));
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `removed=${removed.join(", ")}\n`);
             if (removed.length > 0) console.log("Removed endpoints:", removed.join(", "));
@@ -348,6 +352,23 @@ jobs:
           git config user.email "71881008+pimcore-deployments@users.noreply.github.com"
           gh label create api-breaking --description "Automated API sync detected a breaking change" --color B60205 2>/dev/null || true
 
+          # Label the PR and make sure a tracking issue exists — used for new
+          # breaking PRs and for open PRs that turn breaking on a later run.
+          ensure_breaking_extras() {
+            local pr="$1" slice="$2" branch="$3"
+            gh pr edit "${pr}" --add-label api-breaking || true
+            local issue_title="[API] Breaking change in the ${slice} slice (${UI_BRANCH})"
+            local existing_issue
+            existing_issue="$(gh issue list --search "in:title \"${issue_title}\"" --state open --json number --jq '.[0].number // empty')"
+            if [[ -z "${existing_issue}" ]]; then
+              local issue_url
+              issue_url="$(gh issue create --title "${issue_title}" --body "The nightly API sync found a breaking change — see the draft PR on branch ${branch} and ${RUN_URL}.")"
+              # --label on `gh issue create` silently dropped the label in the
+              # end-to-end run; attach it explicitly (and never fail the sync on it).
+              gh issue edit "${issue_url}" --add-label api-breaking || true
+            fi
+          }
+
           for dir in "${RUNNER_TEMP}"/results/api-sync-*/; do
             slice="$(node -e 'console.log(require(process.argv[1]).slice)' "${dir}status.json")"
             breaking="$(node -e 'console.log(require(process.argv[1]).breaking)' "${dir}status.json")"
@@ -382,16 +403,15 @@ jobs:
             existing="$(gh pr list --head "${branch}" --base "${UI_BRANCH}" --state open --json number --jq '.[0].number // empty')"
             if [[ -n "${existing}" ]]; then
               gh pr edit "${existing}" --body-file "${body_file}"
-            elif [[ "${breaking}" == "true" ]]; then
-              gh pr create --draft --base "${UI_BRANCH}" --head "${branch}" --title "${title}" --body-file "${body_file}" --label api-breaking
-              issue_title="[API] Breaking change in the ${slice} slice (${UI_BRANCH})"
-              existing_issue="$(gh issue list --search "in:title \"${issue_title}\"" --state open --json number --jq '.[0].number // empty')"
-              if [[ -z "${existing_issue}" ]]; then
-                issue_url="$(gh issue create --title "${issue_title}" --body "The nightly API sync found a breaking change — see the draft PR on branch ${branch} and ${RUN_URL}.")"
-                # --label on `gh issue create` silently dropped the label in the
-                # end-to-end run; attach it explicitly (and never fail the sync on it).
-                gh issue edit "${issue_url}" --add-label api-breaking || true
+              if [[ "${breaking}" == "true" ]]; then
+                # A previously clean sync can turn breaking on a later run:
+                # restore the safety contract on the open PR too.
+                gh pr ready "${existing}" --undo || true
+                ensure_breaking_extras "${existing}" "${slice}" "${branch}"
               fi
+            elif [[ "${breaking}" == "true" ]]; then
+              pr_url="$(gh pr create --draft --base "${UI_BRANCH}" --head "${branch}" --title "${title}" --body-file "${body_file}" --label api-breaking)"
+              ensure_breaking_extras "${pr_url}" "${slice}" "${branch}"
             else
               gh pr create --base "${UI_BRANCH}" --head "${branch}" --title "${title}" --body-file "${body_file}"
             fi
