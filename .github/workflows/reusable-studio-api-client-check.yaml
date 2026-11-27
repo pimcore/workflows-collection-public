@@ -82,8 +82,15 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            git fetch --no-tags --quiet origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          # github.base_ref is set for pull_request AND pull_request_target —
+          # keying on it (not the event name) gives both the strict/lenient split.
+          if [[ -n "${BASE_REF}" ]]; then
+            # fetch-depth: 0 made the authenticated checkout create
+            # origin/<base> already; fetch only if it is missing, so private
+            # caller repositories never hit an unauthenticated fetch.
+            if ! git rev-parse --verify --quiet "origin/${BASE_REF}" > /dev/null; then
+              git fetch --no-tags --quiet origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+            fi
             git diff --name-only "origin/${BASE_REF}...HEAD" > "${RUNNER_TEMP}/changed-files.txt"
             affected="$(npm run -s "${{ inputs.api-sync-script }}" -- --affected-by "${RUNNER_TEMP}/changed-files.txt")"
           else
@@ -130,6 +137,9 @@ jobs:
           overwrite: true
 
       - name: Lenient check (drift not caused by this PR)
+        # When the strict set is '*' the strict step already checked every
+        # slice — running the full check again would only repeat the codegen.
+        if: ${{ steps.slices.outputs.strict != '*' }}
         working-directory: ${{ inputs.working-directory }}
         run: |
           set -euo pipefail
